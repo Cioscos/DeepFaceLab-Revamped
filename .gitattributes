@@ -1,0 +1,20 @@
+# The Windows package and the WSL environment share the same working tree, but
+# the two gits are configured differently: the Windows one ships with
+# core.autocrlf=true from the installer and converts LF->CRLF on checkout, while
+# the WSL one does not convert and sees those CRLFs as uncommitted changes. The
+# result was 13 "modified" files after every branch switch, differing only in
+# line endings, which blocked cherry-picks and merges.
+#
+# This pins normalisation to LF for all text, whichever git touches the tree.
+* text=auto eol=lf
+
+# I .bat vivono nel repository, quindi l'eccezione che il commento precedente
+# dichiarava non necessaria ora lo e': cmd.exe tollera LF solo in parte -- i
+# blocchi multi-riga e i goto no.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+*.png binary
+*.jpg binary
+*.zip binary
+*.npy binary

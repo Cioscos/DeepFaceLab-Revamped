@@ -1,0 +1,10 @@
+# torch per la build CPU (nessuna GPU NVIDIA disponibile). torchvision NON
+# sta qui: vedi il commento in requirements/cuda.txt, stesso motivo (zero
+# consumatori in tutto il repository).
+# Stessa versione di requirements/cuda.txt, indice CPU. Verificato il
+# 2026-08-02/03 (UTC) con:
+#   curl -s https://download.pytorch.org/whl/cpu/torch/ | grep -o
+#     'torch-2\.13\.0[^"]*cpu[^"]*\.whl'
+# presente per linux_x86_64 (cp310..cp314) e win_amd64.
+--index-url https://download.pytorch.org/whl/cpu
+torch==2.13.0
