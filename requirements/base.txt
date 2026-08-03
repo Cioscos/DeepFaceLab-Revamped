@@ -1,0 +1,24 @@
+# Dipendenze indipendenti dal target (CUDA o CPU). torch NON sta qui:
+# vedi requirements/cuda.txt e requirements/cpu.txt.
+tqdm
+numpy
+numexpr
+h5py
+opencv-python
+ffmpeg-python
+scikit-image
+scipy
+colorama
+pyqt5
+# pillow NON e' opzionale, a differenza di ipython/matplotlib (che core/
+# interact/interact.py:15-22 importa dentro un try/except come SONDA per
+# is_colab, e che quindi non vanno qui). core/imagelib/
+# __init__.py:5,13 importa .text e .reduce_colors a livello di modulo, ed
+# entrambi fanno `from PIL import ...` fuori da ogni try/except; i
+# consumatori sono in produzione: mainscripts/Extractor.py e
+# merger/MergeMasked.py.
+pillow
+# onnx e' di RUNTIME, non di sviluppo: models/Model_{XSeg,SAEHD,AMP}/Model.py
+# lo importano a livello di modulo, per riscrivere il proto ONNX
+# in export_dfm. Senza, nessun training parte.
+onnx

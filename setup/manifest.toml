@@ -1,0 +1,77 @@
+[[asset]]
+name = "facelib"
+dest = "_internal/DeepFaceLab/facelib"
+required = true
+kind = "archive"
+
+  [[asset.parts]]
+  url = "https://github.com/Cioscos/DeepFaceLab-Revamped/releases/download/0.0.1/facelib.tar.gz"
+  sha256 = "42dfc0974a1e85f48350a9e47f651d456a4e2ca458e845cdee230b4feb3e4280"
+  size = 251431695
+
+[[asset]]
+name = "ffmpeg"
+dest = "_internal/ffmpeg"
+required = true
+kind = "archive"
+
+  [[asset.parts]]
+  url = "https://github.com/Cioscos/DeepFaceLab-Revamped/releases/download/0.0.1/ffmpeg.tar.gz"
+  sha256 = "416931197612d22b7a5b9e26987e52ec0e5a2a11f2443164fa9299133e9c271b"
+  size = 46413412
+
+[[asset]]
+name = "model_generic_xseg"
+dest = "_internal/model_generic_xseg"
+required = true
+kind = "archive"
+
+  [[asset.parts]]
+  url = "https://github.com/Cioscos/DeepFaceLab-Revamped/releases/download/0.0.1/model_generic_xseg.tar.gz"
+  sha256 = "b07fdfd4effb9130478bf7f9c5ea48db044bf8f2dbdd6b2919876eba27fe1f56"
+  size = 86605476
+
+[[asset]]
+name = "pretrain_Quick96"
+dest = "_internal/pretrain_Quick96"
+required = true
+kind = "archive"
+
+  [[asset.parts]]
+  url = "https://github.com/Cioscos/DeepFaceLab-Revamped/releases/download/0.0.1/pretrain_Quick96.tar.gz"
+  sha256 = "baad46a6bfdd81f0c724f818fd8b275d667168d7f13b0ffede7173196a716bbe"
+  size = 130704785
+
+[[asset]]
+name = "pretrain_faces"
+dest = "_internal/pretrain_faces"
+required = false
+kind = "block"
+whole_sha256 = "28415453e88a2d484f013a85273e4e99b07a2f4ff934eccd4ea56572389509e5"
+
+  [[asset.parts]]
+  url = "https://github.com/Cioscos/DeepFaceLab-Revamped/releases/download/0.0.1/pretrain_faces.tar.gz.000"
+  sha256 = "cf1448b804adaa9c034b9562804bdc6351020e47082b2e3794eda4c3581d71be"
+  size = 734003200
+
+  [[asset.parts]]
+  url = "https://github.com/Cioscos/DeepFaceLab-Revamped/releases/download/0.0.1/pretrain_faces.tar.gz.001"
+  sha256 = "cefdeb079cb485122bcf5d01881ea15a621fe7d221f066440d2765e8ec66aee8"
+  size = 734003200
+
+  [[asset.parts]]
+  url = "https://github.com/Cioscos/DeepFaceLab-Revamped/releases/download/0.0.1/pretrain_faces.tar.gz.002"
+  sha256 = "36ea4973a68fa9d1f605abc2c4547b7679d1ae7bca2af8f2e4b7e7e5bfe95540"
+  size = 420181185
+
+[[asset]]
+name = "EbSynth"
+dest = "_internal/EbSynth"
+required = false
+kind = "archive"
+
+  [[asset.parts]]
+  url = "https://github.com/Cioscos/DeepFaceLab-Revamped/releases/download/0.0.1/EbSynth.tar.gz"
+  sha256 = "eaa39ffc4d753d49e433bf7d0852b7bd6fb32f9435ddcaec0fff5893f00cbcdf"
+  size = 13077635
+

@@ -1,0 +1,656 @@
+# Fonte di verita' dei passi utente. Un solo posto in cui esistono, per
+# entrambi i sistemi.
+#
+# Segnaposto ammessi: {WORKSPACE}, {INTERNAL}, {DFL_ROOT}.
+#
+# passthrough = true significa che l'ultima invocazione ha un argomento senza
+# valore (es. "--input-file"): il generatore vi accoda %1 (bat) o "$1" (sh)
+# come ultimo token di quella riga. Non e' un segnaposto: e' cablato nel
+# generatore, non nel TOML.
+#
+# Questo file e' la sola fonte di verita' dei comandi utente: gli script .bat
+# e .sh sotto scripts/ sono generati da qui, e vanno rigenerati invece che
+# modificati a mano.
+
+# L'unico comando distruttivo dei 55: cancella data_src, data_dst e model
+# dell'utente. pause_before + echo riproducono la conferma che l'ancora fa
+# PRIMA di toccare qualunque cartella ("Press space if you want to delete
+# content in workspace folder" poi pause) -- senza, un doppio clic sbagliato
+# cancella ore o giorni di estrazione/addestramento senza modo di annullare.
+[[command]]
+name = "1) clear workspace"
+kind = "clear"
+pause = "always"
+pause_before = true
+echo = ["Press space if you want to delete content in workspace folder"]
+
+[[command]]
+name = "10.misc) start EBSynth"
+kind = "ebsynth"
+pause = "never"
+
+[[command]]
+name = "2) extract images from video data_src"
+kind = "main"
+pause = "always"
+mkdirs = ["{WORKSPACE}/data_src"]
+  [[command.invocation]]
+  verb = ["videoed", "extract-video"]
+  args = [
+    "--input-file", "{WORKSPACE}/data_src.*",
+    "--output-dir", "{WORKSPACE}/data_src",
+  ]
+
+# L'unico script che inoltra un argomento: chi trascina un video sull'icona
+# lo riceve come %1 (bat) / "$1" (sh) dopo --input-file.
+[[command]]
+name = "3) cut video (drop video on me)"
+kind = "main"
+pause = "always"
+passthrough = true
+  [[command.invocation]]
+  verb = ["videoed", "cut-video"]
+  args = ["--input-file"]
+
+[[command]]
+name = "3) extract images from video data_dst FULL FPS"
+kind = "main"
+pause = "always"
+mkdirs = ["{WORKSPACE}/data_dst"]
+  [[command.invocation]]
+  verb = ["videoed", "extract-video"]
+  args = [
+    "--input-file",  "{WORKSPACE}/data_dst.*",
+    "--output-dir",  "{WORKSPACE}/data_dst",
+    "--fps",         "0",
+  ]
+
+[[command]]
+name = "3.optional) denoise data_dst images"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["videoed", "denoise-image-sequence"]
+  args = ["--input-dir", "{WORKSPACE}/data_dst"]
+
+[[command]]
+name = "4) data_src faceset extract MANUAL"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["extract"]
+  args = [
+    "--input-dir",  "{WORKSPACE}/data_src",
+    "--output-dir", "{WORKSPACE}/data_src/aligned",
+    "--detector",   "manual",
+  ]
+
+# Scorciatoia (SHORTCUTS): depositata anche nella root dell'installazione.
+[[command]]
+name = "4) data_src faceset extract"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["extract"]
+  args = [
+    "--input-dir",  "{WORKSPACE}/data_src",
+    "--output-dir", "{WORKSPACE}/data_src/aligned",
+    "--detector",   "s3fd",
+  ]
+
+[[command]]
+name = "4.1) data_src view aligned result"
+kind = "viewer"
+pause = "never"
+target = "{WORKSPACE}/data_src/aligned"
+
+[[command]]
+name = "4.2) data_src sort"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["sort"]
+  args = ["--input-dir", "{WORKSPACE}/data_src/aligned"]
+
+[[command]]
+name = "4.2) data_src util add landmarks debug images"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["util"]
+  args = [
+    "--input-dir", "{WORKSPACE}/data_src/aligned",
+    "--add-landmarks-debug-images",
+  ]
+
+[[command]]
+name = "4.2) data_src util faceset enhance"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["facesettool", "enhance"]
+  args = ["--input-dir", "{WORKSPACE}/data_src/aligned"]
+
+[[command]]
+name = "4.2) data_src util faceset metadata restore"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["util"]
+  args = [
+    "--input-dir", "{WORKSPACE}/data_src/aligned",
+    "--restore-faceset-metadata",
+  ]
+
+[[command]]
+name = "4.2) data_src util faceset metadata save"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["util"]
+  args = [
+    "--input-dir", "{WORKSPACE}/data_src/aligned",
+    "--save-faceset-metadata",
+  ]
+
+[[command]]
+name = "4.2) data_src util faceset pack"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["util"]
+  args = [
+    "--input-dir", "{WORKSPACE}/data_src/aligned",
+    "--pack-faceset",
+  ]
+
+[[command]]
+name = "4.2) data_src util faceset resize"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["facesettool", "resize"]
+  args = ["--input-dir", "{WORKSPACE}/data_src/aligned"]
+
+[[command]]
+name = "4.2) data_src util faceset unpack"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["util"]
+  args = [
+    "--input-dir", "{WORKSPACE}/data_src/aligned",
+    "--unpack-faceset",
+  ]
+
+[[command]]
+name = "4.2) data_src util recover original filename"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["util"]
+  args = [
+    "--input-dir", "{WORKSPACE}/data_src/aligned",
+    "--recover-original-aligned-filename",
+  ]
+
+[[command]]
+name = "5) data_dst faceset MANUAL RE-EXTRACT DELETED ALIGNED_DEBUG"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["extract"]
+  args = [
+    "--input-dir",             "{WORKSPACE}/data_dst",
+    "--output-dir",            "{WORKSPACE}/data_dst/aligned",
+    "--detector",               "manual",
+    "--max-faces-from-image",  "0",
+    "--output-debug",
+    "--manual-output-debug-fix",
+  ]
+
+[[command]]
+name = "5) data_dst faceset extract + manual fix"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["extract"]
+  args = [
+    "--input-dir",             "{WORKSPACE}/data_dst",
+    "--output-dir",            "{WORKSPACE}/data_dst/aligned",
+    "--output-debug",
+    "--detector",               "s3fd",
+    "--max-faces-from-image",  "0",
+    "--manual-fix",
+  ]
+
+[[command]]
+name = "5) data_dst faceset extract MANUAL"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["extract"]
+  args = [
+    "--input-dir",             "{WORKSPACE}/data_dst",
+    "--output-dir",            "{WORKSPACE}/data_dst/aligned",
+    "--detector",               "manual",
+    "--max-faces-from-image",  "0",
+    "--output-debug",
+  ]
+
+# Scorciatoia (SHORTCUTS): depositata anche nella root dell'installazione.
+[[command]]
+name = "5) data_dst faceset extract"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["extract"]
+  args = [
+    "--input-dir",             "{WORKSPACE}/data_dst",
+    "--output-dir",            "{WORKSPACE}/data_dst/aligned",
+    "--detector",               "s3fd",
+    "--max-faces-from-image",  "0",
+    "--output-debug",
+  ]
+
+[[command]]
+name = "5.1) data_dst view aligned results"
+kind = "viewer"
+pause = "never"
+target = "{WORKSPACE}/data_dst/aligned"
+
+[[command]]
+name = "5.1) data_dst view aligned_debug results"
+kind = "viewer"
+pause = "never"
+target = "{WORKSPACE}/data_dst/aligned_debug"
+
+[[command]]
+name = "5.2) data_dst sort"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["sort"]
+  args = ["--input-dir", "{WORKSPACE}/data_dst/aligned"]
+
+[[command]]
+name = "5.2) data_dst util faceset pack"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["util"]
+  args = [
+    "--input-dir", "{WORKSPACE}/data_dst/aligned",
+    "--pack-faceset",
+  ]
+
+[[command]]
+name = "5.2) data_dst util faceset resize"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["facesettool", "resize"]
+  args = ["--input-dir", "{WORKSPACE}/data_dst/aligned"]
+
+[[command]]
+name = "5.2) data_dst util faceset unpack"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["util"]
+  args = [
+    "--input-dir", "{WORKSPACE}/data_dst/aligned",
+    "--unpack-faceset",
+  ]
+
+[[command]]
+name = "5.2) data_dst util recover original filename"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["util"]
+  args = [
+    "--input-dir", "{WORKSPACE}/data_dst/aligned",
+    "--recover-original-aligned-filename",
+  ]
+
+[[command]]
+name = "5.XSeg Generic) data_dst whole_face mask - apply"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["xseg", "apply"]
+  args = [
+    "--input-dir", "{WORKSPACE}/data_dst/aligned",
+    "--model-dir", "{INTERNAL}/model_generic_xseg",
+  ]
+
+[[command]]
+name = "5.XSeg Generic) data_src whole_face mask - apply"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["xseg", "apply"]
+  args = [
+    "--input-dir", "{WORKSPACE}/data_src/aligned",
+    "--model-dir", "{INTERNAL}/model_generic_xseg",
+  ]
+
+# L'editor XSeg mette in pausa solo se e' fallito: se si chiude bene, la
+# finestra sparisce senza chiedere un tasto. Uno dei due soli casi.
+[[command]]
+name = "5.XSeg) data_dst mask - edit"
+kind = "main"
+pause = "on_error"
+  [[command.invocation]]
+  verb = ["xseg", "editor"]
+  args = ["--input-dir", "{WORKSPACE}/data_dst/aligned"]
+
+[[command]]
+name = "5.XSeg) data_dst mask - fetch"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["xseg", "fetch"]
+  args = ["--input-dir", "{WORKSPACE}/data_dst/aligned"]
+
+[[command]]
+name = "5.XSeg) data_dst mask - remove"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["xseg", "remove_labels"]
+  args = ["--input-dir", "{WORKSPACE}/data_dst/aligned"]
+
+[[command]]
+name = "5.XSeg) data_dst trained mask - apply"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["xseg", "apply"]
+  args = [
+    "--input-dir", "{WORKSPACE}/data_dst/aligned",
+    "--model-dir", "{WORKSPACE}/model",
+  ]
+
+[[command]]
+name = "5.XSeg) data_dst trained mask - remove"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["xseg", "remove"]
+  args = ["--input-dir", "{WORKSPACE}/data_dst/aligned"]
+
+# L'editor XSeg mette in pausa solo se e' fallito: se si chiude bene, la
+# finestra sparisce senza chiedere un tasto. Uno dei due soli casi.
+[[command]]
+name = "5.XSeg) data_src mask - edit"
+kind = "main"
+pause = "on_error"
+  [[command.invocation]]
+  verb = ["xseg", "editor"]
+  args = ["--input-dir", "{WORKSPACE}/data_src/aligned"]
+
+[[command]]
+name = "5.XSeg) data_src mask - fetch"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["xseg", "fetch"]
+  args = ["--input-dir", "{WORKSPACE}/data_src/aligned"]
+
+[[command]]
+name = "5.XSeg) data_src mask - remove"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["xseg", "remove_labels"]
+  args = ["--input-dir", "{WORKSPACE}/data_src/aligned"]
+
+[[command]]
+name = "5.XSeg) data_src trained mask - apply"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["xseg", "apply"]
+  args = [
+    "--input-dir", "{WORKSPACE}/data_src/aligned",
+    "--model-dir", "{WORKSPACE}/model",
+  ]
+
+[[command]]
+name = "5.XSeg) data_src trained mask - remove"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["xseg", "remove"]
+  args = ["--input-dir", "{WORKSPACE}/data_src/aligned"]
+
+[[command]]
+name = "5.XSeg) train"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["train"]
+  args = [
+    "--training-data-src-dir", "{WORKSPACE}/data_src/aligned",
+    "--training-data-dst-dir", "{WORKSPACE}/data_dst/aligned",
+    "--pretraining-data-dir",  "{INTERNAL}/pretrain_faces",
+    "--model-dir",             "{WORKSPACE}/model",
+    "--model",                 "XSeg",
+  ]
+
+[[command]]
+name = "6) export AMP as dfm"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["exportdfm"]
+  args = [
+    "--model-dir", "{WORKSPACE}/model",
+    "--model",     "AMP",
+  ]
+
+[[command]]
+name = "6) export SAEHD as dfm"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["exportdfm"]
+  args = [
+    "--model-dir", "{WORKSPACE}/model",
+    "--model",     "SAEHD",
+  ]
+
+# Src e dst puntano entrambi a data_src/aligned: e' l'addestramento
+# "specchio" per il pretraining SRC-SRC, cosi' come sta nell'ancora.
+[[command]]
+name = "6) train AMP SRC-SRC"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["train"]
+  args = [
+    "--training-data-src-dir", "{WORKSPACE}/data_src/aligned",
+    "--training-data-dst-dir", "{WORKSPACE}/data_src/aligned",
+    "--pretraining-data-dir",  "{INTERNAL}/pretrain_faces",
+    "--model-dir",             "{WORKSPACE}/model",
+    "--model",                 "AMP",
+  ]
+
+[[command]]
+name = "6) train AMP"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["train"]
+  args = [
+    "--training-data-src-dir", "{WORKSPACE}/data_src/aligned",
+    "--training-data-dst-dir", "{WORKSPACE}/data_dst/aligned",
+    "--pretraining-data-dir",  "{INTERNAL}/pretrain_faces",
+    "--model-dir",             "{WORKSPACE}/model",
+    "--model",                 "AMP",
+  ]
+
+[[command]]
+name = "6) train Quick96"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["train"]
+  args = [
+    "--training-data-src-dir",   "{WORKSPACE}/data_src/aligned",
+    "--training-data-dst-dir",   "{WORKSPACE}/data_dst/aligned",
+    "--pretraining-data-dir",    "{INTERNAL}/pretrain_faces",
+    "--pretrained-model-dir",    "{INTERNAL}/pretrain_Quick96",
+    "--model-dir",               "{WORKSPACE}/model",
+    "--model",                   "Quick96",
+  ]
+
+# Scorciatoia (SHORTCUTS): depositata anche nella root dell'installazione.
+[[command]]
+name = "6) train SAEHD"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["train"]
+  args = [
+    "--training-data-src-dir", "{WORKSPACE}/data_src/aligned",
+    "--training-data-dst-dir", "{WORKSPACE}/data_dst/aligned",
+    "--pretraining-data-dir",  "{INTERNAL}/pretrain_faces",
+    "--model-dir",             "{WORKSPACE}/model",
+    "--model",                 "SAEHD",
+  ]
+
+[[command]]
+name = "7) merge AMP"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["merge"]
+  args = [
+    "--input-dir",       "{WORKSPACE}/data_dst",
+    "--output-dir",      "{WORKSPACE}/data_dst/merged",
+    "--output-mask-dir", "{WORKSPACE}/data_dst/merged_mask",
+    "--aligned-dir",     "{WORKSPACE}/data_dst/aligned",
+    "--model-dir",       "{WORKSPACE}/model",
+    "--model",           "AMP",
+  ]
+
+[[command]]
+name = "7) merge Quick96"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["merge"]
+  args = [
+    "--input-dir",       "{WORKSPACE}/data_dst",
+    "--output-dir",      "{WORKSPACE}/data_dst/merged",
+    "--output-mask-dir", "{WORKSPACE}/data_dst/merged_mask",
+    "--aligned-dir",     "{WORKSPACE}/data_dst/aligned",
+    "--model-dir",       "{WORKSPACE}/model",
+    "--model",           "Quick96",
+  ]
+
+# Scorciatoia (SHORTCUTS): depositata anche nella root dell'installazione.
+[[command]]
+name = "7) merge SAEHD"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["merge"]
+  args = [
+    "--input-dir",       "{WORKSPACE}/data_dst",
+    "--output-dir",      "{WORKSPACE}/data_dst/merged",
+    "--output-mask-dir", "{WORKSPACE}/data_dst/merged_mask",
+    "--aligned-dir",     "{WORKSPACE}/data_dst/aligned",
+    "--model-dir",       "{WORKSPACE}/model",
+    "--model",           "SAEHD",
+  ]
+
+# Due invocazioni in un solo script: i quattro "8) merged to *" sono gli unici.
+[[command]]
+name = "8) merged to avi"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["videoed", "video-from-sequence"]
+  args = [
+    "--input-dir",      "{WORKSPACE}/data_dst/merged",
+    "--output-file",    "{WORKSPACE}/result.avi",
+    "--reference-file", "{WORKSPACE}/data_dst.*",
+    "--include-audio",
+  ]
+  [[command.invocation]]
+  verb = ["videoed", "video-from-sequence"]
+  args = [
+    "--input-dir",      "{WORKSPACE}/data_dst/merged_mask",
+    "--output-file",    "{WORKSPACE}/result_mask.avi",
+    "--reference-file", "{WORKSPACE}/data_dst.*",
+    "--lossless",
+  ]
+
+[[command]]
+name = "8) merged to mov lossless"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["videoed", "video-from-sequence"]
+  args = [
+    "--input-dir",      "{WORKSPACE}/data_dst/merged",
+    "--output-file",    "{WORKSPACE}/result.mov",
+    "--reference-file", "{WORKSPACE}/data_dst.*",
+    "--include-audio",
+    "--lossless",
+  ]
+  [[command.invocation]]
+  verb = ["videoed", "video-from-sequence"]
+  args = [
+    "--input-dir",      "{WORKSPACE}/data_dst/merged_mask",
+    "--output-file",    "{WORKSPACE}/result_mask.mov",
+    "--reference-file", "{WORKSPACE}/data_dst.*",
+    "--lossless",
+  ]
+
+[[command]]
+name = "8) merged to mp4 lossless"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["videoed", "video-from-sequence"]
+  args = [
+    "--input-dir",      "{WORKSPACE}/data_dst/merged",
+    "--output-file",    "{WORKSPACE}/result.mp4",
+    "--reference-file", "{WORKSPACE}/data_dst.*",
+    "--include-audio",
+    "--lossless",
+  ]
+  [[command.invocation]]
+  verb = ["videoed", "video-from-sequence"]
+  args = [
+    "--input-dir",      "{WORKSPACE}/data_dst/merged_mask",
+    "--output-file",    "{WORKSPACE}/result_mask.mp4",
+    "--reference-file", "{WORKSPACE}/data_dst.*",
+    "--lossless",
+  ]
+
+[[command]]
+name = "8) merged to mp4"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["videoed", "video-from-sequence"]
+  args = [
+    "--input-dir",      "{WORKSPACE}/data_dst/merged",
+    "--output-file",    "{WORKSPACE}/result.mp4",
+    "--reference-file", "{WORKSPACE}/data_dst.*",
+    "--include-audio",
+  ]
+  [[command.invocation]]
+  verb = ["videoed", "video-from-sequence"]
+  args = [
+    "--input-dir",      "{WORKSPACE}/data_dst/merged_mask",
+    "--output-file",    "{WORKSPACE}/result_mask.mp4",
+    "--reference-file", "{WORKSPACE}/data_dst.*",
+    "--lossless",
+  ]

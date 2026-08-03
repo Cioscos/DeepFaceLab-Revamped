@@ -1,0 +1,23 @@
+# Modelli pre-addestrati: distribuiti con la build, non versionati
+*.npy
+
+# Sorgenti grafici pesanti
+*.psd
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# File temporanei Office / OS / IDE
+~$*
+.DS_Store
+Thumbs.db
+.idea/
+
+# Gli script utente sono generati da scripts/commands.toml: versionarli
+# darebbe due sorgenti di verita'.
+scripts/win/
+scripts/linux/
