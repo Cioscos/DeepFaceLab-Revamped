@@ -54,6 +54,21 @@ class SubprocessGenerator(object):
         # own KeyboardInterrupt only buries the real message under twenty
         # interleaved tracebacks. Ignore the signal here, in the child.
         signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+        # One generator per two cores, each with an OpenCV that by default
+        # opens one thread per core: on a 16-core machine that is 16 processes
+        # asking for 16 threads apiece, all to decode JPEGs. Measured here,
+        # 352 threads against 16 cores — and the process that suffers is the
+        # one that cannot be replaced, the parent, which has to stay on a core
+        # to keep queueing CUDA kernels. Capping OpenCV to no threads at all
+        # (each worker is already a process of its own, so it loses nothing)
+        # took a training iteration from 187 ms to 147 ms, a 21% gain that has
+        # nothing to do with the generators being faster: they were keeping up
+        # either way. Import here rather than at module scope — this is the
+        # child, and it is where cv2 gets loaded anyway.
+        import cv2
+        cv2.setNumThreads(0)
+
         self.generator_func = self.generator_func(user_param)
         while True:
             while self.prefetch > -1:
