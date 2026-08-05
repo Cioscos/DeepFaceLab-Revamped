@@ -1,3 +1,4 @@
+import collections
 import colorsys
 import inspect
 import json
@@ -14,6 +15,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import torch
 
 from core import imagelib, pathex
 from core.cv2ex import *
@@ -23,6 +25,13 @@ from samplelib import SampleGeneratorBase
 
 
 class ModelBase(object):
+    # Quante coppie di eventi CUDA train_one_iter tiene in coda prima di
+    # forzare una sincronizzazione sulla piu' vecchia (vedi train_one_iter):
+    # una valvola di sicurezza per il caso patologico (debugger fermo,
+    # GPU davvero indietro di molte iterazioni), non il percorso normale, che
+    # non aspetta mai.
+    RITARDO_MASSIMO_EVENTI_ITER_TIME = 8
+
     def __init__(self, is_training=False,
                        is_exporting=False,
                        saved_models_path=None,
@@ -482,9 +491,66 @@ class ModelBase(object):
 
     def train_one_iter(self):
 
-        iter_time = time.time()
-        losses = self.onTrainOneIter()
-        iter_time = time.time() - iter_time
+        # torch.cuda.Event invece del tempo di parete: appena un passo smette
+        # di copiare la loss sull'host, non c'e' piu' nessuna barriera, e la
+        # parete misura l'accodamento -- decine di microsecondi -- invece
+        # dell'esecuzione. Il numero finirebbe stampato a ogni iterazione dal
+        # trainer (mainscripts/Trainer.py:142-145) e sarebbe falso in meglio.
+        #
+        # Chiudere la misura con fine.synchronize() subito dopo onTrainOneIter
+        # e' corretto per il numero, ma quella sincronizzazione e' una
+        # barriera identica a quella che le leve di SAEHDX tolgono altrove --
+        # la CPU si ferma li' finche' la GPU non ha finito,
+        # impedendo al prelievo del batch dell'iterazione successiva di
+        # sovrapporsi al calcolo di questa. Qui la lettura e' ritardata:
+        # si accoda la coppia di eventi di ogni iterazione e si riporta il
+        # tempo della PIU' VECCHIA coppia ancora in coda i cui eventi sono
+        # gia' completi (Event.query(), che non blocca mai) -- di norma
+        # un'iterazione o due indietro, non quella appena accodata. Se
+        # nessuna coppia e' ancora pronta si ripete l'ultimo valore noto:
+        # il numero mostrato puo' essere vecchio di qualche iterazione, la
+        # CPU no. Stessa cura di SAEHDX.INTERVALLO_SCARICO_LOSS, stesso
+        # motivo: nessuno guarda il ms/it della singola iterazione, si
+        # guarda l'andamento.
+        #
+        # Su CPU gli eventi non esistono e la parete e' gia' la misura giusta,
+        # perche' li' non c'e' niente da accodare: il ramo sotto resta quello
+        # di sempre, immutato.
+        if torch.cuda.is_available():
+            if not hasattr(self, "_coda_eventi_iter_time"):
+                self._coda_eventi_iter_time = collections.deque()
+                self._ultimo_iter_time_noto = 0.0
+
+            inizio, fine = (torch.cuda.Event(enable_timing=True),
+                            torch.cuda.Event(enable_timing=True))
+            inizio.record()
+            losses = self.onTrainOneIter()
+            fine.record()
+            self._coda_eventi_iter_time.append((inizio, fine))
+
+            # Svuota dalla testa (la coppia piu' vecchia) finche' trova
+            # eventi completi: query() e' la stessa domanda di synchronize(),
+            # ma senza aspettare la risposta.
+            while (self._coda_eventi_iter_time
+                   and self._coda_eventi_iter_time[0][1].query()):
+                i_vecchio, f_vecchio = self._coda_eventi_iter_time.popleft()
+                self._ultimo_iter_time_noto = i_vecchio.elapsed_time(f_vecchio) / 1000.0
+
+            # Valvola di sicurezza: oltre RITARDO_MASSIMO_EVENTI_ITER_TIME
+            # coppie non ancora completate, la GPU e' davvero indietro (o
+            # ferma, es. un breakpoint) e non forzare mai una sincronizzazione
+            # farebbe crescere la coda senza limite. Non e' il percorso
+            # normale, che qui non aspetta mai.
+            while len(self._coda_eventi_iter_time) > self.RITARDO_MASSIMO_EVENTI_ITER_TIME:
+                i_vecchio, f_vecchio = self._coda_eventi_iter_time.popleft()
+                f_vecchio.synchronize()
+                self._ultimo_iter_time_noto = i_vecchio.elapsed_time(f_vecchio) / 1000.0
+
+            iter_time = self._ultimo_iter_time_noto
+        else:
+            iter_time = time.time()
+            losses = self.onTrainOneIter()
+            iter_time = time.time() - iter_time
 
         self.loss_history.append ( [float(loss[1]) for loss in losses] )
 

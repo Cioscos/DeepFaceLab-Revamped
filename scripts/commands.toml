@@ -523,6 +523,20 @@ pause = "always"
   ]
 
 [[command]]
+name = "6) train SAEHDX"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["train"]
+  args = [
+    "--training-data-src-dir", "{WORKSPACE}/data_src/aligned",
+    "--training-data-dst-dir", "{WORKSPACE}/data_dst/aligned",
+    "--pretraining-data-dir",  "{INTERNAL}/pretrain_faces",
+    "--model-dir",             "{WORKSPACE}/model",
+    "--model",                 "SAEHDX",
+  ]
+
+[[command]]
 name = "7) merge AMP"
 kind = "main"
 pause = "always"
@@ -566,6 +580,21 @@ pause = "always"
     "--aligned-dir",     "{WORKSPACE}/data_dst/aligned",
     "--model-dir",       "{WORKSPACE}/model",
     "--model",           "SAEHD",
+  ]
+
+[[command]]
+name = "7) merge SAEHDX"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["merge"]
+  args = [
+    "--input-dir",       "{WORKSPACE}/data_dst",
+    "--output-dir",      "{WORKSPACE}/data_dst/merged",
+    "--output-mask-dir", "{WORKSPACE}/data_dst/merged_mask",
+    "--aligned-dir",     "{WORKSPACE}/data_dst/aligned",
+    "--model-dir",       "{WORKSPACE}/model",
+    "--model",           "SAEHDX",
   ]
 
 # Due invocazioni in un solo script: i quattro "8) merged to *" sono gli unici.

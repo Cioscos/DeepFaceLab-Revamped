@@ -39,6 +39,11 @@ class RMSprop(nn.OptimizerBase):
         # host, mirroring the TF graph placement of the sampling op.
         self._lr_dropout_on_cpu = False
 
+        # See AdaBelief.py: same _foreach_ fast path, same activation
+        # condition (accumulator on the weight's own device, no lr_dropout,
+        # no clipnorm). initialize_variables decides.
+        self._fused_path = False
+
     @property
     def iterations(self):
         return self.iters
@@ -63,6 +68,8 @@ class RMSprop(nn.OptimizerBase):
             self._keys[id(v)]  = (key, v)
             self._mirrors[key] = (owner, param_path)
 
+        self._fused_path = not vars_on_cpu
+
     def step(self, grads_vars):
         """
         Apply the update immediately. See AdaBelief.step for the
@@ -75,6 +82,36 @@ class RMSprop(nn.OptimizerBase):
                                        for g, v in grads_vars))
 
             self.iters += 1
+
+            if self._fused_path and self.lr_dropout == 1.0 and self.clipnorm == 0.0:
+                grads, params, acc_list = [], [], []
+                for g, v in grads_vars:
+                    key, registered_v = self._keys[id(v)]
+                    assert registered_v is v
+                    grads.append(g.to(dtype=v.dtype))
+                    params.append(v)
+                    acc_list.append(self.acc[key])
+
+                # new_a = rho*a + (1-rho)*g^2
+                squares = torch._foreach_mul(grads, grads)
+                torch._foreach_mul_(acc_list, self.rho)
+                torch._foreach_add_(acc_list, squares, alpha=1.0 - self.rho)
+
+                lr = self.lr
+                if self.lr_cos != 0:
+                    lr = lr * (math.cos(float(self.iters.item()) *
+                                        (2 * math.pi / float(self.lr_cos))) + 1.0) / 2.0
+
+                denom = torch._foreach_sqrt(acc_list)
+                torch._foreach_add_(denom,
+                                    torch.finfo(params[0].dtype).resolution)
+                # The numerator is g, not the accumulator: this is where
+                # RMSprop and AdaBelief diverge, and it is the mistake a
+                # from-memory transcription would make without raising
+                # anything.
+                update = torch._foreach_div(grads, denom)
+                torch._foreach_add_(params, update, alpha=-lr)
+                return
 
             for g, v in grads_vars:
                 key, registered_v = self._keys[id(v)]

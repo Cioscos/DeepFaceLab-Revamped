@@ -71,6 +71,13 @@ class AdaBelief(nn.OptimizerBase):
         # parameter per step.
         self._lr_dropout_on_cpu = False
 
+        # The _foreach_ path groups the same operations into one kernel per
+        # group instead of ~12 per tensor. It only turns on when every
+        # accumulator lives on its own weight's device and the dtypes match:
+        # _foreach_ ops never cross devices, and vars_on_cpu makes them
+        # diverge by construction. initialize_variables decides.
+        self._fused_path = False
+
     @property
     def iterations(self):
         return self.iters
@@ -113,6 +120,8 @@ class AdaBelief(nn.OptimizerBase):
             self._keys[id(v)]  = (key, v)
             self._mirrors[key] = (owner, param_path)
 
+        self._fused_path = not vars_on_cpu
+
     def step(self, grads_vars):
         """
         Apply the update immediately. In graph mode `get_update_op` built an
@@ -137,6 +146,38 @@ class AdaBelief(nn.OptimizerBase):
                                        for g, v in grads_vars))
 
             self.iters += 1
+
+            if self._fused_path and self.lr_dropout == 1.0 and self.clipnorm == 0.0:
+                grads, params, ms_list, vs_list = [], [], [], []
+                for g, v in grads_vars:
+                    key, registered_v = self._keys[id(v)]
+                    assert registered_v is v
+                    grads.append(g.to(dtype=v.dtype))
+                    params.append(v)
+                    ms_list.append(self.ms[key])
+                    vs_list.append(self.vs[key])
+
+                # m_t = b1*ms + (1-b1)*g
+                torch._foreach_mul_(ms_list, self.beta_1)
+                torch._foreach_add_(ms_list, grads, alpha=1.0 - self.beta_1)
+
+                # v_t = b2*vs + (1-b2)*(g - m_t)^2
+                diff = torch._foreach_sub(grads, ms_list)
+                torch._foreach_mul_(diff, diff)
+                torch._foreach_mul_(vs_list, self.beta_2)
+                torch._foreach_add_(vs_list, diff, alpha=1.0 - self.beta_2)
+
+                lr = self.lr
+                if self.lr_cos != 0:
+                    lr = lr * (math.cos(float(self.iters.item()) *
+                                        (2 * math.pi / float(self.lr_cos))) + 1.0) / 2.0
+
+                denom = torch._foreach_sqrt(vs_list)
+                torch._foreach_add_(denom,
+                                    torch.finfo(params[0].dtype).resolution)
+                update = torch._foreach_div(ms_list, denom)
+                torch._foreach_add_(params, update, alpha=-lr)
+                return
 
             for g, v in grads_vars:
                 key, registered_v = self._keys[id(v)]

@@ -354,11 +354,10 @@ def saehd_train_step(nets, opt, trainable_weights, batch, cfg, gpu_count):
     if cfg['gan_power'] != 0:                                         # Model.py:516-545
         _, pred_src_src_masked_opt = saehd_masked_opt(target_src, pred_src_src, target_srcm_blur, cfg['masked_training'])
 
-        pred_src_src_d, \
-        pred_src_src_d2           = nets['D_src'](pred_src_src_masked_opt)
+        pred_src_src_d            = nets['D_src'](pred_src_src_masked_opt)
 
-        G_loss += cfg['gan_power']*(saehd_dloss(torch.ones_like(pred_src_src_d), pred_src_src_d)  + \
-                                    saehd_dloss(torch.ones_like(pred_src_src_d2), pred_src_src_d2))
+        G_loss += cfg['gan_power']*(saehd_dloss(torch.ones_like(pred_src_src_d.center), pred_src_src_d.center)  + \
+                                    saehd_dloss(torch.ones_like(pred_src_src_d.out), pred_src_src_d.out))
 
         if cfg['masked_training']:
             # Minimal src-src-bg rec with total_variation_mse to suppress random bright dots from gan
@@ -444,16 +443,14 @@ def saehd_D_src_dst_train_step(nets, opt, batch, cfg, gpu_count):
     target_src_masked_opt, pred_src_src_masked_opt = saehd_masked_opt(
         target_src, pred_src_src, saehd_mask_blur(target_srcm, resolution), cfg['masked_training'])
 
-    pred_src_src_d, \
-    pred_src_src_d2           = D_src(pred_src_src_masked_opt)
+    pred_src_src_d            = D_src(pred_src_src_masked_opt)
 
-    target_src_d, \
-    target_src_d2            = D_src(target_src_masked_opt)
+    target_src_d             = D_src(target_src_masked_opt)
 
-    D_src_dst_loss = (saehd_dloss(torch.ones_like(target_src_d)     , target_src_d) + \
-                      saehd_dloss(torch.zeros_like(pred_src_src_d)  , pred_src_src_d) ) * 0.5 + \
-                     (saehd_dloss(torch.ones_like(target_src_d2)     , target_src_d2) + \
-                      saehd_dloss(torch.zeros_like(pred_src_src_d2)  , pred_src_src_d2) ) * 0.5
+    D_src_dst_loss = (saehd_dloss(torch.ones_like(target_src_d.center)     , target_src_d.center) + \
+                      saehd_dloss(torch.zeros_like(pred_src_src_d.center)  , pred_src_src_d.center) ) * 0.5 + \
+                     (saehd_dloss(torch.ones_like(target_src_d.out)     , target_src_d.out) + \
+                      saehd_dloss(torch.zeros_like(pred_src_src_d.out)  , pred_src_src_d.out) ) * 0.5
 
     opt.step( nn.gradients (D_src_dst_loss.sum() / gpu_count, D_src.get_weights()) )
     return D_src_dst_loss

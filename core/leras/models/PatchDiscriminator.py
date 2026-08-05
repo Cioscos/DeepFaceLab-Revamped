@@ -1,3 +1,5 @@
+from typing import NamedTuple
+
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -77,6 +79,18 @@ class PatchDiscriminator(nn.ModelBase):
         return self.out_conv(x)
 
 nn.PatchDiscriminator = PatchDiscriminator
+
+class UNetPatchDiscriminatorOutput(NamedTuple):
+    """
+    The two heads, of different shapes (at resolution 64 with patch 16:
+    (2,1,8,8) and (2,1,64,64)) and sharing no weights. Still a tuple, so
+    `d, d2 = D(x)` keeps working -- but taking them by name is what makes a
+    swap visible: every loss sums them with the same weight, so inverting
+    them moves no number at all.
+    """
+    center : torch.Tensor    # the U-Net's center output
+    out    : torch.Tensor    # the final output, at the input's resolution
+
 
 class UNetPatchDiscriminator(nn.ModelBase):
     """
@@ -193,6 +207,7 @@ class UNetPatchDiscriminator(nn.ModelBase):
             center_out = center_out.to(torch.float32)
             x = x.to(torch.float32)
 
-        return center_out, x
+        return UNetPatchDiscriminatorOutput(center_out, x)
 
+nn.UNetPatchDiscriminatorOutput = UNetPatchDiscriminatorOutput
 nn.UNetPatchDiscriminator = UNetPatchDiscriminator

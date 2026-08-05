@@ -502,11 +502,11 @@ def amp_loss(target_src, target_srcm, target_srcm_em,
     G_loss += 0.000001*nn.total_variation_mse(pred_dst_dst_anti_masked)
 
     if gan_power != 0:                                             # Model.py:442-462
-        pred_src_src_d, pred_src_src_d2 = GAN(pred_src_src_masked)
-        pred_dst_dst_d, pred_dst_dst_d2 = GAN(pred_dst_dst_masked)
+        pred_src_src_d = GAN(pred_src_src_masked)
+        pred_dst_dst_d = GAN(pred_dst_dst_masked)
 
-        G_loss += (amp_dloss_ones(pred_src_src_d) + amp_dloss_ones(pred_src_src_d2) + \
-                   amp_dloss_ones(pred_dst_dst_d) + amp_dloss_ones(pred_dst_dst_d2)
+        G_loss += (amp_dloss_ones(pred_src_src_d.center) + amp_dloss_ones(pred_src_src_d.out) + \
+                   amp_dloss_ones(pred_dst_dst_d.center) + amp_dloss_ones(pred_dst_dst_d.out)
                   ) * gan_power
 
         # Minimal src-src-bg rec with total_variation_mse to suppress random bright dots from gan
@@ -608,15 +608,15 @@ def amp_gan_train_step(nets, GAN, GAN_opt, batch, cfg, gpu_count, inter_rnd_bino
     pred_src_src_masked = pred_src_src*target_srcm_blur
     pred_dst_dst_masked = pred_dst_dst*target_dstm_blur
 
-    pred_src_src_d, pred_src_src_d2 = GAN(pred_src_src_masked)     # Model.py:443-446
-    pred_dst_dst_d, pred_dst_dst_d2 = GAN(pred_dst_dst_masked)
-    target_src_d, target_src_d2 = GAN(target_src_masked)
-    target_dst_d, target_dst_d2 = GAN(target_dst_masked)
+    pred_src_src_d = GAN(pred_src_src_masked)                      # Model.py:443-446
+    pred_dst_dst_d = GAN(pred_dst_dst_masked)
+    target_src_d = GAN(target_src_masked)
+    target_dst_d = GAN(target_dst_masked)
 
-    GAN_loss = (amp_dloss_ones (target_src_d)   + amp_dloss_ones (target_src_d2) + \
-                amp_dloss_zeros(pred_src_src_d) + amp_dloss_zeros(pred_src_src_d2) + \
-                amp_dloss_ones (target_dst_d)   + amp_dloss_ones (target_dst_d2) + \
-                amp_dloss_zeros(pred_dst_dst_d) + amp_dloss_zeros(pred_dst_dst_d2)
+    GAN_loss = (amp_dloss_ones (target_src_d.center)   + amp_dloss_ones (target_src_d.out) + \
+                amp_dloss_zeros(pred_src_src_d.center) + amp_dloss_zeros(pred_src_src_d.out) + \
+                amp_dloss_ones (target_dst_d.center)   + amp_dloss_ones (target_dst_d.out) + \
+                amp_dloss_zeros(pred_dst_dst_d.center) + amp_dloss_zeros(pred_dst_dst_d.out)
                ) * (1.0 / 8)
 
     GAN_opt.step( nn.gradients (GAN_loss.sum() / gpu_count, GAN.get_weights()) )

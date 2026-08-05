@@ -257,7 +257,25 @@ def dssim(img1, img2, max_val, filter_size=11, filter_sigma=1.5, k1=0.01, k2=0.0
     kernel = kernel.repeat(ch, 1, 1, 1)                        # (C,1,fs,fs)
 
     def reducer(x):
-        return F.conv2d(x, kernel, stride=1, groups=ch)
+        # The float32 promotion above is a promise this function has to keep,
+        # and autocast would break it without a word: it dispatches on the
+        # *operation*, not on the operand dtype, so under an enclosing
+        # torch.autocast region this conv2d would run in the autocast dtype
+        # (bfloat16/float16) whatever `x` is, and hand back a reduced-precision
+        # mean. That is not a rounding-level detail here. The SSIM identities
+        # below reconstruct the local variances by subtracting nearly equal
+        # quantities -- `num1 - num0` and `den1 - den0` -- and with eight
+        # mantissa bits the cancellation eats the whole result. Measured on a
+        # SAEHD liae-ud 256 first iteration under bfloat16 autocast: the loss
+        # came out between 0.6% and 23% high depending on the batch and the
+        # weights, and the gradient that comes with it does not train.
+        # Disabling autocast for this one op puts the mean back in float32 and
+        # costs nothing when no autocast region is active, which is every
+        # caller outside models/Model_SAEHDX. The elementwise algebra that
+        # follows needs no guard of its own: autocast leaves mul/add/div in the
+        # dtype of their inputs, so a float32 reducer keeps the rest float32.
+        with torch.amp.autocast(device_type=x.device.type, enabled=False):
+            return F.conv2d(x, kernel, stride=1, groups=ch)
 
     c1 = (k1 * max_val) ** 2
     c2 = (k2 * max_val) ** 2

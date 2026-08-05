@@ -13,6 +13,8 @@ import cv2
 import models
 from core.interact import interact as io
 
+_CLOSE_WAIT_SEC = 30 #how long main() waits for the training thread to save and quit after a Ctrl+C
+
 def _stop_hint(no_preview):
     # The preview loop reads Enter from the preview window; the no-preview
     # loop reads nothing from stdin and stops only on Ctrl+C (handled and
@@ -229,10 +231,24 @@ def main(**kwargs):
     c2s = queue.Queue()
 
     e = threading.Event()
-    thread = threading.Thread(target=trainerThread, args=(s2c, c2s, e), kwargs=kwargs )
+    thread = threading.Thread(target=trainerThread, args=(s2c, c2s, e), kwargs=kwargs, daemon=True )
     thread.start()
 
-    e.wait() #Wait for inital load to occur.
+    try:
+        e.wait() #Wait for inital load to occur.
+    except KeyboardInterrupt:
+        #Until the first preview arms e, the loops below -- the only place that
+        #turns a Ctrl+C into a clean close -- have not started yet. Ask the
+        #thread here instead; if it is sitting on an option prompt nobody will
+        #ever answer, it never reads s2c, and only being a daemon lets the
+        #interpreter exit at all.
+        io.log_info ("\nStopping...")
+        s2c.put ( {'op': 'close'} )
+        try:
+            thread.join(_CLOSE_WAIT_SEC)
+        except KeyboardInterrupt:
+            pass #a second Ctrl+C gives up on the save rather than waiting
+        return
 
     if no_preview:
         while True:

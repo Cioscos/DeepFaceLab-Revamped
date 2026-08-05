@@ -356,45 +356,53 @@ def _ensure_block_asset(
     I blocchi vengono cancellati appena l'archivio riassemblato e' verificato
     corretto, prima ancora di estrarlo: con `pretrain_faces` (~1.8 GB)
     tenerli entrambi vivi fino a dopo l'estrazione raddoppierebbe lo spazio
-    occupato piu' a lungo del necessario.
+    occupato piu' a lungo del necessario. Il prezzo di quella scelta e' che
+    un'interruzione dell'estrazione lascia sul disco l'intero riassemblato ma
+    nessun blocco, quindi l'intero va riusato se e' gia' li' e gia' giusto --
+    stessa forma del punto 1 di `download_verified`, e senza di essa un
+    `Ctrl+C` dato dopo che la rete ha finito costerebbe 1.8 GB riscaricati.
     """
     marker = cache_dir / f"{asset.name}.extracted"
     if marker.exists():
         return False  # gia' completo: niente rete, niente ri-scaricare blocchi gia' ripuliti
 
-    block_paths = []
-    for index, part in enumerate(asset.parts):
-        block_path = cache_dir / _part_filename(part, index)
-        block_paths.append(block_path)
-        already_downloaded = block_path.exists() and sha256_of(block_path) == part.sha256
-        if not already_downloaded:
-            download_verified(part, block_path, log, opener=opener, asset_name=asset.name)
-
     whole_path = cache_dir / f"{asset.name}.reassembled.tar.gz"
-    if log:
-        log.info("riconcateno %d blocchi di %s", len(block_paths), asset.name)
-    with whole_path.open("wb") as out:
-        for block_path in block_paths:  # ordine di asset.parts, non sorted()
-            with block_path.open("rb") as fh:
-                shutil.copyfileobj(fh, out)
+    already_reassembled = whole_path.exists() and sha256_of(whole_path) == asset.whole_sha256
+    if not already_reassembled:
+        block_paths = []
+        for index, part in enumerate(asset.parts):
+            block_path = cache_dir / _part_filename(part, index)
+            block_paths.append(block_path)
+            already_downloaded = block_path.exists() and sha256_of(block_path) == part.sha256
+            if not already_downloaded:
+                download_verified(part, block_path, log, opener=opener, asset_name=asset.name)
 
-    digest = sha256_of(whole_path)
-    if digest != asset.whole_sha256:
-        whole_path.unlink(missing_ok=True)
+        if log:
+            log.info("riconcateno %d blocchi di %s", len(block_paths), asset.name)
+        with whole_path.open("wb") as out:
+            for block_path in block_paths:  # ordine di asset.parts, non sorted()
+                with block_path.open("rb") as fh:
+                    shutil.copyfileobj(fh, out)
+
+        digest = sha256_of(whole_path)
+        if digest != asset.whole_sha256:
+            whole_path.unlink(missing_ok=True)
+            for block_path in block_paths:
+                block_path.unlink(missing_ok=True)
+            raise ValueError(
+                f"sha256 non corrisponde per l'archivio riconcatenato di "
+                f"'{asset.name}': atteso {asset.whole_sha256}, calcolato {digest}. "
+                "Non e' possibile sapere quale blocco sia corrotto: tutti i "
+                "blocchi scaricati sono stati cancellati, il prossimo tentativo "
+                "riparte da zero."
+            )
+
+        # Verificato: i blocchi non servono piu', liberare lo spazio prima di
+        # estrarre (non dopo -- vedi la docstring).
         for block_path in block_paths:
             block_path.unlink(missing_ok=True)
-        raise ValueError(
-            f"sha256 non corrisponde per l'archivio riconcatenato di "
-            f"'{asset.name}': atteso {asset.whole_sha256}, calcolato {digest}. "
-            "Non e' possibile sapere quale blocco sia corrotto: tutti i "
-            "blocchi scaricati sono stati cancellati, il prossimo tentativo "
-            "riparte da zero."
-        )
-
-    # Verificato: i blocchi non servono piu', liberare lo spazio prima di
-    # estrarre (non dopo -- vedi la docstring).
-    for block_path in block_paths:
-        block_path.unlink(missing_ok=True)
+    elif log:
+        log.info("%s gia' riassemblato e verificato: resta da estrarre", asset.name)
 
     if log:
         log.info("estraggo %s in %s", whole_path.name, dest_dir)
