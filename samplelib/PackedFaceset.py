@@ -6,7 +6,7 @@ from pathlib import Path
 import samplelib.SampleLoader
 from core.interact import interact as io
 from samplelib import Sample
-from core import pathex
+from core import pathex, pickleex
 
 packed_faceset_filename = 'faceset.pak'
 
@@ -45,7 +45,7 @@ class PackedFaceset():
             if as_person_faceset:
                 sample.person_name = sample_filepath.parent.name
             samples_configs.append ( sample.get_config() )
-        samples_bytes = pickle.dumps(samples_configs, 4)
+        samples_bytes = pickleex.dumps(samples_configs)
 
         of = open(samples_dat_path, "wb")
         of.write ( struct.pack ("Q", PackedFaceset.VERSION ) )

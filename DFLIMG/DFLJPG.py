@@ -5,7 +5,7 @@ import traceback
 import cv2
 import numpy as np
 
-from core import imagelib
+from core import imagelib, pickleex
 from core.cv2ex import *
 from core.imagelib import SegIEPolys
 from core.interact import interact as io
@@ -186,7 +186,7 @@ class DFLJPG(object):
 
         dflchunk = {'name' : 'APP15',
                     'm_h' : 0xEF,
-                    'data' : pickle.dumps(dict_data),
+                    'data' : pickleex.dumps(dict_data),
                     'ex_data' : None,
                     }
         self.chunks.insert (last_app_chunk+1, dflchunk)

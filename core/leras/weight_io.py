@@ -16,7 +16,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from core import pathex
+from core import pathex, pickleex
 
 _CONTAINER_TYPES = (torch.nn.ModuleList, torch.nn.ModuleDict,
                     torch.nn.ParameterList, torch.nn.ParameterDict)
@@ -168,4 +168,4 @@ def read_weights_file(path):
 
 
 def write_weights_file(path, d):
-    pathex.write_bytes_safe(Path(path), pickle.dumps(d, 4))
+    pathex.write_bytes_safe(Path(path), pickleex.dumps(d))

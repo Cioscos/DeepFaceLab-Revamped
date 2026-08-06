@@ -17,7 +17,7 @@ import cv2
 import numpy as np
 import torch
 
-from core import imagelib, pathex
+from core import imagelib, pathex, pickleex
 from core.cv2ex import *
 from core.interact import interact as io
 from core.leras import nn
@@ -190,7 +190,7 @@ class ModelBase(object):
 
         if self.is_first_run():
             # save as default options only for first run model initialize
-            self.default_options_path.write_bytes( pickle.dumps (self.options) )
+            self.default_options_path.write_bytes( pickleex.dumps (self.options) )
 
         self.autobackup_hour = self.options.get('autobackup_hour', 0)
         self.write_preview_history = self.options.get('write_preview_history', False)
@@ -418,7 +418,7 @@ class ModelBase(object):
             'sample_for_preview' : self.sample_for_preview,
             'choosed_gpu_indexes' : self.choosed_gpu_indexes,
         }
-        pathex.write_bytes_safe (self.model_data_path, pickle.dumps(model_data) )
+        pathex.write_bytes_safe (self.model_data_path, pickleex.dumps(model_data) )
 
         if self.autobackup_hour != 0:
             diff_hour = int ( (time.time() - self.autobackup_start_time) // 3600 )

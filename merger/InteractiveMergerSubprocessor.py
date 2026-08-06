@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from core import imagelib, pathex
+from core import imagelib, pathex, pickleex
 from core.cv2ex import *
 from core.interact import interact as io
 from core.joblib import Subprocessor
@@ -352,7 +352,7 @@ class InteractiveMergerSubprocessor(Subprocessor):
                 'frames_done_idxs': self.frames_done_idxs,
                 'model_iter' : self.model_iter,
             }
-            self.merger_session_filepath.write_bytes( pickle.dumps(session_data) )
+            self.merger_session_filepath.write_bytes( pickleex.dumps(session_data) )
 
             io.log_info ("Session is saved to " + '/'.join (self.merger_session_filepath.parts[-2:]) )
 

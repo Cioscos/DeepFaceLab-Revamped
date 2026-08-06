@@ -6,7 +6,7 @@ import cv2
 from DFLIMG import *
 from facelib import LandmarksProcessor, FaceType
 from core.interact import interact as io
-from core import pathex
+from core import pathex, pickleex
 from core.cv2ex import *
 
 
@@ -30,7 +30,7 @@ def save_faceset_metadata_folder(input_path):
 
     try:
         with open(metadata_filepath, "wb") as f:
-            f.write ( pickle.dumps(d) )
+            f.write ( pickleex.dumps(d) )
     except:
         raise Exception( 'cannot save %s' % (filename) )
 

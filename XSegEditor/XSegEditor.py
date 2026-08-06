@@ -30,7 +30,7 @@ from PyQt5.QtCore import *
 from PyQt5.QtGui import *
 from PyQt5.QtWidgets import *
 
-from core import imagelib, pathex
+from core import imagelib, pathex, pickleex
 from core.cv2ex import *
 from core.imagelib import SegIEPoly, SegIEPolys, SegIEPolyType, sd
 from core.qtex import *
@@ -1231,7 +1231,7 @@ class MainWindow(QXMainWindow):
 
     def closeEvent(self, ev):
         self.cfg_dict['geometry'] = self.saveGeometry().data()
-        self.cfg_path.write_bytes( pickle.dumps(self.cfg_dict) )
+        self.cfg_path.write_bytes( pickleex.dumps(self.cfg_dict) )
 
 
     def update_cached_images (self, count=5):
