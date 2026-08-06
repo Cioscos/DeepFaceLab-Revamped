@@ -81,7 +81,7 @@ are already downloaded and verified, and **never touches** `workspace/`.
 │  ├─ python/                      standalone CPython 3.11
 │  ├─ .venv/                       torch and dependencies
 │  ├─ _e/                          TMP, caches, install.log
-│  ├─ ffmpeg/, model_generic_xseg/, pretrain_Quick96/, pretrain_faces/, EbSynth/
+│  ├─ ffmpeg/, model_generic_xseg/, pretrain_faces/, EbSynth/
 │  └─ DeepFaceLab/                 the code, cloned or updated on every run
 └─ workspace/
    ├─ data_src/aligned/

@@ -38,7 +38,6 @@ class ModelBase(object):
                        training_data_src_path=None,
                        training_data_dst_path=None,
                        pretraining_data_path=None,
-                       pretrained_model_path=None,
                        no_preview=False,
                        force_model_name=None,
                        force_gpu_idxs=None,
@@ -53,7 +52,6 @@ class ModelBase(object):
         self.training_data_src_path = training_data_src_path
         self.training_data_dst_path = training_data_dst_path
         self.pretraining_data_path = pretraining_data_path
-        self.pretrained_model_path = pretrained_model_path
         self.no_preview = no_preview
         self.debug = debug
 

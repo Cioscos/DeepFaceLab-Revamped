@@ -32,17 +32,6 @@ kind = "archive"
   size = 86605476
 
 [[asset]]
-name = "pretrain_Quick96"
-dest = "_internal/pretrain_Quick96"
-required = true
-kind = "archive"
-
-  [[asset.parts]]
-  url = "https://github.com/Cioscos/DeepFaceLab-Revamped/releases/download/0.0.1/pretrain_Quick96.tar.gz"
-  sha256 = "baad46a6bfdd81f0c724f818fd8b275d667168d7f13b0ffede7173196a716bbe"
-  size = 130704785
-
-[[asset]]
 name = "pretrain_faces"
 dest = "_internal/pretrain_faces"
 required = false

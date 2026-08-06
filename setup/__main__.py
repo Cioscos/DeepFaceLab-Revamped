@@ -152,8 +152,8 @@ def _should_install_pretrain(asset: Asset, paths: InstallPaths, args: argparse.N
 def step_ensure_assets(paths: InstallPaths, args: argparse.Namespace, log) -> None:
     """Scarica e verifica gli asset del manifest (setup/assets.py).
 
-    Gli asset obbligatori (facelib, ffmpeg, model_generic_xseg,
-    pretrain_Quick96) si scaricano sempre. pretrain_faces e'
+    Gli asset obbligatori (facelib, ffmpeg, model_generic_xseg) si
+    scaricano sempre. pretrain_faces e'
     l'unico opzionale soggetto a --with-pretrain/--no-pretrain:
     `_should_install_pretrain` decide se scaricarlo, con la
     domanda interattiva per il caso non ancora deciso da nessun flag. EbSynth

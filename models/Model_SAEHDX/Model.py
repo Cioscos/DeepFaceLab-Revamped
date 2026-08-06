@@ -56,7 +56,7 @@ class SAEHDXModel(SAEHDModel):
 
         Sta in un metodo statico e non in nn.initialize perche' e' una scelta
         di QUESTO modello: accenderlo per tutti cambierebbe i bit di SAEHD e
-        di Quick96, che devono restare numericamente invariati.
+        di AMP, che devono restare numericamente invariati.
         """
         torch.backends.cudnn.benchmark = cudnn_benchmark
         torch.backends.cuda.matmul.allow_tf32 = True
@@ -151,6 +151,25 @@ class SAEHDXModel(SAEHDModel):
                 Senza memoria pinnata `non_blocking=True` e' una bugia: torch
                 lo accetta e la copia resta sincrona, perche' il driver non
                 puo' fare DMA da pagine che il kernel puo' spostare.
+
+                **Oggi questo non fa guadagnare niente, ed e' voluto.** La
+                copia host->device costa 2.0 ms su un'iterazione da ~247:
+                anche azzerandola del tutto si guadagnerebbe lo 0.8%, ed e'
+                esattamente quanto e' stato misurato (fra 0.5% e 1.0%, due
+                coppie di corse a ordine invertito, con uno strumento che non
+                sincronizza e quindi *potrebbe* vedere una sovrapposizione).
+                Il motivo per cui resta e' un altro: l'asincronia serve quando
+                c'e' qualcosa da sovrapporre, cioe' quando si carica il batch
+                successivo mentre la GPU calcola quello corrente, su uno
+                stream separato. Per quel passo la memoria pinnata non e'
+                un'ottimizzazione ma il prerequisito -- senza,
+                `non_blocking=True` torna a essere ignorato -- e la forma qui
+                sotto (un buffer per posizione, allocato una volta perche' le
+                forme sono fisse) e' gia' quella che servirebbe.
+
+                Chi legge questa funzione cercando una leva di velocita' sta
+                guardando il posto sbagliato: non copiarla altrove aspettandosi
+                un guadagno.
                 """
                 buf = self._staging.get(indice)
                 if buf is None or buf.shape != x.shape:

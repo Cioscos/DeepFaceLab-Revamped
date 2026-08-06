@@ -27,19 +27,18 @@ _SEVEN_SPACE_INDENT = {"3) cut video (drop video on me)"}
 _DOUBLE_SPACE_BEFORE_CARET = {"4.2) data_src util faceset enhance"}
 
 # Una riga fatta di soli 4 spazi compare nell'ancora subito prima del `pause`
-# finale, per questi quattro comandi soltanto. In "5) ... ALIGNED_DEBUG" si
-# aggiunge alla riga vuota normale; nei tre "7) merge *" la SOSTITUISCE (niente
+# finale, per questi tre comandi soltanto. In "5) ... ALIGNED_DEBUG" si
+# aggiunge alla riga vuota normale; nei due "7) merge *" la SOSTITUISCE (niente
 # riga vuota vera). Verificato con xxd che non e' un artefatto di
 # trascrizione: il file alla radice del pacchetto ha lo stesso identico byte.
 # Nessun campo di Command lo rappresenta, e non correla con la struttura degli
-# argomenti (i tre merge hanno tutti argomenti appaiati, l'ALIGNED_DEBUG ne ha
+# argomenti (i due merge hanno tutti argomenti appaiati, l'ALIGNED_DEBUG ne ha
 # due non appaiati in coda): sono refusi indipendenti dei file originali.
 _STRAY_BLANK_ADDS_TO_TRAILER = {
     "5) data_dst faceset MANUAL RE-EXTRACT DELETED ALIGNED_DEBUG",
 }
 _STRAY_BLANK_REPLACES_TRAILER = {
     "7) merge AMP",
-    "7) merge Quick96",
     "7) merge SAEHD",
 }
 

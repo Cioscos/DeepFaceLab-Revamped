@@ -391,8 +391,8 @@ def amp_blur_out_mask(target, targetm, resolution):
 
     Identica riga per riga a saehd_blur_out_mask (models/Model_SAEHD/Model.py:191):
     non e' importata da li' perche' ModelBase tiene i modelli indipendenti --
-    stessa ragione per cui quick96_flow non riusa saehd_flow -- e perche' quel
-    sorgente e' la trascrizione di *un altro* Model.py, che puo' divergere.
+    e perche' quel sorgente e' la trascrizione di *un altro* Model.py, che
+    puo' divergere.
     """
     sigma = resolution / 128
 
@@ -526,7 +526,7 @@ def amp_train_step(nets, opt, G_weights, batch, cfg, gpu_count, inter_rnd_binomi
     tf.gradients di una loss vettoriale ne somma le componenti (Model.py:464) e
     nn.average_gv_list divideva poi per il numero di GPU (Model.py:478).
     torch.autograd.grad vuole uno scalare, e questo e' lo scalare che da' lo
-    stesso gradiente. Stessa identita' che vale per SAEHD e per Quick96.
+    stesso gradiente. Stessa identita' che vale per SAEHD.
 
     `inter_rnd_binomial=None` e' il percorso di produzione: la maschera si
     campiona qui, una per iterazione, come Model.py:360-365 la campionava a
@@ -835,8 +835,8 @@ class AMPModel(ModelBase):
         device_config = nn.getCurrentDeviceConfig()
         devices = device_config.devices
         # "NCHW" era gia' cablato nel TF (Model.py:107 nella versione TF): AMP
-        # non aveva il ripiego su NHWC che SAEHD e Quick96 sceglievano senza
-        # GPU o in debug, quindi qui non c'e' nessuna decisione da prendere.
+        # non aveva il ripiego su NHWC che SAEHD sceglieva senza GPU o in
+        # debug, quindi qui non c'e' nessuna decisione da prendere.
         self.model_data_format = "NCHW"
         nn.initialize(data_format=self.model_data_format)
 
@@ -886,7 +886,7 @@ class AMPModel(ModelBase):
             use_fp16 = io.input_bool ("Export quantized?", False, help_message='Makes the exported model faster. If you have problems, disable this option.')
 
         # Scelta di porting, la stessa applicata in
-        # models/Model_SAEHD/Model.py:807-809 e models/Model_Quick96/Model.py:221:
+        # models/Model_SAEHD/Model.py:807-809:
         # in TF `models_opt_device` era uno scope per le sole *variabili*
         # (Model.py:258, :281) mentre le op del merge stavano su
         # nn.tf_default_device_name (:519); in torch un modulo vive su un solo
@@ -936,7 +936,7 @@ class AMPModel(ModelBase):
         # quando vars_on_cpu e' False.
         #
         # Il ciclo gira su self.nets e non su model_filename_list -- come invece
-        # fanno SAEHD e Quick96 -- perche' quella lista segue l'ordine del TF,
+        # fa SAEHD -- perche' quella lista segue l'ordine del TF,
         # che infila src_dst_opt fra decoder.npy e GAN.npy (Model.py:305 e
         # :311-312): quando la GAN vi entra, l'ottimizzatore che la precede e'
         # gia' costruito e non ha ne' build() ne' to().

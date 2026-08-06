@@ -39,14 +39,19 @@ torch's own.
 
 ### Models
 
-All four models are ported and available:
+These models are ported and available:
 
 | Model | Purpose | Export |
 |---|---|---|
 | **SAEHD** | the main face-swapping model, `df` and `liae` architectures | `model.dfm` (ONNX opset 12) |
+| **SAEHDX** | same architecture and weight files as SAEHD, with the training step rewritten to run faster and use less memory | `model.dfm` (ONNX opset 12) |
 | **AMP** | morphable model, adjustable morph factor at merge time | `model.dfm` (ONNX opset 12) |
-| **Quick96** | fixed 96×96 preset, for a fast first result | — |
 | **XSeg** | learned face segmentation / masking | `model.onnx` (ONNX opset 13) |
+
+> **Quick96 is not part of this fork.** It was removed by the maintainer. For
+> a quick first result, use SAEHD or SAEHDX (above) with the `df`
+> architecture at a low resolution — same idea, and you keep every option
+> Quick96 had fixed.
 
 Exported `.dfm` files are consumed directly by
 [DeepFaceLive](https://github.com/iperov/DeepFaceLive).

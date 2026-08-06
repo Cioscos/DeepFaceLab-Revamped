@@ -12,7 +12,7 @@
 # e .sh sotto scripts/ sono generati da qui, e vanno rigenerati invece che
 # modificati a mano.
 
-# L'unico comando distruttivo dei 55: cancella data_src, data_dst e model
+# L'unico comando distruttivo dei 56: cancella data_src, data_dst e model
 # dell'utente. pause_before + echo riproducono la conferma che l'ancora fa
 # PRIMA di toccare qualunque cartella ("Press space if you want to delete
 # content in workspace folder" poi pause) -- senza, un doppio clic sbagliato
@@ -462,6 +462,23 @@ pause = "always"
     "--model",     "SAEHD",
   ]
 
+# SAEHDX esporta con il codice di SAEHD, non con una sua variante:
+# ExportDFM.main costruisce il modello con cpu_only=True cablato, e il ramo
+# veloce di SAEHDX (channels_last, autocast, l'hook di risalita a fp32) e'
+# sotto `if nn.device.type == "cuda"`. Sulla CPU non si attiva, quindi il
+# grafo esportato e' quello del genitore: verificato, opset 12, in_face:0 ->
+# out_face_mask:0 / out_celeb_face:0 / out_celeb_face_mask:0.
+[[command]]
+name = "6) export SAEHDX as dfm"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["exportdfm"]
+  args = [
+    "--model-dir", "{WORKSPACE}/model",
+    "--model",     "SAEHDX",
+  ]
+
 # Src e dst puntano entrambi a data_src/aligned: e' l'addestramento
 # "specchio" per il pretraining SRC-SRC, cosi' come sta nell'ancora.
 [[command]]
@@ -490,21 +507,6 @@ pause = "always"
     "--pretraining-data-dir",  "{INTERNAL}/pretrain_faces",
     "--model-dir",             "{WORKSPACE}/model",
     "--model",                 "AMP",
-  ]
-
-[[command]]
-name = "6) train Quick96"
-kind = "main"
-pause = "always"
-  [[command.invocation]]
-  verb = ["train"]
-  args = [
-    "--training-data-src-dir",   "{WORKSPACE}/data_src/aligned",
-    "--training-data-dst-dir",   "{WORKSPACE}/data_dst/aligned",
-    "--pretraining-data-dir",    "{INTERNAL}/pretrain_faces",
-    "--pretrained-model-dir",    "{INTERNAL}/pretrain_Quick96",
-    "--model-dir",               "{WORKSPACE}/model",
-    "--model",                   "Quick96",
   ]
 
 # Scorciatoia (SHORTCUTS): depositata anche nella root dell'installazione.
@@ -549,21 +551,6 @@ pause = "always"
     "--aligned-dir",     "{WORKSPACE}/data_dst/aligned",
     "--model-dir",       "{WORKSPACE}/model",
     "--model",           "AMP",
-  ]
-
-[[command]]
-name = "7) merge Quick96"
-kind = "main"
-pause = "always"
-  [[command.invocation]]
-  verb = ["merge"]
-  args = [
-    "--input-dir",       "{WORKSPACE}/data_dst",
-    "--output-dir",      "{WORKSPACE}/data_dst/merged",
-    "--output-mask-dir", "{WORKSPACE}/data_dst/merged_mask",
-    "--aligned-dir",     "{WORKSPACE}/data_dst/aligned",
-    "--model-dir",       "{WORKSPACE}/model",
-    "--model",           "Quick96",
   ]
 
 # Scorciatoia (SHORTCUTS): depositata anche nella root dell'installazione.
