@@ -212,7 +212,18 @@ class SAEHDXModel(SAEHDModel):
         finally:
             SampleGeneratorFace.default_return_filenames = False
 
-        if nn.device is not None and nn.device.type == "cuda":
+        # `is_training` e non solo il device: tutto quello che segue avvolge il
+        # passo di addestramento, e nel ramo di merge quel passo non esiste --
+        # SAEHDModel definisce src_dst_train solo dentro il proprio
+        # `if self.is_training:` (Model_SAEHD/Model.py:972), e al suo posto ci
+        # mette AE_merge. Il merger e' l'unico ingresso non-addestrante che
+        # costruisce il modello sulla GPU: export_dfm sfugge di qui solo perche'
+        # ExportDFM.main cabla cpu_only=True, e sulla CPU il blocco non si
+        # attiva. In merge SAEHDX torna a essere SAEHD, che e' anche l'unico
+        # comportamento misurato: la convergenza del cablaggio veloce e'
+        # verificata sull'addestramento, l'inferenza non e' mai stata confrontata
+        # bit a bit con quella del genitore, e allow_tf32 la cambierebbe.
+        if self.is_training and nn.device is not None and nn.device.type == "cuda":
             self.abilita_backend_veloce(self.options['cudnn_benchmark'])
 
             for rete, _ in self.model_filename_list:
@@ -582,7 +593,15 @@ class SAEHDXModel(SAEHDModel):
         # L'offerta va fatta qui, nella fase interattiva, e a ogni avvio in
         # cui manca qualcosa: i worker spawn non devono mai porre domande, e
         # uno stdin chiuso fa ricadere ogni prompt sul suo default (No).
-        if self.options['torch_compile'] and prerequisiti_windows.su_windows():
+        #
+        # Solo in addestramento, pero': on_initialize_options gira anche in
+        # merge e in export (ModelBase.py:189, senza guardia), e li' il passo
+        # compilato non esiste nemmeno -- proporre a un utente Windows di
+        # installare Triton e i Build Tools per fondere un video sarebbe
+        # chiedergli mezzo giga di compilatore per una leva che non entrera'
+        # mai in funzione.
+        if self.is_training and self.options['torch_compile'] \
+                and prerequisiti_windows.su_windows():
             prerequisiti_windows.offri_installazione(io)
 
     def _prepara_la_compilazione(self):
