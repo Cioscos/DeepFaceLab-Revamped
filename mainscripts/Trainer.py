@@ -1,5 +1,4 @@
 ﻿import os
-import sys
 import traceback
 import queue
 import threading
@@ -12,8 +11,31 @@ from core import imagelib
 import cv2
 import models
 from core.interact import interact as io
+from mainscripts.TrainerLib import SaveScheduler, ProgressLine, LossCsv
 
 _CLOSE_WAIT_SEC = 30 #how long main() waits for the training thread to save and quit after a Ctrl+C
+
+# the wire protocol between the training thread and main(), both directions
+OP_SAVE = 'save'
+OP_BACKUP = 'backup'
+OP_PREVIEW = 'preview'
+OP_CLOSE = 'close'
+OP_SHOW = 'show'
+
+_HEAD_LINE_MAX = 80
+
+def _filename_head_lines(filenames):
+    # One head line per side, sources first: which images produced the
+    # preview tiles currently on screen.
+    if filenames is None:
+        return []
+    righe = []
+    for etichetta, nomi in zip(("src", "dst"), filenames):
+        riga = "%s: %s" % (etichetta, " ".join(nomi))
+        if len(riga) > _HEAD_LINE_MAX:
+            riga = riga[:_HEAD_LINE_MAX - 3] + "..."
+        righe.append(riga)
+    return righe
 
 def _stop_hint(no_preview):
     # The preview loop reads Enter from the preview window; the no-preview
@@ -33,189 +55,167 @@ def trainerThread (s2c, c2s, e,
                     force_gpu_idxs=None,
                     cpu_only=None,
                     silent_start=False,
-                    execute_programs = None,
                     debug=False,
+                    save_interval_min=25,
                     **kwargs):
-    while True:
-        try:
-            start_time = time.time()
+    try:
+        if not training_data_src_path.exists():
+            training_data_src_path.mkdir(exist_ok=True, parents=True)
 
-            save_interval_min = 25
+        if not training_data_dst_path.exists():
+            training_data_dst_path.mkdir(exist_ok=True, parents=True)
 
-            if not training_data_src_path.exists():
-                training_data_src_path.mkdir(exist_ok=True, parents=True)
+        if not saved_models_path.exists():
+            saved_models_path.mkdir(exist_ok=True, parents=True)
 
-            if not training_data_dst_path.exists():
-                training_data_dst_path.mkdir(exist_ok=True, parents=True)
+        model = models.import_model(model_class_name)(
+                    is_training=True,
+                    saved_models_path=saved_models_path,
+                    training_data_src_path=training_data_src_path,
+                    training_data_dst_path=training_data_dst_path,
+                    pretraining_data_path=pretraining_data_path,
+                    no_preview=no_preview,
+                    force_model_name=force_model_name,
+                    force_gpu_idxs=force_gpu_idxs,
+                    cpu_only=cpu_only,
+                    silent_start=silent_start,
+                    debug=debug)
 
-            if not saved_models_path.exists():
-                saved_models_path.mkdir(exist_ok=True, parents=True)
-                            
-            model = models.import_model(model_class_name)(
-                        is_training=True,
-                        saved_models_path=saved_models_path,
-                        training_data_src_path=training_data_src_path,
-                        training_data_dst_path=training_data_dst_path,
-                        pretraining_data_path=pretraining_data_path,
-                        no_preview=no_preview,
-                        force_model_name=force_model_name,
-                        force_gpu_idxs=force_gpu_idxs,
-                        cpu_only=cpu_only,
-                        silent_start=silent_start,
-                        debug=debug)
+        def _vram_gib():
+            import torch
+            if not torch.cuda.is_available():
+                return None
+            libera, totale = torch.cuda.mem_get_info()
+            return ((totale - libera) / 1024**3, totale / 1024**3)
 
-            is_reached_goal = model.is_reached_iter_goal()
+        progress = ProgressLine(vram=_vram_gib)
 
-            shared_state = { 'after_save' : False }
-            loss_string = ""
-            save_iter =  model.get_iter()
-            def model_save():
-                if not debug and not is_reached_goal:
-                    io.log_info ("Saving....", end='\r')
-                    model.save()
-                    shared_state['after_save'] = True
-                    
-            def model_backup():
-                if not debug and not is_reached_goal:
-                    model.create_backup()             
+        save_scheduler = SaveScheduler(save_interval_min)
 
-            def send_preview():
-                if not debug:
-                    previews = model.get_previews()
-                    c2s.put ( {'op':'show', 'previews': previews, 'iter':model.get_iter(), 'loss_history': model.get_loss_history().copy() } )
-                else:
-                    previews = [( 'debug, press update for new', model.debug_one_iter())]
-                    c2s.put ( {'op':'show', 'previews': previews} )
-                e.set() #Set the GUI Thread as Ready
+        loss_csv = LossCsv(model.get_strpath_storage_for_file('loss_history.csv'))
+        loss_csv.align(model.get_loss_history())
 
-            if model.get_target_iter() != 0:
-                if is_reached_goal:
-                    io.log_info('Model already trained to target iteration. You can use preview.')
-                else:
-                    io.log_info('Starting. Target iteration: %d. %s to stop training and save model.' % ( model.get_target_iter(), _stop_hint(no_preview) ) )
+        is_reached_goal = model.is_reached_iter_goal()
+
+        shared_state = { 'after_save' : False }
+        loss_string = ""
+        save_iter =  model.get_iter()
+        def model_save():
+            if not debug and not is_reached_goal:
+                io.log_info ("Saving....", end='\r')
+                model.save()
+                loss_csv.append_new(model.get_loss_history())
+                shared_state['after_save'] = True
+
+        def model_backup():
+            if not debug and not is_reached_goal:
+                model.create_backup()
+
+        def send_preview():
+            if not debug:
+                previews = model.get_previews()
+                nomi = getattr(model, "get_preview_filenames", None)
+                c2s.put ( {'op':OP_SHOW, 'previews': previews, 'iter':model.get_iter(),
+                           'loss_history': model.get_loss_history().copy(),
+                           'filenames': nomi() if nomi is not None else None } )
             else:
-                io.log_info('Starting. %s to stop training and save model.' % ( _stop_hint(no_preview) ) )
+                previews = [( 'debug, press update for new', model.debug_one_iter())]
+                c2s.put ( {'op':OP_SHOW, 'previews': previews, 'filenames': None} )
+            e.set() #Set the GUI Thread as Ready
 
-            last_save_time = time.time()
+        if model.get_target_iter() != 0:
+            if is_reached_goal:
+                io.log_info('Model already trained to target iteration. You can use preview.')
+            else:
+                io.log_info('Starting. Target iteration: %d. %s to stop training and save model.' % ( model.get_target_iter(), _stop_hint(no_preview) ) )
+        else:
+            io.log_info('Starting. %s to stop training and save model.' % ( _stop_hint(no_preview) ) )
 
-            execute_programs = [ [x[0], x[1], time.time() ] for x in execute_programs ]
+        richiesta_chiusura = False
+        for i in itertools.count(0,1):
+            if not debug:
+                if not is_reached_goal:
 
-            for i in itertools.count(0,1):
-                if not debug:
-                    cur_time = time.time()
+                    if model.get_iter() == 0:
+                        io.log_info("")
+                        io.log_info("Trying to do the first iteration. If an error occurs, reduce the model parameters.")
+                        io.log_info("")
 
-                    for x in execute_programs:
-                        prog_time, prog, last_time = x
-                        exec_prog = False
-                        if prog_time > 0 and (cur_time - start_time) >= prog_time:
-                            x[0] = 0
-                            exec_prog = True
-                        elif prog_time < 0 and (cur_time - last_time)  >= -prog_time:
-                            x[2] = cur_time
-                            exec_prog = True
+                    iter, iter_time = model.train_one_iter()
 
-                        if exec_prog:
-                            try:
-                                exec(prog)
-                            except Exception as exec_err:
-                                print("Unable to execute program: %s" % (prog) )
+                    loss_history = model.get_loss_history()
 
-                    if not is_reached_goal:
+                    if shared_state['after_save']:
+                        shared_state['after_save'] = False
 
-                        if model.get_iter() == 0:
-                            io.log_info("")
-                            io.log_info("Trying to do the first iteration. If an error occurs, reduce the model parameters.")
-                            io.log_info("")
-                            
-                            if sys.platform[0:3] == 'win':
-                                io.log_info("!!!")
-                                io.log_info("Windows 10 users IMPORTANT notice. You should set this setting in order to work correctly.")
-                                io.log_info("https://i.imgur.com/B7cmDCB.jpg")
-                                io.log_info("!!!")
-
-                        iter, iter_time = model.train_one_iter()
-
-                        loss_history = model.get_loss_history()
                         time_str = time.strftime("[%H:%M:%S]")
                         if iter_time >= 10:
                             loss_string = "{0}[#{1:06d}][{2:.5s}s]".format ( time_str, iter, '{:0.4f}'.format(iter_time) )
                         else:
                             loss_string = "{0}[#{1:06d}][{2:04d}ms]".format ( time_str, iter, int(iter_time*1000) )
 
-                        if shared_state['after_save']:
-                            shared_state['after_save'] = False
-                            
-                            mean_loss = np.mean ( loss_history[save_iter:iter], axis=0)
+                        mean_loss = np.mean ( loss_history[save_iter:iter], axis=0)
 
-                            for loss_value in mean_loss:
-                                loss_string += "[%.4f]" % (loss_value)
+                        for loss_value in mean_loss:
+                            loss_string += "[%.4f]" % (loss_value)
 
-                            io.log_info (loss_string)
+                        io.log_info (loss_string)
 
-                            save_iter = iter
+                        save_iter = iter
+                    else:
+                        loss_string = progress.update(iter, iter_time, loss_history[-1], model.get_target_iter())
+
+                        if io.is_colab():
+                            io.log_info ('\r' + loss_string, end='')
                         else:
-                            for loss_value in loss_history[-1]:
-                                loss_string += "[%.4f]" % (loss_value)
+                            io.log_info (loss_string, end='\r')
 
-                            if io.is_colab():
-                                io.log_info ('\r' + loss_string, end='')
-                            else:
-                                io.log_info (loss_string, end='\r')
+                    if model.get_iter() == 1:
+                        model_save()
 
-                        if model.get_iter() == 1:
-                            model_save()
+                    if model.get_target_iter() != 0 and model.is_reached_iter_goal():
+                        io.log_info ('Reached target iteration.')
+                        model_save()
+                        is_reached_goal = True
+                        io.log_info ('You can use preview now.')
 
-                        if model.get_target_iter() != 0 and model.is_reached_iter_goal():
-                            io.log_info ('Reached target iteration.')
-                            model_save()
-                            is_reached_goal = True
-                            io.log_info ('You can use preview now.')
-                
-                need_save = False
-                while time.time() - last_save_time >= save_interval_min*60:
-                    last_save_time += save_interval_min*60
-                    need_save = True
-                
-                if not is_reached_goal and need_save:
+            if not is_reached_goal and save_scheduler.due():
+                model_save()
+                send_preview()
+
+            if i==0:
+                if is_reached_goal:
+                    model.pass_one_iter()
+                send_preview()
+
+            if debug:
+                time.sleep(0.005)
+
+            while not s2c.empty():
+                input = s2c.get()
+                op = input['op']
+                if op == OP_SAVE:
                     model_save()
-                    send_preview()
-
-                if i==0:
+                elif op == OP_BACKUP:
+                    model_backup()
+                elif op == OP_PREVIEW:
                     if is_reached_goal:
                         model.pass_one_iter()
                     send_preview()
-
-                if debug:
-                    time.sleep(0.005)
-
-                while not s2c.empty():
-                    input = s2c.get()
-                    op = input['op']
-                    if op == 'save':
-                        model_save()
-                    elif op == 'backup':
-                        model_backup()
-                    elif op == 'preview':
-                        if is_reached_goal:
-                            model.pass_one_iter()
-                        send_preview()
-                    elif op == 'close':
-                        model_save()
-                        i = -1
-                        break
-
-                if i == -1:
+                elif op == OP_CLOSE:
+                    model_save()
+                    richiesta_chiusura = True
                     break
 
+            if richiesta_chiusura:
+                break
 
+        model.finalize()
 
-            model.finalize()
-
-        except Exception as err:
-            print ('Error: %s' % (str(err)))
-            traceback.print_exc()
-        break
-    c2s.put ( {'op':'close'} )
+    except Exception as err:
+        print ('Error: %s' % (str(err)))
+        traceback.print_exc()
+    c2s.put ( {'op':OP_CLOSE} )
     e.set() #unblock main() even when the model failed to build: e.wait() must never hang forever
 
 
@@ -241,7 +241,7 @@ def main(**kwargs):
         #ever answer, it never reads s2c, and only being a daemon lets the
         #interpreter exit at all.
         io.log_info ("\nStopping...")
-        s2c.put ( {'op': 'close'} )
+        s2c.put ( {'op': OP_CLOSE} )
         try:
             thread.join(_CLOSE_WAIT_SEC)
         except KeyboardInterrupt:
@@ -253,12 +253,12 @@ def main(**kwargs):
             if not c2s.empty():
                 input = c2s.get()
                 op = input.get('op','')
-                if op == 'close':
+                if op == OP_CLOSE:
                     break
             try:
                 io.process_messages(0.1)
             except KeyboardInterrupt:
-                s2c.put ( {'op': 'close'} )
+                s2c.put ( {'op': OP_CLOSE} )
     else:
         wnd_name = "Training preview"
         io.named_window(wnd_name)
@@ -272,15 +272,17 @@ def main(**kwargs):
         is_waiting_preview = False
         show_last_history_iters_count = 0
         iter = 0
+        filenames = None
         while True:
             if not c2s.empty():
                 input = c2s.get()
                 op = input['op']
-                if op == 'show':
+                if op == OP_SHOW:
                     is_waiting_preview = False
                     loss_history = input['loss_history'] if 'loss_history' in input.keys() else None
                     previews = input['previews'] if 'previews' in input.keys() else None
                     iter = input['iter'] if 'iter' in input.keys() else 0
+                    filenames = input.get('filenames')
                     if previews is not None:
                         max_w = 0
                         max_h = 0
@@ -303,7 +305,7 @@ def main(**kwargs):
                                 previews.append ( (preview_name, cv2.resize(preview_rgb, (max_w, max_h))) )
                         selected_preview = selected_preview % len(previews)
                         update_preview = True
-                elif op == 'close':
+                elif op == OP_CLOSE:
                     break
 
             if update_preview:
@@ -318,7 +320,7 @@ def main(**kwargs):
                     '[s]:save [b]:backup [enter]:exit',
                     '[p]:update [space]:next preview [l]:change history range',
                     'Preview: "%s" [%d/%d]' % (selected_preview_name,selected_preview+1, len(previews) )
-                    ]
+                    ] + _filename_head_lines(filenames)
                 head_line_height = 15
                 head_height = len(head_lines) * head_line_height
                 head = np.ones ( (head_height,w,c) ) * 0.1
@@ -349,15 +351,15 @@ def main(**kwargs):
             key, chr_key, ctrl_pressed, alt_pressed, shift_pressed = key_events[-1] if len(key_events) > 0 else (0,0,False,False,False)
 
             if key == ord('\n') or key == ord('\r'):
-                s2c.put ( {'op': 'close'} )
+                s2c.put ( {'op': OP_CLOSE} )
             elif key == ord('s'):
-                s2c.put ( {'op': 'save'} )
+                s2c.put ( {'op': OP_SAVE} )
             elif key == ord('b'):
-                s2c.put ( {'op': 'backup'} )
+                s2c.put ( {'op': OP_BACKUP} )
             elif key == ord('p'):
                 if not is_waiting_preview:
                     is_waiting_preview = True
-                    s2c.put ( {'op': 'preview'} )
+                    s2c.put ( {'op': OP_PREVIEW} )
             elif key == ord('l'):
                 if show_last_history_iters_count == 0:
                     show_last_history_iters_count = 5000
@@ -377,6 +379,6 @@ def main(**kwargs):
             try:
                 io.process_messages(0.1)
             except KeyboardInterrupt:
-                s2c.put ( {'op': 'close'} )
+                s2c.put ( {'op': OP_CLOSE} )
 
         io.destroy_all_windows()

@@ -22,6 +22,15 @@ if __name__ == "__main__":
         def __call__(self, parser, namespace, values, option_string=None):
             setattr(namespace, self.dest, os.path.abspath(os.path.expanduser(values)))
 
+    def positive_interval_min(value):
+        try:
+            ivalue = int(value)
+        except ValueError:
+            raise argparse.ArgumentTypeError("--save-interval-min must be an integer, got %r" % value)
+        if ivalue < 1:
+            raise argparse.ArgumentTypeError("--save-interval-min must be >= 1, got %d (0 or negative never becomes due)" % ivalue)
+        return ivalue
+
     exit_code = 0
     
     parser = argparse.ArgumentParser()
@@ -124,8 +133,8 @@ if __name__ == "__main__":
                   'force_gpu_idxs'           : [ int(x) for x in arguments.force_gpu_idxs.split(',') ] if arguments.force_gpu_idxs is not None else None,
                   'cpu_only'                 : arguments.cpu_only,
                   'silent_start'             : arguments.silent_start,
-                  'execute_programs'         : [ [int(x[0]), x[1] ] for x in arguments.execute_program ],
                   'debug'                    : arguments.debug,
+                  'save_interval_min'        : arguments.save_interval_min,
                   }
         from mainscripts import Trainer
         Trainer.main(**kwargs)
@@ -142,8 +151,8 @@ if __name__ == "__main__":
     p.add_argument('--cpu-only', action="store_true", dest="cpu_only", default=False, help="Train on CPU.")
     p.add_argument('--force-gpu-idxs', dest="force_gpu_idxs", default=None, help="Force to choose GPU indexes separated by comma.")
     p.add_argument('--silent-start', action="store_true", dest="silent_start", default=False, help="Silent start. Automatically chooses Best GPU and last used model.")
-    
-    p.add_argument('--execute-program', dest="execute_program", default=[], action='append', nargs='+')
+    p.add_argument('--save-interval-min', type=positive_interval_min, dest="save_interval_min", default=25, help="How often the model is saved, in minutes. Must be >= 1.")
+
     p.set_defaults (func=process_train)
     
     def process_exportdfm(arguments):

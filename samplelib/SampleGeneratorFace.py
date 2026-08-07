@@ -21,16 +21,23 @@ output_sample_types = [
                       ]
 '''
 class SampleGeneratorFace(SampleGeneratorBase):
+    # class attribute, not a kwarg default: the construction site lives in the
+    # parent model, and spawned children receive this instance via pickle at
+    # p.start(), so the flag has to exist before the SubprocessGenerators are
+    # built, not be set on an instance that is already running
+    default_return_filenames = False
+
     def __init__ (self, samples_path, debug=False, batch_size=1,
                         random_ct_samples_path=None,
                         sample_process_options=SampleProcessor.Options(),
                         output_sample_types=[],
                         uniform_yaw_distribution=False,
                         generators_count=4,
-                        raise_on_no_data=True,                        
+                        raise_on_no_data=True,
                         **kwargs):
 
         super().__init__(debug, batch_size)
+        self.return_filenames = kwargs.get('return_filenames', type(self).default_return_filenames)
         self.initialized = False
         self.sample_process_options = sample_process_options
         self.output_sample_types = output_sample_types
@@ -117,6 +124,7 @@ class SampleGeneratorFace(SampleGeneratorBase):
         bs = self.batch_size
         while True:
             batches = None
+            nomi = []
 
             indexes = index_host.multi_get(bs)
             ct_indexes = ct_index_host.multi_get(bs) if ct_samples is not None else None
@@ -141,4 +149,9 @@ class SampleGeneratorFace(SampleGeneratorBase):
                 for i in range(len(x)):
                     batches[i].append ( x[i] )
 
-            yield [ np.array(batch) for batch in batches]
+                nomi.append(sample.filename)
+
+            out = [ np.array(batch) for batch in batches]
+            if self.return_filenames:
+                out = out + [nomi]
+            yield out

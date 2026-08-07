@@ -176,6 +176,28 @@ def depth_to_space(x, size):
 nn.depth_to_space = depth_to_space
 
 
+# Il kernel di gaussian_blur non dipende dagli ingressi: solo da raggio,
+# dtype, device e numero di canali. Costruirlo a ogni chiamata significa
+# ricalcolarlo in numpy e ricopiarlo host->device a ogni iterazione di
+# addestramento, e quella copia parte da memoria non pinnata -- cioe' e' una
+# copia sincrona travestita. Tenerlo qui non cambia un bit del risultato (e'
+# lo stesso array, calcolato dalla stessa funzione), toglie la copia, ed e'
+# cio' che rende il passo registrabile in un CUDA graph: dentro una cattura
+# una copia da memoria host non pinnata solleva
+# "Cannot copy between CPU and CUDA tensors during CUDA graph capture".
+#
+# La cache e' minuscola e limitata per costruzione: una voce per ogni
+# combinazione di raggio/dtype/device/canali che il processo usa davvero, e i
+# kernel sono al massimo qualche decina di KiB.
+#
+# Le voci si aggiungono e non si tolgono mai, e non e' una svista da
+# "ottimizzare" con uno svuotamento periodico o un tetto sul numero di voci: un
+# grafo CUDA gia' registrato tiene l'*indirizzo* del kernel che ha catturato.
+# Rimuovere o riscrivere una voce mentre un grafo e' vivo significa fargli
+# leggere memoria liberata, in silenzio e con risultati plausibili.
+_kernel_gaussiani = {}
+
+
 def gaussian_blur(input, radius=2.0):
     def gaussian(x, mu, sigma):
         return np.exp(-(float(x) - float(mu)) ** 2 / (2 * sigma ** 2))
@@ -190,13 +212,17 @@ def gaussian_blur(input, radius=2.0):
         kernel = np_kernel / np.sum(np_kernel)
         return kernel, kernel_size
 
-    gauss_kernel, kernel_size = make_kernel(radius)
-    padding = kernel_size // 2
-
     x  = input
     ch = x.shape[nn.conv2d_ch_axis]
-    k  = torch.as_tensor(gauss_kernel, dtype=x.dtype, device=x.device)
-    k  = k[None, None, :, :].repeat(ch, 1, 1, 1)              # (C,1,kh,kw)
+
+    chiave = (float(radius), x.dtype, x.device, int(ch))
+    voce   = _kernel_gaussiani.get(chiave)
+    if voce is None:
+        gauss_kernel, kernel_size = make_kernel(radius)
+        k  = torch.as_tensor(gauss_kernel, dtype=x.dtype, device=x.device)
+        k  = k[None, None, :, :].repeat(ch, 1, 1, 1)          # (C,1,kh,kw)
+        voce = _kernel_gaussiani[chiave] = (k, kernel_size // 2)
+    k, padding = voce
 
     if padding != 0:
         x = F.pad(x, (padding, padding, padding, padding))
@@ -232,6 +258,13 @@ def style_loss(target, style, gaussian_blur_radius=0.0, loss_weight=1.0, step_si
 nn.style_loss = style_loss
 
 
+# Stessa ragione del kernel gaussiano qui sopra: il filtro di dssim dipende
+# solo da (filter_size, filter_sigma, device, canali), non dalle immagini. E
+# stessa regola: le voci non si rimuovono e non si sovrascrivono mai, perche'
+# un grafo catturato ne tiene l'indirizzo.
+_kernel_dssim = {}
+
+
 def dssim(img1, img2, max_val, filter_size=11, filter_sigma=1.5, k1=0.01, k2=0.03):
     if img1.dtype != img2.dtype:
         raise ValueError("img1.dtype != img2.dtype")
@@ -244,17 +277,20 @@ def dssim(img1, img2, max_val, filter_size=11, filter_sigma=1.5, k1=0.01, k2=0.0
 
     filter_size = max(1, filter_size)
 
-    kernel = np.arange(0, filter_size, dtype=np.float32)
-    kernel -= (filter_size - 1) / 2.0
-    kernel = kernel ** 2
-    kernel *= (-0.5 / (filter_sigma ** 2))
-    kernel = np.reshape(kernel, (1, -1)) + np.reshape(kernel, (-1, 1))
-    kernel = torch.as_tensor(np.reshape(kernel, (1, -1)), dtype=torch.float32, device=img1.device)
-    kernel = torch.softmax(kernel, dim=-1)
-    kernel = torch.reshape(kernel, (1, 1, filter_size, filter_size))
-
     ch     = img1.shape[nn.conv2d_ch_axis]
-    kernel = kernel.repeat(ch, 1, 1, 1)                        # (C,1,fs,fs)
+    chiave = (int(filter_size), float(filter_sigma), img1.device, int(ch))
+    kernel = _kernel_dssim.get(chiave)
+    if kernel is None:
+        kernel = np.arange(0, filter_size, dtype=np.float32)
+        kernel -= (filter_size - 1) / 2.0
+        kernel = kernel ** 2
+        kernel *= (-0.5 / (filter_sigma ** 2))
+        kernel = np.reshape(kernel, (1, -1)) + np.reshape(kernel, (-1, 1))
+        kernel = torch.as_tensor(np.reshape(kernel, (1, -1)), dtype=torch.float32, device=img1.device)
+        kernel = torch.softmax(kernel, dim=-1)
+        kernel = torch.reshape(kernel, (1, 1, filter_size, filter_size))
+        kernel = kernel.repeat(ch, 1, 1, 1)                    # (C,1,fs,fs)
+        _kernel_dssim[chiave] = kernel
 
     def reducer(x):
         # The float32 promotion above is a promise this function has to keep,
