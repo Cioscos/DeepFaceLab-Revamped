@@ -17,9 +17,14 @@ l'aggiornamento):
   place_scripts/write_shortcuts. Non basta che la riga "source
   .../setenv.sh" compaia nel testo generato: il file a cui punta deve
   esistere davvero sul disco.
-- `write_shortcuts` scrive le quattro scorciatoie in root: richiamano lo
-  script in `scripts/`, non ne duplicano il contenuto -- due
-  copie divergerebbero al primo cambio di `commands.toml`.
+- `write_shortcuts` scrive in root un solo avvio, quello della GUI: richiama
+  lo script in `scripts/`, non ne duplica il contenuto -- due
+  copie divergerebbero al primo cambio di `commands.toml`. Rimuove anche, se
+  le trova, le quattro scorciatoie per-passo di una versione precedente
+  dell'installer (extract src, extract dst, train SAEHD, merge SAEHD): un
+  utente che aggiorna non deve ritrovarsele in root a fianco della GUI. La
+  rimozione e' prudente -- vedi `LEGACY_SHORTCUTS` e il docstring della
+  funzione.
 - `create_workspace` crea la struttura di `workspace/` con `mkdir(parents=True,
   exist_ok=True)` e nient'altro: nessun `rmdir`, nessuna scrittura di file.
   E' l'unica funzione di questo file che tocca `workspace/`, ed e' scritta
@@ -34,6 +39,20 @@ from pathlib import Path
 from setup.commands import SHORTCUTS, load_commands
 from setup.gen_scripts import generate
 from setup.paths import InstallPaths
+
+# Le quattro scorciatoie per-passo che una versione precedente dell'installer
+# depositava in root, ritirate a favore dell'unica scorciatoia della GUI
+# (SHORTCUTS, sopra). Restano qui, separate da SHORTCUTS, solo perche'
+# write_shortcuts deve saperle riconoscere per rimuoverle da
+# un'installazione preesistente -- non sono piu' "scorciatoie" nel senso di
+# commands.py (nessun comando le referenzia, _validate non le vede), sono
+# rifiuti di una versione precedente di questo stesso file.
+LEGACY_SHORTCUTS = (
+    "4) data_src faceset extract",
+    "5) data_dst faceset extract",
+    "6) train SAEHD",
+    "7) merge SAEHD",
+)
 
 # La struttura vuota di workspace/: niente video di esempio (non si
 # distribuiscono piu').
@@ -133,25 +152,64 @@ def install_setenv(paths: InstallPaths, log) -> Path:
     return dest
 
 
+def _shortcut_bytes(name: str, system: str) -> bytes:
+    """Il contenuto che una scorciatoia con questo nome avrebbe, sul sistema
+    dato. Condiviso fra la scrittura (SHORTCUTS) e il riconoscimento delle
+    scorciatoie legacy (LEGACY_SHORTCUTS) sotto: e' lo stesso identico
+    calcolo, e tenerlo in un solo posto e' cio' che garantisce che
+    "contenuto generato da questa funzione" non diverga per i due usi."""
+    if system == "win":
+        return f'@echo off\r\ncall "%~dp0scripts\\{name}.bat" %*\r\n'.encode("ascii")
+    return f'#!/usr/bin/env bash\nexec "$(dirname "$0")/scripts/{name}.sh" "$@"\n'.encode("utf-8")
+
+
 def write_shortcuts(paths: InstallPaths, log) -> list[Path]:
-    """Scrive le quattro scorciatoie in root. Ognuna richiama lo script
-    corrispondente in `scripts/`, non ne ripete il contenuto."""
+    """Scrive in root l'unica scorciatoia (SHORTCUTS: la GUI). Richiama lo
+    script corrispondente in `scripts/`, non ne ripete il contenuto.
+
+    Rimuove anche, se le trova, le quattro scorciatoie per-passo di una
+    versione precedente di questo installer (LEGACY_SHORTCUTS). PERCHE':
+    `place_scripts`/`write_shortcuts` sono pensate per essere rilanciate a
+    ogni update (rilanciare `install` E' l'aggiornamento), e senza questa
+    pulizia chi aggiorna da un'installazione vecchia si ritroverebbe le
+    quattro scorciatoie di prima ancora in root, perfettamente funzionanti
+    (gli script in `scripts/` che richiamano ci sono ancora, `commands.toml`
+    non li ha tolti) ma in contraddizione diretta con la richiesta di un
+    solo avvio in evidenza: l'utente le vedrebbe e non capirebbe perche' non
+    sono sparite.
+
+    La rimozione e' prudente, non un `glob` per nome: un file di root con
+    uno dei quattro nomi legacy viene cancellato solo se il suo contenuto e'
+    esattamente quello che questa stessa funzione genererebbe per quel nome
+    (`_shortcut_bytes`) -- cioe' solo se e' davvero un residuo generato da
+    un giro precedente di `write_shortcuts`, mai un file che l'utente ha
+    modificato o creato lui con lo stesso nome. E' lo stesso principio con
+    cui `place_scripts` (sopra) tratta `scripts/`: territorio generato si
+    puo' pulire, territorio dell'utente no -- qui pero' il nome da solo non
+    basta a distinguerli, perche' un utente potrebbe benissimo avere un
+    proprio file con uno di quei quattro nomi; il contenuto si'."""
     system = _system()
+    suffix = ".bat" if system == "win" else ".sh"
+
     written = []
     for name in SHORTCUTS:
-        if system == "win":
-            target = paths.root / f"{name}.bat"
-            content = f'@echo off\r\ncall "%~dp0scripts\\{name}.bat" %*\r\n'
-            target.write_bytes(content.encode("ascii"))
-        else:
-            target = paths.root / f"{name}.sh"
-            content = f'#!/usr/bin/env bash\nexec "$(dirname "$0")/scripts/{name}.sh" "$@"\n'
-            target.write_bytes(content.encode("utf-8"))
+        target = paths.root / f"{name}{suffix}"
+        target.write_bytes(_shortcut_bytes(name, system))
+        if system != "win":
             target.chmod(0o755)
         written.append(target)
 
+    removed = 0
+    for name in LEGACY_SHORTCUTS:
+        target = paths.root / f"{name}{suffix}"
+        if target.is_file() and target.read_bytes() == _shortcut_bytes(name, system):
+            target.unlink()
+            removed += 1
+
     if log is not None:
         log.info("scritte %d scorciatoie in %s", len(written), paths.root)
+        if removed:
+            log.info("rimosse %d scorciatoie legacy da %s", removed, paths.root)
     return written
 
 

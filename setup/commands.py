@@ -10,13 +10,16 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-# Le quattro scorciatoie che layout.py depone nella root dell'installazione.
-# Non duplicano lo script: lo richiamano.
+# L'unica scorciatoia che layout.py depone nella root dell'installazione: un
+# solo avvio, quello della GUI. Non duplica lo script: lo richiama.
+# Le quattro scorciatoie per-passo che c'erano prima (extract src, extract
+# dst, train SAEHD, merge SAEHD) sono state ritirate dalla root -- i passi
+# restano tutti raggiungibili da scripts/, solo non piu' in evidenza;
+# write_shortcuts (setup/layout.py) rimuove anche le vecchie da
+# un'installazione preesistente, se il loro contenuto e' quello che questo
+# stesso codice genera.
 SHORTCUTS = (
-    "4) data_src faceset extract",
-    "5) data_dst faceset extract",
-    "6) train SAEHD",
-    "7) merge SAEHD",
+    "DeepFaceLab GUI",
 )
 
 # I valori ammessi per Command.pause.

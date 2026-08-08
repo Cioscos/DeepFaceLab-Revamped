@@ -11,7 +11,7 @@ from core import imagelib
 import cv2
 import models
 from core.interact import interact as io
-from mainscripts.TrainerLib import SaveScheduler, ProgressLine, LossCsv
+from mainscripts.TrainerLib import SaveScheduler, ProgressLine, LossCsv, EventLog
 
 _CLOSE_WAIT_SEC = 30 #how long main() waits for the training thread to save and quit after a Ctrl+C
 
@@ -58,6 +58,7 @@ def trainerThread (s2c, c2s, e,
                     debug=False,
                     save_interval_min=25,
                     **kwargs):
+    events = EventLog(os.environ.get('DFL_EVENTS_FILE'))
     try:
         if not training_data_src_path.exists():
             training_data_src_path.mkdir(exist_ok=True, parents=True)
@@ -80,6 +81,8 @@ def trainerThread (s2c, c2s, e,
                     cpu_only=cpu_only,
                     silent_start=silent_start,
                     debug=debug)
+
+        events.hello(model_class_name, model.get_target_iter())
 
         def _vram_gib():
             import torch
@@ -105,6 +108,7 @@ def trainerThread (s2c, c2s, e,
                 io.log_info ("Saving....", end='\r')
                 model.save()
                 loss_csv.append_new(model.get_loss_history())
+                events.save(model.get_iter())
                 shared_state['after_save'] = True
 
         def model_backup():
@@ -144,6 +148,8 @@ def trainerThread (s2c, c2s, e,
                     iter, iter_time = model.train_one_iter()
 
                     loss_history = model.get_loss_history()
+
+                    events.iter(iter, iter_time, loss_history[-1])
 
                     if shared_state['after_save']:
                         shared_state['after_save'] = False
@@ -215,6 +221,7 @@ def trainerThread (s2c, c2s, e,
     except Exception as err:
         print ('Error: %s' % (str(err)))
         traceback.print_exc()
+    events.end()
     c2s.put ( {'op':OP_CLOSE} )
     e.set() #unblock main() even when the model failed to build: e.wait() must never hang forever
 

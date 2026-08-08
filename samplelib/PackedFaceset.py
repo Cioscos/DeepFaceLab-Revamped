@@ -24,7 +24,8 @@ class PackedFaceset():
         as_person_faceset = False
         dir_names = pathex.get_all_dir_names(samples_path)
         if len(dir_names) != 0:
-            as_person_faceset = io.input_bool(f"{len(dir_names)} subdirectories found, process as person faceset?", True)
+            io.log_info(f"{len(dir_names)} subdirectories found.")
+            as_person_faceset = io.input_bool("Process as person faceset?", True)
 
         if as_person_faceset:
             image_paths = []

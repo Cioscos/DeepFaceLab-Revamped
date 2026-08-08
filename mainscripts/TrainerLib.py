@@ -4,6 +4,7 @@ mainscripts/Trainer.py wires together. Kept separate so each can be
 exercised with an injected clock instead of real time.
 """
 import collections
+import json
 import time
 from pathlib import Path
 
@@ -147,3 +148,44 @@ class LossCsv(object):
         with open(self.path, "a", newline="", encoding="utf-8") as f:
             self._appendi(f, loss_history, self.righe_scritte)
         self.righe_scritte = len(loss_history)
+
+
+class EventLog(object):
+    """
+    Structured training events for an external observer, as JSON lines
+    appended to a file. path=None turns every method into a no-op, so a
+    run without the observer behaves exactly as before. iter events are
+    rate-limited: at most one every ITER_EVERY_SEC, while save/end always
+    write.
+    """
+    VERSION = 1
+    ITER_EVERY_SEC = 0.5
+
+    def __init__(self, path, clock=time.time):
+        self.path = path
+        self.clock = clock
+        self._last_iter_emit = float("-inf")
+
+    def _write(self, payload):
+        if self.path is None:
+            return
+        with open(self.path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(payload) + "\n")
+
+    def hello(self, model_name, target_iter):
+        self._write({"type": "hello", "version": self.VERSION,
+                     "model": model_name, "target_iter": target_iter})
+
+    def iter(self, iter, iter_time, losses):
+        now = self.clock()
+        if now - self._last_iter_emit < self.ITER_EVERY_SEC:
+            return
+        self._last_iter_emit = now
+        self._write({"type": "iter", "iter": iter, "iter_time": iter_time,
+                     "losses": [float(v) for v in losses]})
+
+    def save(self, iter):
+        self._write({"type": "save", "iter": iter})
+
+    def end(self):
+        self._write({"type": "end"})

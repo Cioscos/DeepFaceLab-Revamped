@@ -87,10 +87,12 @@ and what to do when something goes wrong.
 
 <div align="center"><img src="doc/mini_tutorial.jpg" width="640"></div>
 
-Once installed, the numbered scripts in `scripts/` walk through the pipeline in
-order — extract frames from your two videos, extract and sort the faces, mask
-them with XSeg, train, then merge the result back into a video. Four shortcuts
-for the most-used steps sit at the top level.
+Once installed, `DeepFaceLab GUI` at the top level is the one thing to start:
+it walks you through the same pipeline — extract frames from your two videos,
+extract and sort the faces, mask them with XSeg, train, then merge the result
+back into a video — running each step for you in the background. The numbered
+scripts in `scripts/` are still all there, one per step, and remain fully
+usable on their own from the command line.
 
 Everything is also reachable directly through `main.py`:
 

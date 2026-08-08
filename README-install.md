@@ -71,11 +71,8 @@ are already downloaded and verified, and **never touches** `workspace/`.
 ```
 <installation folder>/
 ├─ install.bat / install.sh        run it again to update
-├─ 4) data_src faceset extract.*   ┐
-├─ 5) data_dst faceset extract.*   │ shortcuts into scripts/
-├─ 6) train SAEHD.*                │
-├─ 7) merge SAEHD.*                ┘
-├─ scripts/                        the numbered steps for your OS
+├─ DeepFaceLab GUI.*              start here: the GUI runs the steps for you
+├─ scripts/                       every step, one file each, still usable on its own
 ├─ _internal/
 │  ├─ uv/                          the uv binary
 │  ├─ python/                      standalone CPython 3.11

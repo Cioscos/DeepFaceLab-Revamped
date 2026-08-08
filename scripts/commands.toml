@@ -670,3 +670,13 @@ pause = "always"
     "--reference-file", "{WORKSPACE}/data_dst.*",
     "--lossless",
   ]
+
+# L'applicazione intera, non un passo del workflow utente: non appartiene
+# al grafo dei passi. Lancia la GUI PyQt5.
+[[command]]
+name = "DeepFaceLab GUI"
+kind = "main"
+pause = "on_error"
+  [[command.invocation]]
+  verb = ["gui"]
+  args = []

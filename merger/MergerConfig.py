@@ -36,7 +36,7 @@ class MergerConfig(object):
         for key in self.sharpen_dict.keys():
             s += f"""({key}) {self.sharpen_dict[key]}\n"""
         io.log_info(s)
-        self.sharpen_mode = io.input_int ("", 0, valid_list=self.sharpen_dict.keys(), help_message="Enhance details by applying sharpen filter.")
+        self.sharpen_mode = io.input_int ("Choose sharpen mode", 0, valid_list=self.sharpen_dict.keys(), help_message="Enhance details by applying sharpen filter.")
 
         if self.sharpen_mode != 0:
             self.blursharpen_amount = np.clip ( io.input_int ("Choose blur/sharpen amount", 0, add_info="-100..100"), -100, 100 )
@@ -193,7 +193,7 @@ class MergerConfigMasked(MergerConfig):
         for key in mode_dict.keys():
             s += f"""({key}) {mode_dict[key]}\n"""
         io.log_info(s)
-        mode = io.input_int ("", mode_str_dict.get(self.default_mode, 1) )
+        mode = io.input_int ("Choose mode", mode_str_dict.get(self.default_mode, 1) )
 
         self.mode = mode_dict.get (mode, self.default_mode )
 
@@ -208,7 +208,7 @@ class MergerConfigMasked(MergerConfig):
         for key in mask_mode_dict.keys():
             s += f"""({key}) {mask_mode_dict[key]}\n"""
         io.log_info(s)
-        self.mask_mode = io.input_int ("", 1, valid_list=mask_mode_dict.keys() )
+        self.mask_mode = io.input_int ("Choose mask mode", 1, valid_list=mask_mode_dict.keys() )
 
         if 'raw' not in self.mode:
             self.erode_mask_modifier = np.clip ( io.input_int ("Choose erode mask modifier", 0, add_info="-400..400"), -400, 400)

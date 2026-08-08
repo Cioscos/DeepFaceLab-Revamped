@@ -1,19 +1,20 @@
-"""CLI dell'installer: i sette passi e la loro orchestrazione.
+"""CLI dell'installer: gli otto passi e la loro orchestrazione.
 
 Ogni passo riceve InstallPaths, gli argomenti della CLI e il logger, e non sa
 nulla degli altri: e' questo modulo a deciderne l'ordine e a fermarsi al primo
 che fallisce. Ciascuno vive nel proprio modulo: step_preflight in
 setup/preflight.py, step_sync_repo/step_create_venv/step_install_requirements
-in setup/repo.py e setup/runtime.py, step_ensure_assets in setup/assets.py,
+in setup/repo.py e setup/runtime.py, step_check_linux_gui_prereqs in
+setup/prerequisiti_linux.py, step_ensure_assets in setup/assets.py,
 step_layout in setup/layout.py. Fa eccezione step_verify, implementato qui
 direttamente: vedi il suo docstring. Chi aggiunge un passo tocca solo il corpo
 dei singoli step_*, non parse_args ne' main.
 
-Sette funzioni per sei compiti: i compiti sono sei, ma "runtime" e' diviso in
-due funzioni separate (create_venv, install_requirements). SPEC_TASKS sotto
-elenca i sei nomi e _STEPS deve coprirli tutti: e' cosi' che un passo sparito
--- come "verify" e' sparito nella prima stesura di questo file -- si nota
-invece di passare inosservato.
+Otto funzioni per sei compiti: i compiti sono sei, ma "runtime" copre tre
+funzioni separate (create_venv, install_requirements, gui_prereqs_linux).
+SPEC_TASKS sotto elenca i sei nomi e _STEPS deve coprirli tutti: e' cosi'
+che un passo sparito -- come "verify" e' sparito nella prima stesura di
+questo file -- si nota invece di passare inosservato.
 
 --dry-run elenca i passi e ritorna senza chiamare setup_logging: e' il modo
 per provare la CLI nei test senza scaricare 2.4 GB e senza scrivere nemmeno
@@ -22,6 +23,7 @@ il file di log.
 from __future__ import annotations
 
 import argparse
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -35,6 +37,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from setup.assets import Asset, DEFAULT_MANIFEST, asset_is_complete, ensure_asset, load_manifest  # noqa: E402
+from setup.commands import SHORTCUTS  # noqa: E402
 from setup.layout import create_workspace, install_setenv, place_scripts, write_shortcuts  # noqa: E402
 from setup.log import setup_logging  # noqa: E402
 from setup.paths import InstallPaths, resolve  # noqa: E402
@@ -46,6 +49,13 @@ from setup.preflight import (  # noqa: E402
     check_platform,
     choose_wheel_set,
     detect_gpu,
+)
+from setup.prerequisiti_linux import (  # noqa: E402
+    comando_installazione,
+    diagnosi,
+    famiglia_distribuzione,
+    librerie_mancanti,
+    percorso_plugin_xcb,
 )
 from setup.repo import sync_repo  # noqa: E402
 from setup.runtime import create_venv, install_requirements  # noqa: E402
@@ -114,6 +124,83 @@ def step_install_requirements(paths: InstallPaths, args: argparse.Namespace, log
     main() a ognuno, cosi' questo passo non deve rifare la rilevazione GPU.
     """
     install_requirements(paths, args.wheel_set, log)
+
+
+def _venv_site_packages(paths: InstallPaths, runner) -> Path | None:
+    """Il site-packages del venv appena costruito, chiesto al suo stesso
+    interprete (sysconfig.get_paths()['purelib']): e' l'unico modo corretto
+    di trovarlo, perche' il nome della cartella (python3.11/site-packages,
+    Lib/site-packages...) varia per piattaforma."""
+    esito = runner(
+        [str(paths.python), "-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"],
+        capture_output=True, text=True,
+    )
+    if esito.returncode != 0:
+        return None
+    riga = esito.stdout.strip()
+    return Path(riga) if riga else None
+
+
+def step_check_linux_gui_prereqs(
+    paths: InstallPaths, args: argparse.Namespace, log,
+    runner=subprocess.run, which=shutil.which,
+) -> None:
+    """Avvisa se mancano le librerie di sistema che il plugin Qt "xcb" carica
+    fuori dal wheel pyqt5 (setup/prerequisiti_linux.py).
+
+    Solo Linux: su Windows PyQt5 porta gia' tutto cio' che le sue interfacce
+    servono. Va dopo step_install_requirements, perche' prima non esiste
+    ancora un venv con pyqt5 dentro da controllare, e non e' fatale: un
+    'installazione dedicata solo al training su una macchina senza schermo
+    resta valida anche se nessuna interfaccia grafica si apre mai. Con
+    'apt' e in una sessione interattiva si propone di eseguire subito il
+    comando di installazione; altrimenti si stampa e si prosegue.
+    """
+    if not sys.platform.startswith("linux"):
+        return
+
+    site_packages = _venv_site_packages(paths, runner)
+    if site_packages is None:
+        return
+
+    messaggio = diagnosi(site_packages, runner=runner, which=which)
+    if messaggio is None:
+        return
+    log.warning(messaggio)
+
+    famiglia = famiglia_distribuzione(runner, which)
+    mancanti = librerie_mancanti(percorso_plugin_xcb(site_packages), runner)
+    comando = comando_installazione(mancanti, famiglia)
+    if comando is None:
+        return
+    if not sys.stdin.isatty():
+        log.info("esegui a mano quando vuoi: %s", comando)
+        return
+
+    # L'assistenza interattiva e' un extra, non il controllo in se': un
+    # Ctrl+D al prompt (EOFError) o un 'sudo' assente dal PATH
+    # (FileNotFoundError da runner) non devono far dichiarare fallito un
+    # passo che, fino a qui, ha gia' fatto il suo lavoro (l'avviso e' gia'
+    # stato registrato sopra). Qualunque eccezione qui dentro si logga e si
+    # ricade sul comando stampato, esattamente come nel ramo non
+    # interattivo.
+    try:
+        risposta = input(f"Eseguire ora '{comando}'? [s/N] ")
+        if risposta.strip().lower() not in ("s", "si", "sì", "y", "yes"):
+            log.info("comando non eseguito: puoi lanciarlo a mano in seguito: %s", comando)
+            return
+
+        runner(comando.split(), check=False)
+        dopo = diagnosi(site_packages, runner=runner, which=which)
+        if dopo is None:
+            log.info("librerie del plugin Qt xcb installate correttamente.")
+        else:
+            log.warning(dopo)
+    except Exception as exc:
+        log.info(
+            "assistenza interattiva non riuscita (%s): esegui a mano quando vuoi: %s",
+            exc, comando,
+        )
 
 
 def _should_install_pretrain(asset: Asset, paths: InstallPaths, args: argparse.Namespace, log) -> bool:
@@ -286,7 +373,7 @@ def step_verify(paths: InstallPaths, args: argparse.Namespace, log, runner=subpr
             "rilancia l'installer."
         )
 
-    shortcut = "4) data_src faceset extract" + (".bat" if sys.platform == "win32" else ".sh")
+    shortcut = SHORTCUTS[0] + (".bat" if sys.platform == "win32" else ".sh")
     log.info("")
     log.info("=== Installazione completata in %s ===", paths.root)
     log.info("wheel torch: %s (torch %s, CUDA disponibile: %s)", args.wheel_set, torch_version, cuda_available)
@@ -304,8 +391,8 @@ def step_verify(paths: InstallPaths, args: argparse.Namespace, log, runner=subpr
     log.info("Per cominciare: %s", paths.root / shortcut)
 
 
-# I sei compiti dell'installer. _STEPS sotto ha SETTE voci perche' "runtime"
-# e' diviso in due funzioni, ma deve coprire esattamente questi sei nomi,
+# I sei compiti dell'installer. _STEPS sotto ha OTTO voci perche' "runtime"
+# e' diviso in tre funzioni, ma deve coprire esattamente questi sei nomi,
 # ciascuno almeno una volta.
 SPEC_TASKS = ("preflight", "repo", "runtime", "assets", "layout", "verify")
 
@@ -316,6 +403,7 @@ _STEPS = (
     ("repo", "repo", step_sync_repo),
     ("venv", "runtime", step_create_venv),
     ("requirements", "runtime", step_install_requirements),
+    ("gui_prereqs_linux", "runtime", step_check_linux_gui_prereqs),
     ("assets", "assets", step_ensure_assets),
     ("layout", "layout", step_layout),
     ("verify", "verify", step_verify),

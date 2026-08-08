@@ -1,5 +1,7 @@
+import json
 import multiprocessing
 import os
+import re
 import sys
 import threading
 import time
@@ -22,6 +24,16 @@ except:
     is_colab = False
 
 yn_str = {True:'y',False:'n'}
+
+_ANSWERS_MISSING = object()
+
+def prompt_key(text):
+    # Normalized key of a prompt: lowercase, characters outside
+    # [a-z0-9_ -] dropped, whitespace runs become '-'. Pre-supplied
+    # answers (DFL_ANSWERS_FILE) are looked up by this key.
+    s = text.lower()
+    s = re.sub(r"[^a-z0-9_\s-]", "", s)
+    return re.sub(r"\s+", "-", s.strip())
 
 class InteractBase(object):
     EVENT_LBUTTONDOWN = 1
@@ -49,6 +61,25 @@ class InteractBase(object):
 
     def is_colab(self):
         return False
+
+    def _preset_answers(self):
+        # None = interactive mode; dict = answers pre-supplied by an
+        # external driver. Reloaded when the file path changes.
+        path = os.environ.get('DFL_ANSWERS_FILE')
+        if path is None:
+            return None
+        if getattr(self, '_answers_path', None) != path:
+            with open(path, 'r', encoding='utf-8') as f:
+                self._answers = { prompt_key(k): v for k, v in json.load(f).items() }
+            self._answers_path = path
+        return self._answers
+
+    def _preset(self, s):
+        # (active, value): value is _ANSWERS_MISSING when the key is absent.
+        answers = self._preset_answers()
+        if answers is None:
+            return False, _ANSWERS_MISSING
+        return True, answers.get(prompt_key(s), _ANSWERS_MISSING)
 
     def on_destroy_all_windows(self):
         raise NotImplemented
@@ -214,6 +245,17 @@ class InteractBase(object):
         return input(s)
 
     def input_number(self, s, default_value, valid_list=None, show_default_value=True, add_info=None, help_message=None):
+        active, v = self._preset(s)
+        if active:
+            if v is _ANSWERS_MISSING:
+                result = default_value
+            else:
+                result = float(v)
+                if (valid_list is not None) and (result not in valid_list):
+                    result = default_value
+            self.log_info("%s : %s" % (s, result))
+            return result
+
         if show_default_value and default_value is not None:
             s = f"[{default_value}] {s}"
 
@@ -257,6 +299,19 @@ class InteractBase(object):
         return result
 
     def input_int(self, s, default_value, valid_range=None, valid_list=None, add_info=None, show_default_value=True, help_message=None):
+        active, v = self._preset(s)
+        if active:
+            if v is _ANSWERS_MISSING:
+                result = default_value
+            else:
+                result = int(v)
+                if valid_range is not None:
+                    result = int(np.clip(result, valid_range[0], valid_range[1]))
+                if (valid_list is not None) and (result not in valid_list):
+                    result = default_value
+            self.log_info("%s : %s" % (s, result))
+            return result
+
         if show_default_value:
             if len(s) != 0:
                 s = f"[{default_value}] {s}"
@@ -310,6 +365,12 @@ class InteractBase(object):
         return result
 
     def input_bool(self, s, default_value, help_message=None):
+        active, v = self._preset(s)
+        if active:
+            result = default_value if v is _ANSWERS_MISSING else bool(v)
+            self.log_info("%s : %s" % (s, "y" if result else "n"))
+            return result
+
         s = f"[{yn_str[default_value]}] {s} ( y/n"
 
         if help_message is not None:
@@ -332,6 +393,20 @@ class InteractBase(object):
                 return default_value
 
     def input_str(self, s, default_value=None, valid_list=None, show_default_value=True, help_message=None):
+        active, v = self._preset(s)
+        if active:
+            if v is _ANSWERS_MISSING:
+                result = default_value
+            else:
+                result = str(v)
+                if valid_list is not None and result not in valid_list:
+                    if result.lower() in valid_list:
+                        result = result.lower()
+                    else:
+                        result = default_value
+            self.log_info("%s : %s" % (s, result))
+            return result
+
         if show_default_value and default_value is not None:
             s = f"[{default_value}] {s}"
 
@@ -394,6 +469,9 @@ class InteractBase(object):
             sq.put (False)
 
     def input_in_time (self, str, max_time_sec):
+        if self._preset_answers() is not None:
+            return True
+
         sq = multiprocessing.Queue()
         p = multiprocessing.Process(target=self.input_process, args=( sys.stdin.fileno(), sq, str))
         p.daemon = True
