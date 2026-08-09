@@ -755,7 +755,14 @@ Examples: df, liae, df-d, df-ud, liae-ud, ...
 
             self.options['pretrain'] = io.input_bool ("Enable pretraining mode", default_pretrain, help_message="Pretrain the model with large amount of various faces. After that, model can be used to train the fakes more quickly. Forces random_warp=N, random_flips=Y, gan_power=0.0, lr_dropout=N, styles=0.0, uniform_yaw=Y")
 
-        if self.options['pretrain'] and self.get_pretraining_data_path() is None:
+        # Solo addestrando: il percorso di pretraining lo consuma unicamente
+        # il ramo `if self.is_training:` piu' sotto (:1065-1066), per pescarci
+        # i campioni. Un modello salvato in pretraining resta un modello, e
+        # mergiarlo o esportarlo non chiede volti da nessuna parte -- ne'
+        # `main.py merge` ne' `main.py exportdfm` hanno un argomento per
+        # passarne una cartella, quindi senza questa condizione quei due
+        # comandi sono semplicemente irraggiungibili per quel modello.
+        if self.is_training and self.options['pretrain'] and self.get_pretraining_data_path() is None:
             raise Exception("pretraining_data_path is not defined")
 
         self.gan_model_changed = (default_gan_patch_size != self.options['gan_patch_size']) or (default_gan_dims != self.options['gan_dims'])

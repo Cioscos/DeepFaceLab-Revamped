@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 from PyQt5.QtCore import Qt, QUrl, QProcess, pyqtSignal
-from PyQt5.QtGui import QColor, QDesktopServices, QFontDatabase
+from PyQt5.QtGui import QColor, QDesktopServices, QFontDatabase, QTextCursor
 from PyQt5.QtWidgets import (
     QAction, QDockWidget, QFileDialog, QHBoxLayout, QLabel, QListWidget,
     QListWidgetItem, QMainWindow, QMessageBox, QPushButton, QSplitter,
@@ -233,21 +233,23 @@ class StepView(QWidget):
         Save/Backup and Force stop only make sense for a training run: the
         first two because nothing else reads the command channel, the third
         because for every other step Stop already is the hard kill. The four
-        action buttons are also *enabled* only while the job is still
-        running -- a finished job has nothing left for any of them to do,
-        and leaving them clickable would silently no-op rather than show
-        that the job is over. Console stays enabled either way: its history
-        is worth reopening long after the job itself has ended.
+        action buttons are also shown only while the job is still running --
+        a finished job has nothing left for any of them to do. Disabling
+        them instead of hiding them was the first attempt and read wrong on
+        screen: a greyed-out row of buttons still says "these are the things
+        you can do here", when in fact the process they addressed no longer
+        exists. Console is the exception and stays: its history is worth
+        reopening long after the job itself has ended, which is also why the
+        strip as a whole does not disappear with the job.
         """
         self.job = job
         self.is_training = is_training
         self.job_strip.setVisible(job is not None)
         if job is None:
             return
+        self.stop_button.setVisible(job.running)
         for b in (self.save_button, self.backup_button, self.force_stop_button):
-            b.setVisible(is_training)
-        for b in (self.stop_button, self.force_stop_button, self.save_button, self.backup_button):
-            b.setEnabled(job.running)
+            b.setVisible(is_training and job.running)
         self.job_status.setText("running" if job.running else "finished")
 
     def set_step(self, step):
@@ -621,6 +623,11 @@ class MainWindow(QMainWindow):
         text comes from the buffer rather than from the lines seen so far,
         which is what makes a closed-and-reopened tab show the output that
         arrived while it was closed.
+
+        A freshly built tab is raised too, and that has to be said out loud:
+        QTabWidget selects a tab on its own only when it is the first one in
+        an empty widget, so from the second job on the new console would be
+        added behind whatever was already on screen.
         """
         existing = self._consoles.get(job)
         if existing is not None:
@@ -639,6 +646,7 @@ class MainWindow(QMainWindow):
         text_edit.setPlainText("\n".join(job.captured_lines))
         self._consoles[job] = text_edit
         self.console_tabs.addTab(text_edit, self._console_title(job))
+        self.console_tabs.setCurrentWidget(text_edit)
         self.console_dock.show()
         return text_edit
 
@@ -676,6 +684,22 @@ class MainWindow(QMainWindow):
             if console is not None:
                 console.append(line)
         job.output.connect(_on_output)
+
+        def _on_output_update(line):
+            """Rewrite the console's last line, the way a carriage return
+            rewrites a terminal row: select from the end of the document
+            back to the start of its block and replace the text. Selecting
+            a *block* rather than a visual line is what keeps this right for
+            a status line long enough to wrap."""
+            console = self._consoles.get(job)
+            if console is None:
+                return
+            cursor = console.textCursor()
+            cursor.movePosition(QTextCursor.End)
+            cursor.movePosition(QTextCursor.StartOfBlock, QTextCursor.KeepAnchor)
+            cursor.removeSelectedText()
+            cursor.insertText(line)
+        job.output_update.connect(_on_output_update)
 
         tail = None
         if step.process == PROCESS_SESSION and _is_training_step(step):

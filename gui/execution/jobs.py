@@ -17,6 +17,7 @@ from pathlib import Path
 from PyQt5.QtCore import QObject, QProcess, QProcessEnvironment, QTimer, pyqtSignal
 
 from gui.console_buffer import ConsoleBuffer
+from gui.console_stream import LineAssembler
 from gui.execution.conflicts import conflict
 from gui.model_lock_status import busy_holder
 
@@ -90,8 +91,9 @@ def _resolve(text, workspace, dfl_root):
 
 
 class Job(QObject):
-    output = pyqtSignal(str)      # one merged stdout/stderr line
-    finished = pyqtSignal(int)    # overall exit code (0 = every invocation ok)
+    output = pyqtSignal(str)         # a new merged stdout/stderr line
+    output_update = pyqtSignal(str)  # the last line, rewritten in place
+    finished = pyqtSignal(int)       # overall exit code (0 = every invocation ok)
 
     def __init__(self, step, workdir, events_path, commands_path, python_exe, dfl_root,
                  invocation_args, env, parent=None):
@@ -102,6 +104,10 @@ class Job(QObject):
         self.commands_path = commands_path
         self.running = True
         self.buffer = ConsoleBuffer()
+        # One assembler for the whole job, not one per invocation: a step
+        # with several invocations is one console, and a line cut by the end
+        # of a read is reassembled the same way wherever it came from.
+        self._assembler = LineAssembler()
         self._python_exe = python_exe
         self._dfl_root = dfl_root
         self._invocation_args = invocation_args  # list, one resolved-args list per invocation
@@ -143,9 +149,13 @@ class Job(QObject):
     def _read_output(self):
         data = bytes(self.process.readAllStandardOutput())
         text = data.decode("utf-8", errors="replace")
-        for line in text.splitlines():
-            self.buffer.append(line)
-            self.output.emit(line)
+        for kind, line in self._assembler.feed(text):
+            if kind == "update":
+                self.buffer.replace_last(line)
+                self.output_update.emit(line)
+            else:
+                self.buffer.append(line)
+                self.output.emit(line)
 
     def _on_invocation_finished(self, code, status):
         # A killed invocation (SIGKILL, a crash) can still report exit code

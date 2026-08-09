@@ -23,6 +23,18 @@ if not exist "%TMP%" mkdir "%TMP%"
 if not exist "%LOCALAPPDATA%" mkdir "%LOCALAPPDATA%"
 if not exist "%APPDATA%" mkdir "%APPDATA%"
 
+rem Con USERPROFILE rediretto qui, la shell di Windows risolve da qui anche
+rem le sue known folder, e il picker nativo di cartelle apre il ramo Desktop
+rem prima ancora di mostrarsi: puntato al nulla si apre con un errore ("...
+rem non disponibile. Se la posizione e' in questo PC, assicurarsi che il
+rem dispositivo o l'unita' sia connessa..."). Riprodotto sul campo aprendo
+rem Workspace > Open..., ma non e' un problema di una finestra sola: lo
+rem prende ogni dialog nativo del pacchetto, editor XSeg compreso. Le sei
+rem sono quelle che il riquadro di navigazione risolve da solo; crearle
+rem costa niente e rende il profilo rediretto un profilo valido, invece di
+rem uno a cui manca sempre la prossima cartella.
+for %%D in (Desktop Documents Downloads Music Pictures Videos) do if not exist "%USERPROFILE%\%%D" mkdir "%USERPROFILE%\%%D"
+
 rem ========== PYTHON ENV ==========
 SET PYTHON_PATH=%INTERNAL%\.venv\Scripts
 rem overriding default python env vars in order not to interfere with any system python installation

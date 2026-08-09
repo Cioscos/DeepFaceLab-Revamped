@@ -31,6 +31,21 @@ class ConsoleBuffer(object):
             self._tail.popleft()
             self.omitted += 1
 
+    def replace_last(self, line):
+        """Rewrite the last line, as a carriage return rewrites a row.
+
+        Appends instead when there is nothing yet, so the caller never has
+        to know whether the line it is updating was already stored. Which
+        of the two halves holds the last line depends on how full the head
+        is -- both cases are the normal one, at different points of a run.
+        """
+        if self._tail:
+            self._tail[-1] = line
+        elif self._head:
+            self._head[-1] = line
+        else:
+            self.append(line)
+
     def lines(self):
         """Head, the omission notice if there is one, then tail."""
         if self.omitted == 0:

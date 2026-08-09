@@ -174,6 +174,36 @@ def _build_path(field):
     return container, edit, get, set_, edit.textChanged
 
 
+_UNREPRESENTABLE = object()
+
+
+def _for_widget(field, value):
+    """A saved option as the widget of `field` wants it, or _UNREPRESENTABLE.
+
+    The options on disk are not plain Python: the data file stores numpy
+    scalars (`resolution` is an np.int64), which Qt's setters refuse. And a
+    choice the combo box does not offer cannot be shown at all -- better to
+    say so than to leave the widget on whatever it happened to hold.
+    """
+    if value is None:
+        return None
+    if field.kind == FIELD_BOOL:
+        return bool(value)
+    if field.kind == FIELD_CHOICE:
+        if field.choice_values:
+            # The widget shows labels; the model saves the mapped value.
+            if value not in field.choice_values:
+                return _UNREPRESENTABLE
+            return field.choices[field.choice_values.index(value)]
+        return value if value in field.choices else _UNREPRESENTABLE
+    if field.kind in (FIELD_INT, FIELD_FLOAT):
+        try:
+            return int(value) if field.kind == FIELD_INT else float(value)
+        except (TypeError, ValueError):
+            return _UNREPRESENTABLE
+    return str(value)
+
+
 def _build_control(field):
     """Return (layout_widget, value_widget, get, set_, changed_signal) for `field`."""
     if field.kind == FIELD_BOOL:
@@ -288,22 +318,66 @@ class StepForm(QWidget):
             self._input_edit.setText(path)
 
     def set_saved_values(self, values):
-        """Annotate each field that has a saved value with what it is.
+        """Show what the chosen model was trained with: in the widget, and
+        in the label beside it.
 
-        Purely informative: nothing here changes a widget's value, and
-        nothing reaches `answers()`. Every label is reset to its plain form
-        first -- called again with a different (or empty) `values` after the
-        model selection changes, the previous model's annotations must not
-        survive on fields the new `values` says nothing about.
+        The widget is what a person reads. Putting the saved value only in
+        the label was the first attempt, and it read as if resuming a
+        trained model had forgotten its settings -- the fields all showed
+        the catalog's defaults, which for a model trained at resolution 224
+        with batch 12 said 128 and 8.
+
+        Filling them in does *not* make them answers: `_touched` is cleared
+        for every field written here, so `answers()` still sends only what
+        the user changed by hand. That separation is the whole point --
+        showing a value must never be a way of writing it back.
+
+        A field whose option is absent from `values` goes back to its
+        declared default, annotation included: this is also the path taken
+        when the model name changes, and the previous model's settings must
+        not stay on screen under a new name.
         """
         for field in self._step.fields:
-            row = self._rows[field.key]
-            label = self._layout.labelForField(row)
-            if label is None:
+            label = self._layout.labelForField(self._rows[field.key])
+            if label is not None:
+                label.setText(field.label)
+            if not field.option:
                 continue
-            label.setText(field.label)
-            if field.option and field.option in values:
-                label.setText("%s  (saved: %s)" % (field.label, values[field.option]))
+            if field.option not in values:
+                self._write_untouched(field, field.default)
+                continue
+            value = values[field.option]
+            if label is not None:
+                label.setText("%s  (saved: %s)" % (field.label, value))
+            if not self._write_untouched(field, value):
+                self._write_untouched(field, field.default)
+        self._revalidate()
+
+    def _write_untouched(self, field, value):
+        """Put `value` in `field`'s widget without counting as a user edit.
+
+        False when the widget did not take it as given. A QSpinBox clamps to
+        its range in silence and a QDoubleSpinBox rounds to its decimals, so
+        "it did not raise" is not the same as "it holds what the model
+        holds" -- and a field showing a reshaped value would be a field
+        lying about the model. The caller puts the declared default back in
+        that case; the label goes on telling the truth either way.
+        """
+        get_, set_ = self._controls[field.key]
+        wanted = _for_widget(field, value)
+        if wanted is _UNREPRESENTABLE:
+            return False
+        try:
+            set_(wanted)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        finally:
+            # After set_, always: the control's change signal is delivered
+            # synchronously and adds the key to `_touched` exactly as a
+            # human edit would. This is the line that keeps a shown value
+            # from becoming a sent one.
+            self._touched.discard(field.key)
+        return get_() == wanted
 
     def set_model_names(self, names):
         """Populate the "Model name" combo box, if this step has one."""
