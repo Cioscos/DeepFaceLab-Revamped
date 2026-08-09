@@ -6,17 +6,20 @@ field's `enabled_if` and disables the ones whose condition no longer holds.
 `condition_met`/`_norm` are pure and exported for direct testing; the rest
 of the module only touches Qt.
 
-Every field's *logical* value -- what `condition_met` compares against, and
-what `answers()` starts from -- is one of: a bool, a number, a combo box's
-displayed choice text, or a line edit's text, and is `None` whenever the
-field is "unanswered" (a `default=None` field nobody has touched yet). That
-is a single, kind-independent rule: `answers()` drops a field from its
-result exactly when its logical value is `None`, regardless of whether that
-is a `QLineEdit` left empty, a `QComboBox` left on its blank entry, or a
-`QSpinBox`/`QDoubleSpinBox` nobody has spun away from its initial state.
-`FieldDef.choice_values`, when present, is applied only at that last step,
-mapping the chosen label to the value the call site actually expects --
-`condition_met` and every other internal computation still work with the
+Every field's *logical* value -- what `condition_met` compares against -- is
+one of: a bool, a number, a combo box's displayed choice text, or a line
+edit's text, and is `None` whenever the field is "unanswered" (a
+`default=None` field nobody has touched yet). `answers()`, though, sends a
+field if and only if it is in `touched_keys()` -- the set of keys the user
+has actually changed, tracked from each control's change signal and from
+`set_value()`. An untouched field is left for the launched process to
+resolve on its own, which for a model already trained means the value saved
+on disk rather than the form's default; sending the default instead would
+silently rewrite it. A touched field is still dropped if its logical value
+is `None` (nothing meaningful to send) or if `enabled_if` currently disables
+it. `FieldDef.choice_values`, when present, is applied only at that last
+step, mapping the chosen label to the value the call site actually expects
+-- `condition_met` and every other internal computation still work with the
 label text, since that is what the catalog's `enabled_if` strings quote.
 """
 from PyQt5.QtWidgets import (
@@ -199,6 +202,7 @@ class StepForm(QWidget):
         self._step = step
         self._controls = {}     # key -> (get, set_)
         self._rows = {}         # key -> the widget placed in the form row
+        self._touched = set()   # keys the user actually changed
         self._layout = QFormLayout()
         self.setLayout(self._layout)
 
@@ -221,6 +225,7 @@ class StepForm(QWidget):
             self._rows[field.key] = layout_widget
             self._layout.addRow(field.label, layout_widget)
             signal.connect(self._revalidate)
+            signal.connect(lambda *_a, key=field.key: self._touched.add(key))
 
         self._revalidate()
 
@@ -237,11 +242,23 @@ class StepForm(QWidget):
             if label is not None:
                 label.setEnabled(enabled)
 
+    def touched_keys(self):
+        """The keys the user actually changed. `answers()` sends only these."""
+        return set(self._touched)
+
     def answers(self):
-        """The enabled fields' current values, `{key: python_value}`."""
+        """The enabled fields the user touched, `{key: python_value}`.
+
+        Only touched fields: an untouched one must leave the decision to the
+        process, which for a model already trained resolves it to the value
+        saved on disk. Sending the form's own default instead would silently
+        rewrite it.
+        """
         values = self._raw_values()
         result = {}
         for field in self._step.fields:
+            if field.key not in self._touched:
+                continue
             if not all(condition_met(c, values) for c in field.enabled_if):
                 continue
             raw = values[field.key]
@@ -253,9 +270,10 @@ class StepForm(QWidget):
         return result
 
     def set_value(self, key, value):
-        """Set the widget of field `key` to `value` (used by tests and future presets)."""
+        """Set the widget of field `key` to `value`, marking it as touched."""
         _get, set_ = self._controls[key]
         set_(value)
+        self._touched.add(key)
         self._revalidate()
 
     def extra_args(self):
@@ -268,6 +286,24 @@ class StepForm(QWidget):
         """Set the passthrough input file picker, if this step has one."""
         if self._input_edit is not None:
             self._input_edit.setText(path)
+
+    def set_saved_values(self, values):
+        """Annotate each field that has a saved value with what it is.
+
+        Purely informative: nothing here changes a widget's value, and
+        nothing reaches `answers()`. Every label is reset to its plain form
+        first -- called again with a different (or empty) `values` after the
+        model selection changes, the previous model's annotations must not
+        survive on fields the new `values` says nothing about.
+        """
+        for field in self._step.fields:
+            row = self._rows[field.key]
+            label = self._layout.labelForField(row)
+            if label is None:
+                continue
+            label.setText(field.label)
+            if field.option and field.option in values:
+                label.setText("%s  (saved: %s)" % (field.label, values[field.option]))
 
     def set_model_names(self, names):
         """Populate the "Model name" combo box, if this step has one."""

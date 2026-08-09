@@ -189,3 +189,43 @@ class EventLog(object):
 
     def end(self):
         self._write({"type": "end"})
+
+
+class CommandTail(object):
+    """
+    Commands from an external observer, read as JSON lines appended to a
+    file -- the mirror image of EventLog, same format, opposite direction.
+    path=None makes nuovi() a no-op, so a run started without the channel
+    behaves exactly as before. Only newline-terminated lines are consumed,
+    so a half-written command is never acted upon; anything that is not a
+    dict carrying a string "op" is ignored.
+    """
+    def __init__(self, path):
+        self.path = path
+        self._pos = 0
+
+    def nuovi(self):
+        """The ops appended since the last call, oldest first."""
+        if self.path is None:
+            return []
+        try:
+            with open(self.path, "rb") as f:
+                f.seek(self._pos)
+                data = f.read()
+        except OSError:
+            return []
+        cut = data.rfind(b"\n")
+        if cut == -1:
+            return []
+        self._pos += cut + 1
+        ops = []
+        for line in data[:cut + 1].decode("utf-8", errors="replace").splitlines():
+            if not line.strip():
+                continue
+            try:
+                payload = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(payload, dict) and isinstance(payload.get("op"), str):
+                ops.append(payload["op"])
+        return ops

@@ -16,7 +16,9 @@ from pathlib import Path
 
 from PyQt5.QtCore import QObject, QProcess, QProcessEnvironment, QTimer, pyqtSignal
 
+from gui.console_buffer import ConsoleBuffer
 from gui.execution.conflicts import conflict
+from gui.model_lock_status import busy_holder
 
 _KILL_GRACE_MS = 5000
 
@@ -26,6 +28,59 @@ class StepConflict(Exception):
         super().__init__("'%s' is busy: %s is using it" % (artifact, running_step_name))
         self.artifact = artifact
         self.running_step_name = running_step_name
+
+
+def _model_name_from_args(extra_args):
+    """The value that follows '--force-model-name' in extra_args, or None.
+
+    This is how a needs_model_name step's chosen model name reaches
+    try_start today (see main_window.py's start handler) -- reading it back
+    out here avoids widening try_start's own signature just for the lock
+    check.
+    """
+    args = list(extra_args)
+    try:
+        i = args.index("--force-model-name")
+    except ValueError:
+        return None
+    return args[i + 1] if i + 1 < len(args) else None
+
+
+_TRAIN_VERB = ("train",)
+
+
+def _is_training_step(step):
+    """True when running this step invokes `main.py train`.
+
+    That is the only verb that ever takes models/model_lock.py's lock (see
+    ModelBase.__init__, gated on is_training) -- merging and exporting carry
+    needs_model_name too but never touch the lock, on the CLI or from here.
+    Checked on the invocation's own verb, not on needs_model_name or
+    family, because XSeg's training step ("5.XSeg) train") has neither: it
+    trains a fixed model name the user never chooses (Model_XSeg/Model.py
+    passes force_model_class_name='XSeg' to ModelBase, which then never
+    prompts for a name), so it carries no --force-model-name at all.
+    """
+    return any(inv.verb == _TRAIN_VERB for inv in step.invocations)
+
+
+def _model_class_from_step(step):
+    """The value following '--model' in the step's training invocation, or None.
+
+    Used only to name the busy model in StepConflict's message when there
+    is no user-chosen bare name to show it instead (XSeg's fixed-name
+    training step, see _is_training_step).
+    """
+    for inv in step.invocations:
+        if inv.verb != _TRAIN_VERB:
+            continue
+        args = list(inv.args)
+        try:
+            i = args.index("--model")
+        except ValueError:
+            return None
+        return args[i + 1] if i + 1 < len(args) else None
+    return None
 
 
 def _resolve(text, workspace, dfl_root):
@@ -38,14 +93,15 @@ class Job(QObject):
     output = pyqtSignal(str)      # one merged stdout/stderr line
     finished = pyqtSignal(int)    # overall exit code (0 = every invocation ok)
 
-    def __init__(self, step, workdir, events_path, python_exe, dfl_root,
+    def __init__(self, step, workdir, events_path, commands_path, python_exe, dfl_root,
                  invocation_args, env, parent=None):
         super().__init__(parent)
         self.step = step
         self.workdir = workdir
         self.events_path = events_path
+        self.commands_path = commands_path
         self.running = True
-        self.captured_lines = []
+        self.buffer = ConsoleBuffer()
         self._python_exe = python_exe
         self._dfl_root = dfl_root
         self._invocation_args = invocation_args  # list, one resolved-args list per invocation
@@ -54,6 +110,11 @@ class Job(QObject):
         self.process = None
         self._current_program = None
         self._start_invocation(0)
+
+    @property
+    def captured_lines(self):
+        """The buffered output, oldest first. A real list: callers slice it."""
+        return self.buffer.lines()
 
     def _command(self, args):
         verb = list(self.step.invocations[self._index].verb)
@@ -83,7 +144,7 @@ class Job(QObject):
         data = bytes(self.process.readAllStandardOutput())
         text = data.decode("utf-8", errors="replace")
         for line in text.splitlines():
-            self.captured_lines.append(line)
+            self.buffer.append(line)
             self.output.emit(line)
 
     def _on_invocation_finished(self, code, status):
@@ -105,7 +166,7 @@ class Job(QObject):
         if error != QProcess.FailedToStart:
             return
         line = "failed to start: %s" % self._current_program
-        self.captured_lines.append(line)
+        self.buffer.append(line)
         self.output.emit(line)
         self._finish(-1)
 
@@ -142,6 +203,19 @@ class Job(QObject):
                 pass
         QTimer.singleShot(_KILL_GRACE_MS, _escalate)
 
+    def send_command(self, op):
+        """Append one command for the child to read. Never blocks, never raises.
+
+        The child polls this file; a command written after it exited is
+        simply never read, which is why a failure to write is not worth
+        reporting to the user.
+        """
+        try:
+            with open(self.commands_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"op": op}) + "\n")
+        except OSError:
+            pass
+
 
 class JobManager(QObject):
     job_started = pyqtSignal(object)          # Job
@@ -159,10 +233,36 @@ class JobManager(QObject):
             if artifact is not None:
                 raise StepConflict(artifact, job.step.name)
 
+        if _is_training_step(step):
+            # Only a training step actually contends for the lock -- merging
+            # and exporting carry needs_model_name too but are readers,
+            # never refused by it even from a plain CLI terminal
+            # (models/model_lock.py), so checking them here too would make
+            # the GUI stricter than the CLI for no reason. A live lock
+            # belongs to a process this JobManager did not start -- another
+            # GUI, or a CLI terminal -- so it cannot show up in
+            # active_jobs() above; reading the lock file is the only way to
+            # catch it before wasting a subprocess launch on a training run
+            # that would fail anyway.
+            #
+            # bare_name is the user-chosen part of the model name
+            # (--force-model-name, when the step prompts for one at all) --
+            # '' for XSeg's training step, the one training step with no
+            # such prompt, matching the same '' ModelBase.__init__ uses for
+            # that branch (see models/ModelBase.py).
+            bare_name = _model_name_from_args(extra_args) if step.needs_model_name else ""
+            if bare_name or not step.needs_model_name:
+                holder = busy_holder(Path(workspace) / "model", bare_name)
+                if holder is not None:
+                    label = bare_name or _model_class_from_step(step) or step.name
+                    raise StepConflict(
+                        label, "another process (pid %s)" % holder.get("pid"))
+
         workdir = Path(tempfile.mkdtemp(prefix="dfl-gui-"))
         answers_path = workdir / "answers.json"
         answers_path.write_text(json.dumps(answers), encoding="utf-8")
         events_path = workdir / "events.jsonl"
+        commands_path = workdir / "commands.jsonl"
 
         for pattern in step.mkdirs:
             Path(_resolve(pattern, workspace, self._dfl_root)).mkdir(
@@ -178,8 +278,9 @@ class JobManager(QObject):
         env.insert("WORKSPACE", str(workspace))
         env.insert("DFL_ANSWERS_FILE", str(answers_path))
         env.insert("DFL_EVENTS_FILE", str(events_path))
+        env.insert("DFL_COMMANDS_FILE", str(commands_path))
 
-        job = Job(step, workdir, events_path, self._python_exe, self._dfl_root,
+        job = Job(step, workdir, events_path, commands_path, self._python_exe, self._dfl_root,
                   invocation_args, env, parent=self)
         job.finished.connect(lambda code, job=job: self._on_job_finished(job, code))
         self._jobs.append(job)

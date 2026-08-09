@@ -11,7 +11,7 @@ from core import imagelib
 import cv2
 import models
 from core.interact import interact as io
-from mainscripts.TrainerLib import SaveScheduler, ProgressLine, LossCsv, EventLog
+from mainscripts.TrainerLib import SaveScheduler, ProgressLine, LossCsv, EventLog, CommandTail
 
 _CLOSE_WAIT_SEC = 30 #how long main() waits for the training thread to save and quit after a Ctrl+C
 
@@ -21,6 +21,23 @@ OP_BACKUP = 'backup'
 OP_PREVIEW = 'preview'
 OP_CLOSE = 'close'
 OP_SHOW = 'show'
+
+# the commands an external observer may write on DFL_COMMANDS_FILE, and the
+# operation each one turns into. Same three the preview window's keys send.
+_OP_BY_COMMAND = {'close': OP_CLOSE, 'save': OP_SAVE, 'backup': OP_BACKUP}
+
+def _apply_commands(commands, s2c):
+    # Returns True when a close was among them, so the caller can stop
+    # waiting instead of polling a queue nobody will read yet.
+    chiusura = False
+    for name in commands.nuovi():
+        op = _OP_BY_COMMAND.get(name)
+        if op is None:
+            continue
+        s2c.put ( {'op': op} )
+        if op == OP_CLOSE:
+            chiusura = True
+    return chiusura
 
 _HEAD_LINE_MAX = 80
 
@@ -239,8 +256,23 @@ def main(**kwargs):
     thread = threading.Thread(target=trainerThread, args=(s2c, c2s, e), kwargs=kwargs, daemon=True )
     thread.start()
 
+    commands = CommandTail(os.environ.get('DFL_COMMANDS_FILE'))
+
     try:
-        e.wait() #Wait for inital load to occur.
+        #Wait for inital load to occur, reading commands meanwhile: a stop
+        #asked while the model is still building must not have to wait for
+        #the loops below, which do not exist yet.
+        while not e.wait(0.1):
+            if _apply_commands(commands, s2c):
+                io.log_info ("\nStopping...")
+                #No deadline here, unlike the Ctrl+C branch below: at this
+                #point the model may still be building, or mid save, tens of
+                #seconds to minutes on a real model, and this is the clean
+                #stop path -- cutting it off risks a save half-written by
+                #write_bytes_safe. Force stop (a second close request from
+                #outside) is the declared escape hatch, not a timeout here.
+                thread.join()
+                return
     except KeyboardInterrupt:
         #Until the first preview arms e, the loops below -- the only place that
         #turns a Ctrl+C into a clean close -- have not started yet. Ask the
@@ -262,6 +294,7 @@ def main(**kwargs):
                 op = input.get('op','')
                 if op == OP_CLOSE:
                     break
+            _apply_commands(commands, s2c)
             try:
                 io.process_messages(0.1)
             except KeyboardInterrupt:
@@ -383,6 +416,7 @@ def main(**kwargs):
                 selected_preview = (selected_preview + 1) % len(previews)
                 update_preview = True
 
+            _apply_commands(commands, s2c)
             try:
                 io.process_messages(0.1)
             except KeyboardInterrupt:

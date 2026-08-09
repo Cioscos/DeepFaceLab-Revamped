@@ -50,6 +50,13 @@ class FieldDef:
     key: str                 # prompt_key from the original prompt text
     label: str               # English label shown in GUI
     kind: str                # One of the FIELD_* constants
+    # Name of the model option this field feeds, when there is one -- the
+    # key under which a trained model saves it in its data file. Not
+    # derivable from `key`: of the 38 training fields only 10 have a key
+    # that matches the option's name. Empty means "no saved value to show".
+    # Placed after the last field without a default, not right after `key`,
+    # because a dataclass field with a default cannot precede one without.
+    option: str = ""
     default: object = None
     help: str = ""           # From help_message if present
     choices: tuple = ()      # For FIELD_CHOICE

@@ -21,6 +21,7 @@ from core import imagelib, pathex, pickleex
 from core.cv2ex import *
 from core.interact import interact as io
 from core.leras import nn
+from models.model_lock import ModelLock
 from samplelib import SampleGeneratorBase
 
 
@@ -137,9 +138,16 @@ class ModelBase(object):
                     break
 
 
+            # self.model_name is about to become <chosen name>_<class>
+            # (get_strpath_storage_for_file's own convention, e.g.
+            # 'mio_SAEHD_data.dat'); the lock file is named the same way,
+            # so it needs the name from before this append, not the result.
+            lock_model_name = self.model_name
             self.model_name = self.model_name + '_' + self.model_class_name
         else:
             self.model_name = force_model_class_name
+            # XSeg's forced name already equals the class (no chosen part).
+            lock_model_name = ''
 
         self.iter = 0
         self.options = {}
@@ -147,6 +155,23 @@ class ModelBase(object):
         self.loss_history = []
         self.sample_for_preview = None
         self.choosed_gpu_indexes = None
+
+        # One writer at a time on a model's directory. Two processes -- two
+        # terminals, or a graphical launcher next to one -- training the
+        # same model_name would both save into it with the last write
+        # winning, silently corrupting whichever one lost the race. Only a
+        # writer takes it: is_training=False (merging, exporting) is a
+        # reader and is never refused.
+        #
+        # A crash (an exception mid-__init__, SIGKILL, a lost machine) never
+        # reaches finalize() below, so the lock file is not explicitly freed
+        # on that path either -- the next acquire() recognizes the dead pid
+        # and reclaims it, which covers every abnormal exit without chasing
+        # each one through a `finally`.
+        self.model_lock = None
+        if is_training:
+            self.model_lock = ModelLock(saved_models_path, lock_model_name, self.model_class_name)
+            self.model_lock.acquire()
 
         model_data = {}
         self.model_data_path = Path( self.get_strpath_storage_for_file('data.dat') )
@@ -581,6 +606,9 @@ class ModelBase(object):
         self.generate_next_samples()
 
     def finalize(self):
+        if self.model_lock is not None:
+            self.model_lock.release()
+            self.model_lock = None
         nn.release_session()
 
     def is_first_run(self):

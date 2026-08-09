@@ -79,8 +79,10 @@ def run(argv=None):
     from PyQt5.QtWidgets import QApplication
 
     from gui.main_window import MainWindow
+    from gui.theme import apply_dark_theme
 
     app = QApplication(argv if argv is not None else sys.argv)
+    apply_dark_theme(app)
     dfl_root = Path(__file__).resolve().parent.parent
     window = MainWindow(sys.executable, dfl_root)
     window.show()

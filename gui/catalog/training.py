@@ -64,11 +64,15 @@ _GPU_INDEXES = FieldDef(
     label="GPU indexes",
     kind=FIELD_TEXT,
     default=None,
+    # Never saved as a model option: `device_config` is built from the
+    # constructor's `force_gpu_idxs` and never round-trips through
+    # `load_or_def_option`. No saved value to show.
     help="Comma-separated device indexes, or 'cpu'. Computed at runtime as the devices matching the best detected one by name (suggest_best_multi_gpu) -- unlike the plural GPU field in extraction/faceset_care, this does not suggest every detected device: on heterogeneous cards only those sharing the best one's name are proposed together.",
 )
 
 _AUTOBACKUP_HOUR = FieldDef(
     key="autobackup-every-n-hour",
+    option="autobackup_hour",   # models/ModelBase.py:303
     label="Autobackup every N hour",
     kind=FIELD_INT,
     default=0,
@@ -77,6 +81,7 @@ _AUTOBACKUP_HOUR = FieldDef(
 
 _WRITE_PREVIEW_HISTORY = FieldDef(
     key="write-preview-history",
+    option="write_preview_history",   # models/ModelBase.py:307
     label="Write preview history",
     kind=FIELD_BOOL,
     default=False,
@@ -88,12 +93,15 @@ _CHOOSE_PREVIEW_IMAGE = FieldDef(
     label="Choose image for the preview history",
     kind=FIELD_BOOL,
     default=False,
+    # Never saved as a model option: `choose_preview_history` is a plain
+    # instance attribute, not part of `self.options`. No saved value to show.
     help="Shown only if Write preview history is enabled. On this backend the interactive chooser only exists on Windows; elsewhere (and inside Colab, which asks a differently-worded prompt not modeled here) it is not offered, and random preview samples are used instead.",
     enabled_if=("write-preview-history=y",),
 )
 
 _TARGET_ITERATION = FieldDef(
     key="target-iteration",
+    option="target_iter",   # models/ModelBase.py:317
     label="Target iteration",
     kind=FIELD_INT,
     default=0,
@@ -102,6 +110,7 @@ _TARGET_ITERATION = FieldDef(
 
 _FLIP_SRC = FieldDef(
     key="flip-src-faces-randomly",
+    option="random_src_flip",   # models/ModelBase.py:325
     label="Flip SRC faces randomly",
     kind=FIELD_BOOL,
     default=False,
@@ -110,6 +119,9 @@ _FLIP_SRC = FieldDef(
 
 _FLIP_DST = FieldDef(
     key="flip-dst-faces-randomly",
+    option="random_dst_flip",   # models/ModelBase.py:329 -- the key of
+                                 # the prompt and the option's name do
+                                 # not even resemble each other
     label="Flip DST faces randomly",
     kind=FIELD_BOOL,
     default=True,
@@ -118,6 +130,7 @@ _FLIP_DST = FieldDef(
 
 _BATCH_SIZE_SAEHD = FieldDef(
     key="batch_size",
+    option="batch_size",        # models/ModelBase.py:185
     label="Batch size",
     kind=FIELD_INT,
     default=8,
@@ -126,6 +139,7 @@ _BATCH_SIZE_SAEHD = FieldDef(
 
 _AE_ARCHITECTURE = FieldDef(
     key="ae-architecture",
+    option="archi",   # models/Model_SAEHD/Model.py:617
     label="AE architecture",
     kind=FIELD_TEXT,
     default="liae-ud",
@@ -134,6 +148,7 @@ _AE_ARCHITECTURE = FieldDef(
 
 _AE_DIMS = FieldDef(
     key="autoencoder-dimensions",
+    option="ae_dims",   # models/Model_SAEHD/Model.py:619, models/Model_AMP/Model.py:764
     label="AutoEncoder dimensions",
     kind=FIELD_INT,
     default=256,
@@ -143,6 +158,7 @@ _AE_DIMS = FieldDef(
 
 _ENCODER_DIMS = FieldDef(
     key="encoder-dimensions",
+    option="e_dims",   # models/Model_SAEHD/Model.py:620, models/Model_AMP/Model.py:767
     label="Encoder dimensions",
     kind=FIELD_INT,
     default=64,
@@ -152,6 +168,7 @@ _ENCODER_DIMS = FieldDef(
 
 _DECODER_DIMS = FieldDef(
     key="decoder-dimensions",
+    option="d_dims",   # models/Model_SAEHD/Model.py:696, models/Model_AMP/Model.py:794
     label="Decoder dimensions",
     kind=FIELD_INT,
     default=64,
@@ -161,6 +178,7 @@ _DECODER_DIMS = FieldDef(
 
 _DECODER_MASK_DIMS = FieldDef(
     key="decoder-mask-dimensions",
+    option="d_mask_dims",   # models/Model_SAEHD/Model.py:700, models/Model_AMP/Model.py:798
     label="Decoder mask dimensions",
     kind=FIELD_INT,
     default=22,
@@ -170,6 +188,7 @@ _DECODER_MASK_DIMS = FieldDef(
 
 _UNIFORM_YAW = FieldDef(
     key="uniform-yaw-distribution-of-samples",
+    option="uniform_yaw",   # models/Model_SAEHD/Model.py:625, models/Model_AMP/Model.py:771
     label="Uniform yaw distribution of samples",
     kind=FIELD_BOOL,
     default=False,
@@ -178,6 +197,7 @@ _UNIFORM_YAW = FieldDef(
 
 _BLUR_OUT_MASK = FieldDef(
     key="blur-out-mask",
+    option="blur_out_mask",   # models/Model_SAEHD/Model.py:626, models/Model_AMP/Model.py:772
     label="Blur out mask",
     kind=FIELD_BOOL,
     default=False,
@@ -186,6 +206,7 @@ _BLUR_OUT_MASK = FieldDef(
 
 _LR_DROPOUT = FieldDef(
     key="use-learning-rate-dropout",
+    option="lr_dropout",   # models/Model_SAEHD/Model.py:630, models/Model_AMP/Model.py:773
     label="Use learning rate dropout",
     kind=FIELD_CHOICE,
     default="n",
@@ -195,6 +216,7 @@ _LR_DROPOUT = FieldDef(
 
 _RANDOM_WARP = FieldDef(
     key="enable-random-warp-of-samples",
+    option="random_warp",   # models/Model_SAEHD/Model.py:634, models/Model_AMP/Model.py:774
     label="Enable random warp of samples",
     kind=FIELD_BOOL,
     default=True,
@@ -203,6 +225,7 @@ _RANDOM_WARP = FieldDef(
 
 _GAN_PATCH_SIZE = FieldDef(
     key="gan-patch-size",
+    option="gan_patch_size",   # models/Model_SAEHD/Model.py:723, models/Model_AMP/Model.py:822
     label="GAN patch size",
     kind=FIELD_INT,
     default=16,
@@ -213,6 +236,7 @@ _GAN_PATCH_SIZE = FieldDef(
 
 _GAN_DIMS = FieldDef(
     key="gan-dimensions",
+    option="gan_dims",   # models/Model_SAEHD/Model.py:724, models/Model_AMP/Model.py:823
     label="GAN dimensions",
     kind=FIELD_INT,
     default=16,
@@ -223,6 +247,7 @@ _GAN_DIMS = FieldDef(
 
 _CLIPGRAD = FieldDef(
     key="enable-gradient-clipping",
+    option="clipgrad",   # models/Model_SAEHD/Model.py:640, models/Model_AMP/Model.py:776
     label="Enable gradient clipping",
     kind=FIELD_BOOL,
     default=False,
@@ -233,6 +258,7 @@ _CLIPGRAD = FieldDef(
 
 _FACE_TYPE_SAEHD = FieldDef(
     key="face-type",
+    option="face_type",   # models/Model_SAEHD/Model.py:614
     label="Face type",
     kind=FIELD_CHOICE,
     default="f",
@@ -242,6 +268,7 @@ _FACE_TYPE_SAEHD = FieldDef(
 
 _RESOLUTION_SAEHD = FieldDef(
     key="resolution",
+    option="resolution",   # models/Model_SAEHD/Model.py:613
     label="Resolution",
     kind=FIELD_INT,
     default=128,
@@ -251,6 +278,7 @@ _RESOLUTION_SAEHD = FieldDef(
 
 _MASKED_TRAINING = FieldDef(
     key="masked-training",
+    option="masked_training",   # models/Model_SAEHD/Model.py:623
     label="Masked training",
     kind=FIELD_BOOL,
     default=True,
@@ -260,6 +288,7 @@ _MASKED_TRAINING = FieldDef(
 
 _EYES_MOUTH_PRIO = FieldDef(
     key="eyes-and-mouth-priority",
+    option="eyes_mouth_prio",   # models/Model_SAEHD/Model.py:624
     label="Eyes and mouth priority",
     kind=FIELD_BOOL,
     default=False,
@@ -268,6 +297,7 @@ _EYES_MOUTH_PRIO = FieldDef(
 
 _MODELS_OPT_ON_GPU_SAEHD = FieldDef(
     key="place-models-and-optimizer-on-gpu",
+    option="models_opt_on_gpu",   # models/Model_SAEHD/Model.py:615, models/Model_AMP/Model.py:762
     label="Place models and optimizer on GPU",
     kind=FIELD_BOOL,
     default=True,
@@ -276,6 +306,7 @@ _MODELS_OPT_ON_GPU_SAEHD = FieldDef(
 
 _ADABELIEF = FieldDef(
     key="use-adabelief-optimizer",
+    option="adabelief",   # models/Model_SAEHD/Model.py:628
     label="Use AdaBelief optimizer?",
     kind=FIELD_BOOL,
     default=True,
@@ -284,6 +315,7 @@ _ADABELIEF = FieldDef(
 
 _RANDOM_HSV_POWER = FieldDef(
     key="random-huesaturationlight-intensity",
+    option="random_hsv_power",   # models/Model_SAEHD/Model.py:635
     label="Random hue/saturation/light intensity",
     kind=FIELD_FLOAT,
     default=0.0,
@@ -293,6 +325,7 @@ _RANDOM_HSV_POWER = FieldDef(
 
 _GAN_POWER_SAEHD = FieldDef(
     key="gan-power",
+    option="gan_power",   # models/Model_SAEHD/Model.py:722, models/Model_AMP/Model.py:821
     label="GAN power",
     kind=FIELD_FLOAT,
     default=0.0,
@@ -302,6 +335,7 @@ _GAN_POWER_SAEHD = FieldDef(
 
 _TRUE_FACE_POWER = FieldDef(
     key="true-face-power",
+    option="true_face_power",   # models/Model_SAEHD/Model.py:636
     label="'True face' power.",
     kind=FIELD_FLOAT,
     default=0.0,
@@ -312,6 +346,7 @@ _TRUE_FACE_POWER = FieldDef(
 
 _FACE_STYLE_POWER = FieldDef(
     key="face-style-power",
+    option="face_style_power",   # models/Model_SAEHD/Model.py:637
     label="Face style power",
     kind=FIELD_FLOAT,
     default=0.0,
@@ -321,6 +356,7 @@ _FACE_STYLE_POWER = FieldDef(
 
 _BG_STYLE_POWER = FieldDef(
     key="background-style-power",
+    option="bg_style_power",   # models/Model_SAEHD/Model.py:638
     label="Background style power",
     kind=FIELD_FLOAT,
     default=0.0,
@@ -330,6 +366,7 @@ _BG_STYLE_POWER = FieldDef(
 
 _CT_MODE_SAEHD = FieldDef(
     key="color-transfer-for-src-faceset",
+    option="ct_mode",   # models/Model_SAEHD/Model.py:639, models/Model_AMP/Model.py:775
     label="Color transfer for src faceset",
     kind=FIELD_CHOICE,
     default="none",
@@ -339,6 +376,7 @@ _CT_MODE_SAEHD = FieldDef(
 
 _PRETRAIN = FieldDef(
     key="enable-pretraining-mode",
+    option="pretrain",   # models/Model_SAEHD/Model.py:641
     label="Enable pretraining mode",
     kind=FIELD_BOOL,
     default=False,
@@ -347,6 +385,7 @@ _PRETRAIN = FieldDef(
 
 _CUDNN_BENCHMARK = FieldDef(
     key="enable-cudnnbenchmark",
+    option="cudnn_benchmark",   # models/Model_SAEHDX/Model.py:150
     label="Enable cudnn.benchmark",
     kind=FIELD_BOOL,
     default=False,
@@ -355,6 +394,7 @@ _CUDNN_BENCHMARK = FieldDef(
 
 _CUDA_GRAPH = FieldDef(
     key="enable-cuda-graph-capture",
+    option="cuda_graph",   # models/Model_SAEHDX/Model.py:164
     label="Enable CUDA graph capture",
     kind=FIELD_BOOL,
     default=False,
@@ -363,6 +403,7 @@ _CUDA_GRAPH = FieldDef(
 
 _TORCH_COMPILE = FieldDef(
     key="enable-torchcompile",
+    option="torch_compile",   # models/Model_SAEHDX/Model.py:180
     label="Enable torch.compile",
     kind=FIELD_BOOL,
     default=False,
@@ -387,6 +428,7 @@ _SAEHDX_FIELDS = _SAEHD_FIELDS + (_CUDNN_BENCHMARK, _CUDA_GRAPH, _TORCH_COMPILE)
 
 _RESOLUTION_AMP = FieldDef(
     key="resolution",
+    option="resolution",   # models/Model_AMP/Model.py:760
     label="Resolution",
     kind=FIELD_INT,
     default=224,
@@ -396,6 +438,7 @@ _RESOLUTION_AMP = FieldDef(
 
 _FACE_TYPE_AMP = FieldDef(
     key="face-type",
+    option="face_type",   # models/Model_AMP/Model.py:761
     label="Face type",
     kind=FIELD_CHOICE,
     default="wf",
@@ -405,6 +448,7 @@ _FACE_TYPE_AMP = FieldDef(
 
 _INTER_DIMS = FieldDef(
     key="inter-dimensions",
+    option="inter_dims",   # models/Model_AMP/Model.py:765
     label="Inter dimensions",
     kind=FIELD_INT,
     default=1024,
@@ -414,6 +458,11 @@ _INTER_DIMS = FieldDef(
 
 _MORPH_FACTOR_TRAIN = FieldDef(
     key="morph-factor",
+    # Saved as self.options['morph_factor'] (models/Model_AMP/Model.py:768),
+    # but read back with self.options.get(...), not load_or_def_option --
+    # the guard that checks a declared name really appears in a
+    # load_or_def_option(...) call would reject it, so left undeclared
+    # rather than pass a name the guard cannot confirm.
     label="Morph factor.",
     kind=FIELD_FLOAT,
     default=0.5,
@@ -423,6 +472,7 @@ _MORPH_FACTOR_TRAIN = FieldDef(
 
 _BATCH_SIZE_AMP = FieldDef(
     key="batch_size",
+    option="batch_size",   # models/ModelBase.py:185
     label="Batch size",
     kind=FIELD_INT,
     default=8,
@@ -431,6 +481,7 @@ _BATCH_SIZE_AMP = FieldDef(
 
 _MODELS_OPT_ON_GPU_AMP = FieldDef(
     key="place-models-and-optimizer-on-gpu",
+    option="models_opt_on_gpu",   # models/Model_AMP/Model.py:762
     label="Place models and optimizer on GPU",
     kind=FIELD_BOOL,
     default=True,
@@ -439,6 +490,7 @@ _MODELS_OPT_ON_GPU_AMP = FieldDef(
 
 _GAN_POWER_AMP = FieldDef(
     key="gan-power",
+    option="gan_power",   # models/Model_AMP/Model.py:821
     label="GAN power",
     kind=FIELD_FLOAT,
     default=0.0,
@@ -448,6 +500,7 @@ _GAN_POWER_AMP = FieldDef(
 
 _CT_MODE_AMP = FieldDef(
     key="color-transfer-for-src-faceset",
+    option="ct_mode",   # models/Model_AMP/Model.py:775
     label="Color transfer for src faceset",
     kind=FIELD_CHOICE,
     default="none",
