@@ -155,6 +155,28 @@ class LossCsv(object):
         self.righe_scritte = len(loss_history)
 
 
+def _json_nativo(valore):
+    """Uno scalare numpy come il tipo Python corrispondente.
+
+    Le opzioni dei modelli passano per np.clip -- l'idioma di upstream --
+    quindi una `resolution` riletta dal pickle e' un np.int64, non un int:
+    attraversa somme, confronti e min() senza dare segno di se' e muore molto
+    piu' tardi qui, dove json.dumps non sa codificarla. Non e' una
+    decorazione che si perde: _write vive fuori dal try del thread, quindi
+    l'evento si porta via il training intero.
+
+    La conversione sta al passaggio e non su un campo per volta: e' l'unico
+    punto per cui passano tutti gli eventi, quindi la prossima opzione numpy
+    che entra in un payload non ricade qui. Quello che non e' uno scalare
+    numpy resta un errore, e forte: questa e' una conversione che decide, non
+    una rete che assorbe.
+    """
+    if isinstance(valore, np.generic):
+        return valore.item()
+    raise TypeError("Object of type %s is not JSON serializable"
+                    % valore.__class__.__name__)
+
+
 class EventLog(object):
     """
     Structured training events for an external observer, as JSON lines
@@ -175,7 +197,7 @@ class EventLog(object):
         if self.path is None:
             return
         with open(self.path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload) + "\n")
+            f.write(json.dumps(payload, default=_json_nativo) + "\n")
 
     def hello(self, model_name_class, target_iter, model_name=None, model_dir=None):
         #model_name/model_dir sono additivi (VERSION resta 1): senza di loro

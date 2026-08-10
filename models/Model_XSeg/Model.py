@@ -307,7 +307,9 @@ class XSegModel(ModelBase):
 
     #override
     def get_preview_layout(self):
-        n_samples = min(4, self.get_batch_size(), 800 // self.resolution )
+        #int() per la stessa ragione del gemello in Model_SAEHD: resolution
+        #e' un np.int64 e il descrittore attraversa un canale JSON.
+        n_samples = int(min(4, self.get_batch_size(), 800 // self.resolution ))
 
         def griglia(colonne, risultato):
             return { "righe": n_samples, "colonne": len(colonne),

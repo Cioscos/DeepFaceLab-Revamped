@@ -1250,7 +1250,10 @@ Examples: df, liae, df-d, df-ud, liae-ud, ...
 
     #override
     def get_preview_layout(self):
-        n_samples = min(4, self.get_batch_size(), 800 // self.resolution )
+        #int() e non solo min(): resolution viene da np.clip, quindi e' un
+        #np.int64, e a 224 il minimo dei tre e' proprio lui. Il descrittore
+        #attraversa un canale JSON, dove uno scalare numpy non passa.
+        n_samples = int(min(4, self.get_batch_size(), 800 // self.resolution ))
 
         def griglia(colonne, risultato):
             return { "righe": n_samples, "colonne": len(colonne),
