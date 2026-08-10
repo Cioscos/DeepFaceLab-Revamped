@@ -21,13 +21,25 @@ it. `FieldDef.choice_values`, when present, is applied only at that last
 step, mapping the chosen label to the value the call site actually expects
 -- `condition_met` and every other internal computation still work with the
 label text, since that is what the catalog's `enabled_if` strings quote.
+
+`self.fascia` (`gui.fascia_aiuto.FasciaAiuto`) is the help strip fixed under
+the fields: `gui.fascia_aiuto.osserva()` hooks every field's widget (the
+container, for a path field -- that is what the mouse actually crosses) so
+hovering it, focusing it from the keyboard, or highlighting one of its
+dropdown entries shows that field's `help`/`choice_help` there. It only
+reads -- it never marks a field touched, so `answers()` keeps sending only
+what the user actually changed. Every combo entry also carries its
+`choice_help` as a native `Qt.ToolTipRole`, set in `_build_choice`.
 """
+from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QHBoxLayout,
-    QLineEdit, QPushButton, QSpinBox, QWidget,
+    QLabel, QLineEdit, QPushButton, QSpinBox, QWidget,
 )
 
+from gui import testi
 from gui.catalog.model import FIELD_BOOL, FIELD_CHOICE, FIELD_FLOAT, FIELD_INT, FIELD_PATH, FIELD_TEXT
+from gui.fascia_aiuto import FasciaAiuto, osserva
 
 _INT_RANGE = (0, 2_000_000_000)
 _FLOAT_RANGE = (0.0, 1_000_000_000.0)
@@ -71,10 +83,11 @@ def _path_row(initial_text=""):
     row.setContentsMargins(0, 0, 0, 0)
     edit = QLineEdit(initial_text)
     row.addWidget(edit)
-    browse = QPushButton("Browse…")
+    browse = QPushButton(testi.BROWSE)
+    browse.setToolTip(testi.BROWSE_TIP)
 
     def _pick():
-        path, _ = QFileDialog.getOpenFileName(container, "Select file")
+        path, _ = QFileDialog.getOpenFileName(container, testi.DIALOG_SELECT_FILE)
         if path:
             edit.setText(path)
 
@@ -122,6 +135,11 @@ def _build_choice(field):
     if blank:
         combo.addItem("")
     combo.addItems(list(field.choices))
+    for indice, aiuto in enumerate(field.choice_help):
+        # Same offset as `blank` above: the placeholder entry at index 0
+        # has no counterpart in `choice_help`, so every real choice's
+        # tooltip is shifted by one when there is one.
+        combo.setItemData(indice + (1 if blank else 0), aiuto, Qt.ToolTipRole)
     if blank:
         combo.setCurrentIndex(0)
     elif field.default in field.choices:
@@ -224,6 +242,25 @@ def _build_control(field):
     return widget, widget, get, set_, signal
 
 
+def _field_row(control_widget):
+    """Wrap a field's control in `[control][badge]`, the widget that goes in the form row.
+
+    The badge is hidden until `set_saved_values` has something to show it.
+    This container -- not the control alone -- is what `_revalidate` enables
+    and disables through `_rows[key]`, so the badge grays out with the rest
+    of a disabled row.
+    """
+    container = QWidget()
+    row = QHBoxLayout(container)
+    row.setContentsMargins(0, 0, 0, 0)
+    row.addWidget(control_widget, 1)
+    badge = QLabel("")
+    badge.setProperty("ruolo", "pastiglia")
+    badge.setVisible(False)
+    row.addWidget(badge)
+    return container, badge
+
+
 class StepForm(QWidget):
     """A form generated from a `StepDef`, one row per field, kept in sync with `enabled_if`."""
 
@@ -231,7 +268,8 @@ class StepForm(QWidget):
         super().__init__(parent)
         self._step = step
         self._controls = {}     # key -> (get, set_)
-        self._rows = {}         # key -> the widget placed in the form row
+        self._rows = {}         # key -> the widget placed in the form row (control + badge)
+        self._badges = {}       # key -> the saved-value pill beside the control
         self._touched = set()   # keys the user actually changed
         self._layout = QFormLayout()
         self.setLayout(self._layout)
@@ -239,25 +277,72 @@ class StepForm(QWidget):
         self._input_edit = None
         if step.passthrough:
             container, self._input_edit = _path_row()
-            self._layout.addRow("Input file", container)
+            self._layout.addRow(testi.INPUT_FILE, container)
 
         self._model_combo = None
         if step.needs_model_name:
             self._model_combo = QComboBox()
             self._model_combo.setEditable(True)
-            self._layout.addRow("Model name", self._model_combo)
+            self._layout.addRow(testi.MODEL_NAME, self._model_combo)
 
+        # Sections group the fields by what a user is looking for
+        # (`StepDef.sections`); a step with none gets one untitled group, in
+        # declaration order -- the flat form it always had. `hover_widgets`
+        # keeps the bare control (the same object `osserva` was hooked to
+        # before this row grew a badge) so the fascia's per-field wiring,
+        # combo-box highlighting included, is untouched by the wrapping.
+        by_key = {field.key: field for field in step.fields}
+        groups = step.sections or (("", tuple(field.key for field in step.fields)),)
+        hover_widgets = {}
+
+        for title, keys in groups:
+            if title:
+                section_label = QLabel(title)
+                section_label.setProperty("ruolo", "sezione")
+                self._layout.addRow(section_label)
+            for field_key in keys:
+                field = by_key[field_key]
+                layout_widget, value_widget, get, set_, signal = _build_control(field)
+                if field.help:
+                    value_widget.setToolTip(field.help)
+                self._controls[field.key] = (get, set_)
+                row, badge = _field_row(layout_widget)
+                self._badges[field.key] = badge
+                self._rows[field.key] = row
+                hover_widgets[field.key] = layout_widget
+                self._layout.addRow(field.label, row)
+                signal.connect(self._revalidate)
+                signal.connect(lambda *_a, key=field.key: self._touched.add(key))
+
+        # `self.fascia` is built and wired here, but not placed in this
+        # form's own layout: `StepView` (`gui.main_window`) puts it in a
+        # fixed row of its own, outside the scroll area this form sits in,
+        # so the strip stays visible while the fields above it scroll.
+        self.fascia = FasciaAiuto()
+        self.fascia.riposo(testi.HELP_REST)
         for field in step.fields:
-            layout_widget, value_widget, get, set_, signal = _build_control(field)
-            if field.help:
-                value_widget.setToolTip(field.help)
-            self._controls[field.key] = (get, set_)
-            self._rows[field.key] = layout_widget
-            self._layout.addRow(field.label, layout_widget)
-            signal.connect(self._revalidate)
-            signal.connect(lambda *_a, key=field.key: self._touched.add(key))
+            # Same offset `_build_choice` applies to the combo's items: a
+            # field with no default carries a blank entry at index 0, and
+            # without this the strip would explain the *previous* value --
+            # the fastest way to make the one surface meant to explain lie.
+            scarto = 1 if field.kind == FIELD_CHOICE and field.default is None else 0
+            osserva(hover_widgets[field.key], self.fascia, field.label, field.help,
+                    per_voce=field.choice_help, scarto=scarto)
 
         self._revalidate()
+
+    def section_titles(self):
+        """The titles of this form's sections, in order -- `[]` for a flat form."""
+        return [title for title, _keys in self._step.sections]
+
+    def row_keys(self):
+        """Field keys in the order their rows sit in the form (section order,
+        when the step has sections; declaration order otherwise)."""
+        return list(self._rows.keys())
+
+    def saved_badge(self, key):
+        """The pill beside field `key` that shows its value on disk."""
+        return self._badges[key]
 
     def _raw_values(self):
         return {key: get() for key, (get, _set) in self._controls.items()}
@@ -319,13 +404,15 @@ class StepForm(QWidget):
 
     def set_saved_values(self, values):
         """Show what the chosen model was trained with: in the widget, and
-        in the label beside it.
+        in a badge beside it.
 
         The widget is what a person reads. Putting the saved value only in
         the label was the first attempt, and it read as if resuming a
         trained model had forgotten its settings -- the fields all showed
         the catalog's defaults, which for a model trained at resolution 224
-        with batch 12 said 128 and 8.
+        with batch 12 said 128 and 8. The badge that shows it now replaced
+        the label's own "(saved: ...)" suffix -- same reason to exist, its
+        own widget instead of borrowed label text.
 
         Filling them in does *not* make them answers: `_touched` is cleared
         for every field written here, so `answers()` still sends only what
@@ -333,22 +420,21 @@ class StepForm(QWidget):
         showing a value must never be a way of writing it back.
 
         A field whose option is absent from `values` goes back to its
-        declared default, annotation included: this is also the path taken
+        declared default, badge included: this is also the path taken
         when the model name changes, and the previous model's settings must
         not stay on screen under a new name.
         """
         for field in self._step.fields:
-            label = self._layout.labelForField(self._rows[field.key])
-            if label is not None:
-                label.setText(field.label)
+            badge = self._badges[field.key]
+            badge.setVisible(False)
             if not field.option:
                 continue
             if field.option not in values:
                 self._write_untouched(field, field.default)
                 continue
             value = values[field.option]
-            if label is not None:
-                label.setText("%s  (saved: %s)" % (field.label, value))
+            badge.setText(testi.saved_value(value))
+            badge.setVisible(True)
             if not self._write_untouched(field, value):
                 self._write_untouched(field, field.default)
         self._revalidate()

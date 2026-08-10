@@ -16,6 +16,7 @@ from pathlib import Path
 
 from PyQt5.QtCore import QObject, QProcess, QProcessEnvironment, QTimer, pyqtSignal
 
+from gui import testi
 from gui.console_buffer import ConsoleBuffer
 from gui.console_stream import LineAssembler
 from gui.execution.conflicts import conflict
@@ -25,8 +26,16 @@ _KILL_GRACE_MS = 5000
 
 
 class StepConflict(Exception):
-    def __init__(self, artifact, running_step_name):
-        super().__init__("'%s' is busy: %s is using it" % (artifact, running_step_name))
+    """A step refused because something it needs is already taken.
+
+    `is_artifact=False` marks the one case where the contended thing is a
+    model name the user typed, not a workflow artifact: the message keeps
+    the name verbatim instead of looking it up in the artifact table, so a
+    model called "modello" reads as itself.
+    """
+
+    def __init__(self, artifact, running_step_name, is_artifact=True):
+        super().__init__(testi.job_busy(artifact, running_step_name, is_artifact))
         self.artifact = artifact
         self.running_step_name = running_step_name
 
@@ -176,7 +185,7 @@ class Job(QObject):
         # failure (-1) instead.
         if error != QProcess.FailedToStart:
             return
-        line = "failed to start: %s" % self._current_program
+        line = testi.job_failed_to_start(self._current_program)
         self.buffer.append(line)
         self.output.emit(line)
         self._finish(-1)
@@ -267,7 +276,8 @@ class JobManager(QObject):
                 if holder is not None:
                     label = bare_name or _model_class_from_step(step) or step.name
                     raise StepConflict(
-                        label, "another process (pid %s)" % holder.get("pid"))
+                        label, "another process (pid %s)" % holder.get("pid"),
+                        is_artifact=False)
 
         workdir = Path(tempfile.mkdtemp(prefix="dfl-gui-"))
         answers_path = workdir / "answers.json"

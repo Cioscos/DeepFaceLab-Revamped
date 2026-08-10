@@ -60,6 +60,11 @@ class FieldDef:
     default: object = None
     help: str = ""           # From help_message if present
     choices: tuple = ()      # For FIELD_CHOICE
+    # An explanation for every entry of `choices`, in the same order: what
+    # picking it does, not what the word means. Ends up in the tooltip of
+    # the entry in the dropdown and in the help strip while it is
+    # highlighted. Empty for every field that is not FIELD_CHOICE.
+    choice_help: tuple = ()
     # When non-empty, the value sent for choices[i] is choice_values[i]
     # instead of the choice string itself -- for a FIELD_CHOICE whose
     # call-site expects something other than the displayed text (e.g. an
@@ -98,6 +103,12 @@ class StepDef:
     family: str
     kind: str
     process: str
+    # A one-line summary shown under the name, in the step list: what
+    # running this step does, for anyone who has not memorized the script
+    # numbering yet. Placed after the last field without a default, not
+    # right after `name`, for the same reason FieldDef.option is placed
+    # after `key` rather than right after it.
+    summary: str = ""
     invocations: tuple = ()
     fields: tuple = ()
     consumes: tuple = ()
@@ -106,6 +117,11 @@ class StepDef:
     mkdirs: tuple = ()
     optional: bool = False
     target: str = ""         # For KIND_VIEWER
+    # The titles of the form's sections, in order, each with the keys of the
+    # fields under it. Empty means a flat form, like the steps with few
+    # fields. The union of the keys must be exactly that of the fields: a
+    # field added and left undeclared here would be invisible at the bottom.
+    sections: tuple = ()
     passthrough: bool = False    # "3) cut video": form adds a file picker
     needs_model_name: bool = False  # train/merge/export: GUI appends --force-model-name
 

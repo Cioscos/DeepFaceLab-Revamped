@@ -51,6 +51,11 @@ _FACE_TYPE = FieldDef(
     kind=FIELD_CHOICE,
     default="wf",
     choices=("f", "wf", "head"),
+    choice_help=(
+        "Full face: crops down to the eyebrows and chin. Pick it only if every model trained on this faceset will use 'f' too.",
+        "Whole face: extends the crop to include the forehead. The default, and the safe choice if you have not settled on a training face type yet.",
+        "Head: keeps the entire head, hair included. Needed only for a 'head' model, and both facesets will then need an XSeg mask.",
+    ),
     help="Full face / whole face / head. 'Whole face' covers full area of face include forehead. 'head' covers full head, but requires XSeg for src and dst faceset.",
 )
 
@@ -85,11 +90,13 @@ _OUTPUT_DEBUG = FieldDef(
     label="Write debug images to aligned_debug?",
     kind=FIELD_BOOL,
     default=False,
+    help="Saves a copy of every processed frame with the detected face rectangle and landmarks drawn on it, in the aligned_debug folder next to aligned. Useful to spot misdetections before training; costs extra disk space and write time.",
 )
 
 STEPS = (
     StepDef(
         name="4) data_src faceset extract MANUAL",
+        summary="Detects and aligns the source faces by hand, frame by frame, in the manual extractor window.",
         family="estrazione",
         kind=KIND_MAIN,
         process=PROCESS_SESSION,
@@ -109,6 +116,7 @@ STEPS = (
     ),
     StepDef(
         name="4) data_src faceset extract",
+        summary="Finds and aligns the faces in the source frames automatically, writing them to data_src/aligned.",
         family="estrazione",
         kind=KIND_MAIN,
         process=PROCESS_PROMPT,
@@ -128,6 +136,7 @@ STEPS = (
     ),
     StepDef(
         name="5) data_dst faceset MANUAL RE-EXTRACT DELETED ALIGNED_DEBUG",
+        summary="Re-extracts by hand only the destination frames whose debug image was deleted, to fix misdetections.",
         family="estrazione",
         kind=KIND_MAIN,
         process=PROCESS_SESSION,
@@ -151,6 +160,7 @@ STEPS = (
     ),
     StepDef(
         name="5) data_dst faceset extract + manual fix",
+        summary="Extracts destination faces automatically, then opens the manual window only for the frames it missed.",
         family="estrazione",
         kind=KIND_MAIN,
         process=PROCESS_SESSION,
@@ -173,6 +183,7 @@ STEPS = (
     ),
     StepDef(
         name="5) data_dst faceset extract MANUAL",
+        summary="Detects and aligns every destination face by hand, frame by frame, in the manual extractor window.",
         family="estrazione",
         kind=KIND_MAIN,
         process=PROCESS_SESSION,
@@ -194,6 +205,7 @@ STEPS = (
     ),
     StepDef(
         name="5) data_dst faceset extract",
+        summary="Finds and aligns the faces in the destination frames, writing them to data_dst/aligned.",
         family="estrazione",
         kind=KIND_MAIN,
         process=PROCESS_PROMPT,

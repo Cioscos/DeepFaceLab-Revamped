@@ -81,6 +81,51 @@ def artifact_present(artifact, workspace):
     return False
 
 
+def _present_checker(workspace):
+    """A `present(artifact_name) -> bool` closure bound to `workspace`.
+
+    Shared by `stage_states` and `step_state` so the one rule that is not
+    obvious from the artifact's own patterns -- an installation asset (the
+    generic XSeg model, pretrain faces) lives under {INTERNAL}, outside the
+    workspace, and counts as always present -- lives in a single place. Two
+    copies of this would have been the same duplication risk `step_state`
+    was written to avoid on the consumes/produces predicate itself.
+    """
+    artifacts_by_name = {a.name: a for a in ARTIFACTS}
+
+    def present(name):
+        artifact = artifacts_by_name[name]
+        if artifact.origin == "asset":
+            return True
+        return artifact_present(artifact, workspace)
+
+    return present
+
+
+def step_state(step, workspace):
+    """The STATE_* of a single step, from its own consumes/produces alone.
+
+    Not `stage_states`' aggregate: a stage is READY as soon as *any* of its
+    steps can run, which is the right question for the pipeline bar's pill
+    but the wrong one for a single row in the step list -- two steps of the
+    same stage can have independent prerequisites (Extraction's "4) data_src
+    faceset extract" consumes frame_src, "5) data_dst faceset extract"
+    consumes frame_dst), and with only one of the two present the stage is
+    already READY while the other step still has nothing to run on. STATE_DONE
+    if the step produces at least one artifact and every one is present;
+    otherwise STATE_READY if it consumes at least one artifact and every one
+    is present; otherwise STATE_BLOCKED. An empty `produces` never counts as
+    DONE by vacuous truth -- the same rule `stage_states` applies to its own
+    aggregate, applied here to one step instead of a stage's whole scored set.
+    """
+    present = _present_checker(workspace)
+    if step.produces and all(present(name) for name in step.produces):
+        return STATE_DONE
+    if step.consumes and all(present(name) for name in step.consumes):
+        return STATE_READY
+    return STATE_BLOCKED
+
+
 def stage_states(workspace):
     """The STATE_* of each of the 8 STAGES, from artifacts on disk.
 
@@ -94,18 +139,16 @@ def stage_states(workspace):
     produced artifacts never counts as "done" by vacuous truth -- a stage
     whose scored steps produce nothing (e.g. Faceset curation, whose steps
     only consume/modify) can be READY or BLOCKED but never DONE.
-    """
-    artifacts_by_name = {a.name: a for a in ARTIFACTS}
 
-    def present(name):
-        artifact = artifacts_by_name[name]
-        # Installation assets (the generic XSeg model, pretrain faces) live
-        # under {INTERNAL}, outside the workspace, and do not depend on it:
-        # for stage-state purposes they count as always present, so a
-        # stage's state reflects the workspace, not the installation.
-        if artifact.origin == "asset":
-            return True
-        return artifact_present(artifact, workspace)
+    This aggregates across every scored step (a union of what they produce,
+    an "any" over what any one of them can already consume) rather than
+    reusing `step_state` per step -- a stage's DONE means the union of
+    everything its scored steps produce is on disk, which is a different
+    question from "is any single one of them individually DONE". The two
+    functions share `_present_checker` instead, which is the part that
+    would actually have been a duplication risk.
+    """
+    present = _present_checker(workspace)
 
     steps_by_stage = {}
     for step in all_steps():

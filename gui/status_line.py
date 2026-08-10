@@ -1,14 +1,21 @@
 """La riga che racconta un training mentre gira, scritta in un posto solo.
 
-Due superfici la mostrano: la striscia sotto la vista del passo e la scheda
-del training, sotto il grafico. E' lo stesso fatto detto due volte, non due
-fatti, e finche' erano due funzioni gemelle bastava toccarne una perche' i
-due punti dello schermo dicessero la stessa cosa in modi diversi.
+Tre superfici la mostrano: la striscia sotto la vista del passo, le tessere
+in cima alla scheda del training, e -- finche' un pezzo non ha una tessera
+sua -- la riga di avvisi sotto di loro. E' lo stesso fatto detto piu' volte,
+non piu' fatti, e finche' erano funzioni gemelle bastava toccarne una perche'
+i punti dello schermo dicessero la stessa cosa in modi diversi.
+
+`valori_di_stato` e' la sola funzione che conosce le regole: cosa compare,
+cosa sparisce, come una loss non numerica diventa "?". `pezzi_di_stato` si
+ricostruisce sopra di lei, gia' unita nel formato di sempre -- la striscia
+non cambia una virgola, ed e' il pin dei suoi stessi test. Le tessere
+prendono le coppie di `valori_di_stato` cosi' come sono, una per riquadro.
 
 Qui non c'e' nessun widget e nessun Qt: sono stringhe, piu' la piccola
 memoria che serve a calcolare il ritmo fra un evento e il successivo. Chi le
 mette a schermo decide dove, e la scheda aggiunge la VRAM perche' e' l'unica
-delle due a ricevere gli eventi che la portano.
+delle superfici a ricevere gli eventi che la portano.
 """
 #`MASSIMA_ITERAZIONE` e `iterazione_utilizzabile` stavano qui e sono in
 #`gui.numeri` dal momento in cui il terzo consumatore non e' stato piu' una
@@ -84,6 +91,33 @@ def formatta_eta(secondi):
     return "%d:%02d" % (minuti, secondi)
 
 
+def valori_di_stato(iterazione, losses, ritmo, obiettivo,
+                    vram_usata=None, vram_totale=None):
+    """Le coppie (etichetta, valore) dello stato, in ordine fisso.
+
+    Questa e' la sola funzione che conosce le regole -- `pezzi_di_stato` si
+    ricostruisce sopra di lei. Le stesse di sempre: cio' che non si sa non
+    compare, e una loss non numerica diventa "?" senza portarsi via le
+    altre (vedi il docstring di `pezzi_di_stato` per il perche').
+
+    Il valore di ogni coppia e' gia' il testo che una tessera mostra --
+    senza l'etichetta, che la tessera disegna per conto suo -- ed e' anche,
+    carattere per carattere, cio' che compare dentro il pezzo corrispondente
+    della striscia: chi legge le due superfici vede lo stesso numero.
+    """
+    coppie = [("iteration", "%d" % iterazione)]
+    if losses:
+        coppie.append(("loss src / dst", ", ".join(
+            "%.4f" % v if numero_finito(v) else "?" for v in losses)))
+    if ritmo is not None:
+        coppie.append(("speed", "%.2f it/s" % ritmo))
+        if obiettivo and obiettivo > iterazione and ritmo > 0:
+            coppie.append(("ETA", formatta_eta((obiettivo - iterazione) / ritmo)))
+    if numero_finito(vram_usata) and numero_finito(vram_totale):
+        coppie.append(("VRAM", "%.1f/%.1f GiB" % (vram_usata, vram_totale)))
+    return tuple(coppie)
+
+
 def pezzi_di_stato(iterazione, losses, ritmo, obiettivo,
                    vram_usata=None, vram_totale=None):
     """I pezzi della riga in ordine fisso; cio' che non si sa non compare.
@@ -101,15 +135,21 @@ def pezzi_di_stato(iterazione, losses, ritmo, obiettivo,
     anche a uno solo mancante -- src che diverge mentre dst scende e'
     proprio cio' che si vuole leggere -- mentre `"%.4f" % None` avrebbe
     tolto la riga *intera*, iterazione e ritmo ed ETA compresi.
+
+    Quali pezzi compaiono lo decide `valori_di_stato`, una volta sola: qui
+    si chiede solo "c'e' la coppia con questa etichetta?" e si formatta col
+    testo di sempre, cosi' la striscia non cambia una virgola.
     """
+    presenti = {etichetta for etichetta, _valore in valori_di_stato(
+        iterazione, losses, ritmo, obiettivo, vram_usata, vram_totale)}
     pezzi = ["iter %d" % iterazione]
-    if losses:
+    if "loss src / dst" in presenti:
         pezzi.append("loss " + ", ".join(
             "%.4f" % v if numero_finito(v) else "?" for v in losses))
-    if ritmo is not None:
+    if "speed" in presenti:
         pezzi.append("%.2f it/s" % ritmo)
-        if obiettivo and obiettivo > iterazione and ritmo > 0:
+        if "ETA" in presenti:
             pezzi.append("ETA %s" % formatta_eta((obiettivo - iterazione) / ritmo))
-    if numero_finito(vram_usata) and numero_finito(vram_totale):
+    if "VRAM" in presenti:
         pezzi.append("VRAM %.1f/%.1f GiB" % (vram_usata, vram_totale))
     return pezzi

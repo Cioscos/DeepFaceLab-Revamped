@@ -19,24 +19,27 @@ from pathlib import Path
 from PyQt5.QtCore import QSize, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QIcon, QImage, QPixmap
 from PyQt5.QtWidgets import (
-    QComboBox, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QSlider,
-    QVBoxLayout, QWidget)
+    QComboBox, QFrame, QHBoxLayout, QLabel, QPushButton, QSizePolicy,
+    QSlider, QVBoxLayout, QWidget)
 
-from gui.loss_plot import INTERVALLI, LossPlot
+from gui import testi
+from gui.finestra_immagine import FinestraImmagine
+from gui.loss_plot import COLORI, INTERVALLI, LossPlot
 from gui.loss_source import LossSource
 from gui.preview_grid import celle, etichetta, normalizza, righe_effettive
 from gui.preview_history import StoricoAnteprime
 from gui.status_line import (
-    RitmoIterazioni, iterazione_utilizzabile, obiettivo_valido, pezzi_di_stato)
+    RitmoIterazioni, iterazione_utilizzabile, obiettivo_valido, valori_di_stato)
+from gui.tessere_stato import TessereStato
 
 RITARDO_CURSORE_MS = 120     # coalizza un trascinamento veloce
 LATO_CONTORNO = 96
 LATO_MINIATURA = 64
 
-SENZA_STORICO = ("Lo storico non c'e': accendi l'opzione write_preview_history "
-                 "del modello per poter scorrere indietro nel tempo.")
-CON_STORICO = ("Trascina per fermarti a un'iterazione passata: anteprima e "
-               "grafico si spostano insieme. In fondo si torna in diretta.")
+#Nomi tenuti cosi' -- li importano i test -- ma il valore viene da gui.testi:
+#ogni testo che l'utente legge nasce li', non qui.
+SENZA_STORICO = testi.SLIDER_NO_HISTORY
+CON_STORICO = testi.SLIDER_WITH_HISTORY
 
 
 def _scalato(immagine, dimensione):
@@ -44,19 +47,56 @@ def _scalato(immagine, dimensione):
         dimensione, Qt.KeepAspectRatio, Qt.SmoothTransformation)
 
 
-def _riquadro(immagine, lato, testo):
-    """Una cella col suo nome sotto, come la finestra cv2 le etichettava."""
-    contenitore = QWidget()
-    colonna = QVBoxLayout(contenitore)
-    colonna.setContentsMargins(0, 0, 0, 0)
-    quadro = QLabel()
-    quadro.setAlignment(Qt.AlignCenter)
-    quadro.setPixmap(_scalato(immagine, QSize(lato, lato)))
-    colonna.addWidget(quadro)
-    nome = QLabel(testo)
-    nome.setAlignment(Qt.AlignCenter)
-    colonna.addWidget(nome)
-    return contenitore
+def _separatore():
+    """Una riga verticale, per raggruppare i bottoni dei comandi in basso."""
+    linea = QFrame()
+    linea.setFrameShape(QFrame.VLine)
+    linea.setFrameShadow(QFrame.Sunken)
+    return linea
+
+
+class _CellaLaterale(QWidget):
+    """Un riquadro della colonna a destra: l'immagine, il nome sotto -- come
+    la finestra cv2 le etichettava -- e adesso anche i due gesti dell'utente.
+
+    Click promuove questa cella nel riquadro grande; doppio click apre la
+    finestra a dimensione naturale. Entrambi passano dal pannello, che ha la
+    rete di ognuno dei due (`mostra_cella` tramite `_ridisegna`,
+    `apri_a_dimensione_naturale` con la propria) -- qui non c'e' nessun
+    `try`, perche' non ne serve uno: se il pannello sparisse sotto i piedi
+    di un click in corso lo si vedrebbe come ogni altro guasto del pannello,
+    non come uno di questo widget.
+    """
+
+    def __init__(self, immagine, lato, testo, riga, colonna, pannello, parent=None):
+        super().__init__(parent)
+        self.setProperty("cella", (riga, colonna))
+        self._riga = riga
+        self._colonna = colonna
+        self._pannello = pannello
+
+        contenuto = QVBoxLayout(self)
+        contenuto.setContentsMargins(0, 0, 0, 0)
+        quadro = QLabel()
+        quadro.setAlignment(Qt.AlignCenter)
+        quadro.setPixmap(_scalato(immagine, QSize(lato, lato)))
+        contenuto.addWidget(quadro)
+        nome = QLabel(testo)
+        nome.setAlignment(Qt.AlignCenter)
+        contenuto.addWidget(nome)
+        #Sul contenitore, non sull'immagine o sull'etichetta: i due gesti si
+        #fanno su tutta la cella, quindi il suggerimento che li nomina deve
+        #comparire su tutta la cella. Senza, niente a schermo dice che una
+        #cella si puo' cliccare.
+        self.setToolTip(testi.cell_tip(testo))
+
+    #override
+    def mousePressEvent(self, event):
+        self._pannello.mostra_cella(self._colonna)
+
+    #override
+    def mouseDoubleClickEvent(self, event):
+        self._pannello.apri_a_dimensione_naturale(self._riga, self._colonna)
 
 
 def _righe_dei_nomi(nomi_file):
@@ -116,6 +156,10 @@ class _Riquadro(QLabel):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._sorgente = None
+        #Impostato dal pannello dopo la costruzione: senza immagine il
+        #doppio click non deve fare niente, quindi None e' un valore
+        #legittimo, non un buco da riempire a forza.
+        self.doppio_click = None
 
     def imposta_immagine(self, immagine):
         self._sorgente = immagine
@@ -130,9 +174,37 @@ class _Riquadro(QLabel):
         super().resizeEvent(event)
         self._disegna()
 
+    #override
+    def mouseDoubleClickEvent(self, event):
+        if self.doppio_click is not None:
+            self.doppio_click()
+
     def _disegna(self):
         if self._sorgente is not None:
             self.setPixmap(_scalato(self._sorgente, self.size()))
+
+
+class _BottoneMiniatura(QPushButton):
+    """Una miniatura della striscia dei campioni: click sceglie il
+    campione, come oggi -- doppio click apre la sua cella a dimensione
+    naturale, il gesto nuovo di questo widget."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.doppio_click = None
+        #Di default un QPushButton e' orizzontalmente Minimum: il
+        #sizeHint() e' un minimo, non un massimo, e cresce per riempire lo
+        #spazio che il layout gli offre -- in una striscia con poche
+        #miniature quello spazio e' tanto, e il risultato era un riquadro
+        #quasi vuoto con l'icona persa al centro invece di una miniatura
+        #della sua misura naturale.
+        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+
+    #override
+    def mouseDoubleClickEvent(self, event):
+        super().mouseDoubleClickEvent(event)
+        if self.doppio_click is not None:
+            self.doppio_click()
 
 
 class TrainingPanel(QWidget):
@@ -166,11 +238,30 @@ class TrainingPanel(QWidget):
         self.storico = None
         self._model = {"name": None, "dir": None, "target_iter": 0}
         self._ritmo = RitmoIterazioni()
+        #Le coppie dell'ultimo evento `iter`, tenute perche' le tessere si
+        #ridisegnano anche quando non arriva nessun evento -- entrare e
+        #uscire dallo storico ne cambia una senza che il training abbia
+        #detto niente di nuovo.
+        self._coppie_stato = ()
         self._iterazione_viva = None     # l'ultima annunciata da un evento preview
         self._immagine_storico = None
         self._iterazioni = []            # gli scatti che lo storico ha su disco
         self._cella_risultato = None
-        self._parti = []                 # i pezzi della riga di stato
+        #Solo la colonna e' uno stato della vista che l'utente puo' promuovere
+        #con un click: None finche' nessun click l'ha mai toccata. La riga
+        #resta quella che era gia' -- campione_selezionato o il risultato
+        #dichiarato -- apposta, cosi' scegliere un altro campione muove
+        #ancora il riquadro grande anche dopo aver promosso una colonna,
+        #invece di restare congelato sulla riga di quando si e' cliccato.
+        #Un descrittore nuovo che non ha piu' quella colonna (meno colonne di
+        #prima) la riporta al risultato dichiarato invece di indicizzare
+        #fuori.
+        self._colonna_mostrata = None
+        #Il pubblico: la coppia (riga, colonna) davvero mostrata nel
+        #riquadro grande adesso, ricalcolata a ogni disegno -- None solo
+        #prima che una griglia sia mai stata disegnata. E' anche cio' che il
+        #doppio click sul riquadro grande apre.
+        self.cella_mostrata = None
         #Un campo per produttore, non una casella sola. Chi scrive qui non
         #si parla: la consegna del CSV arriva da un thread quando gli pare,
         #l'anteprima da un evento del figlio, l'esito quando il figlio
@@ -186,28 +277,54 @@ class TrainingPanel(QWidget):
 
         layout = QVBoxLayout(self)
 
+        #Il selettore dell'anteprima -- quale delle immagini che il modello
+        #manda -- e, quando il descrittore dice righe_sono_campioni, un
+        #secondo modo di scegliere il campione: la stessa cosa che un click
+        #sulla striscia in basso fa gia', non un terzo stato che vive da
+        #solo (vedi _sincronizza_selettore_campione).
         alto = QHBoxLayout()
+        alto.addWidget(QLabel(testi.PREVIEW_LABEL))
         self.selettore = QComboBox()
+        self.selettore.setToolTip(testi.PREVIEW_SELECTOR_TIP)
         self.selettore.currentTextChanged.connect(self._su_cambio_anteprima)
         alto.addWidget(self.selettore, 1)
-        self.intervallo = QComboBox()
-        for n in INTERVALLI:
-            self.intervallo.addItem("tutto" if n == 0 else str(n), n)
-        self.intervallo.currentIndexChanged.connect(
-            lambda _i: self.plot.imposta_intervallo(self.intervallo.currentData()))
-        alto.addWidget(self.intervallo)
+        self.selettore_campione = QComboBox()
+        self.selettore_campione.setToolTip(testi.SAMPLE_SELECTOR_TIP)
+        self.selettore_campione.setVisible(False)     # niente da scegliere finche' non c'e' una griglia a campioni
+        self.selettore_campione.currentIndexChanged.connect(self.seleziona_campione)
+        alto.addWidget(self.selettore_campione)
         layout.addLayout(alto)
 
+        #Le tessere, sopra il centro: il progresso si legge da lontano,
+        #prima ancora di guardare le immagini o il grafico.
+        self.tessere = TessereStato()
+        layout.addWidget(self.tessere)
+
+        #I due allunghi ai lati raccolgono cio' che ne' il riquadro grande ne'
+        #la colonna possono usare: l'anteprima e' quadra e limitata
+        #dall'altezza, quindi la larghezza avanzata esiste sempre -- l'unica
+        #scelta e' dove metterla. Ai lati il gruppo anteprima+celle resta
+        #unito e centrato; dentro il riquadro grande, come prima, diventava
+        #una banda di niente proprio fra le due cose da confrontare.
         centro = QHBoxLayout()
+        centro.addStretch(1)
         self.risultato = _Riquadro()
         self.risultato.setAlignment(Qt.AlignCenter)
         self.risultato.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
         self.risultato.setMinimumSize(256, 256)
-        centro.addWidget(self.risultato, 2)
+        self.risultato.doppio_click = self._apri_grande
+        centro.addWidget(self.risultato, 1)
         self.contorno = QVBoxLayout()      # le altre celle della riga
-        contorno_widget = QWidget()
-        contorno_widget.setLayout(self.contorno)
-        centro.addWidget(contorno_widget, 1)
+        #Fattore di allungamento 0, e la colonna si prende la larghezza che
+        #le serve: le celle sono a lato fisso (LATO_CONTORNO), quindi con un
+        #fattore >0 lo spazio in piu' finiva dentro la colonna e restava
+        #vuoto -- una banda di centinaia di pixel di niente fra il riquadro
+        #grande e le celle, a ogni scala. Adesso tutto cio' che avanza va al
+        #riquadro grande, che e' l'unica cosa che sa cosa farsene.
+        self.contorno_widget = QWidget()
+        self.contorno_widget.setLayout(self.contorno)
+        centro.addWidget(self.contorno_widget, 0)
+        centro.addStretch(1)
         layout.addLayout(centro, 1)
 
         self.striscia = QHBoxLayout()      # miniature dei campioni
@@ -215,33 +332,80 @@ class TrainingPanel(QWidget):
         striscia_widget.setLayout(self.striscia)
         layout.addWidget(striscia_widget)
 
+        #La barra del grafico: nome, l'intervallo che lo comanda -- prima
+        #era in cima alla scheda, lontanissimo da cio' che comanda, ed era
+        #tutta la ragione per cui non si capiva -- e la legenda dei colori,
+        #accanto perche' e' li' che serve leggerla.
+        self.barra_grafico = QWidget()
+        riga_grafico = QHBoxLayout(self.barra_grafico)
+        riga_grafico.setContentsMargins(0, 0, 0, 0)
+        riga_grafico.addWidget(QLabel(testi.LOSS_CHART))
+        riga_grafico.addWidget(QLabel(testi.RANGE_LABEL))
+        self.intervallo = QComboBox()
+        self.intervallo.setToolTip(testi.RANGE_TIP)
+        for n in INTERVALLI:
+            testo = testi.RANGE_ALL if n == 0 else testi.range_last_label(n)
+            suggerimento = testi.RANGE_ALL_TIP if n == 0 else testi.RANGE_LAST_TIP
+            self.intervallo.addItem(testo, n)
+            self.intervallo.setItemData(self.intervallo.count() - 1, suggerimento, Qt.ToolTipRole)
+        self.intervallo.currentIndexChanged.connect(
+            lambda _i: self.plot.imposta_intervallo(self.intervallo.currentData()))
+        riga_grafico.addWidget(self.intervallo)
+        self.legenda = QLabel(testi.loss_legend_html(COLORI[0], COLORI[1]))
+        riga_grafico.addWidget(self.legenda)
+        riga_grafico.addStretch(1)
+        layout.addWidget(self.barra_grafico)
+
         self.plot = LossPlot()
         layout.addWidget(self.plot)
 
+        riga_cursore = QHBoxLayout()
         self.cursore = QSlider(Qt.Horizontal)
         self.cursore.setEnabled(False)
         self.cursore.setToolTip(SENZA_STORICO)
         self.cursore.valueChanged.connect(self._su_cursore)
-        layout.addWidget(self.cursore)
+        riga_cursore.addWidget(self.cursore, 1)
+        #Dice dov'e' fermo il pannello: "Live" mentre segue il training,
+        #l'iterazione quando e' fermo nello storico -- aggiornata in vai_a
+        #e in torna_in_diretta.
+        self.etichetta_cursore = QLabel(testi.cursor_live())
+        riga_cursore.addWidget(self.etichetta_cursore)
+        layout.addLayout(riga_cursore)
 
         self.stato = QLabel("")
         self.stato.setWordWrap(True)
+        self.stato.setVisible(False)     # niente da dire finche' non arriva un avviso
         layout.addWidget(self.stato)
 
+        #I comandi, raggruppati con due separatori: seguire/aggiornare
+        #l'anteprima, poi salvare/backuppare senza fermarsi, poi lo Stop --
+        #che ha il proprio ruolo per il foglio di stile (il rosso viene da
+        #li', non da un colore impostato a mano) e resta l'ultimo, isolato
+        #dagli altri quattro perche' e' l'unico che ferma il training.
         basso = QHBoxLayout()
-        self.diretta_button = QPushButton("Diretta")
+        self.diretta_button = QPushButton(testi.LIVE)
+        self.diretta_button.setToolTip(testi.LIVE_TIP)
         self.diretta_button.clicked.connect(self.torna_in_diretta)
-        self.aggiorna_button = QPushButton("Aggiorna anteprima")
+        self.aggiorna_button = QPushButton(testi.REFRESH_PREVIEW)
+        self.aggiorna_button.setToolTip(testi.REFRESH_PREVIEW_TIP)
         self.aggiorna_button.clicked.connect(lambda: self.comando.emit("preview"))
-        self.save_button = QPushButton("Save")
+        basso.addWidget(self.diretta_button)
+        basso.addWidget(self.aggiorna_button)
+        basso.addWidget(_separatore())
+        self.save_button = QPushButton(testi.SAVE)
+        self.save_button.setToolTip(testi.SAVE_TIP)
         self.save_button.clicked.connect(lambda: self.comando.emit("save"))
-        self.backup_button = QPushButton("Backup")
+        self.backup_button = QPushButton(testi.BACKUP)
+        self.backup_button.setToolTip(testi.BACKUP_TIP)
         self.backup_button.clicked.connect(lambda: self.comando.emit("backup"))
-        self.stop_button = QPushButton("Stop")
+        basso.addWidget(self.save_button)
+        basso.addWidget(self.backup_button)
+        basso.addWidget(_separatore())
+        self.stop_button = QPushButton(testi.STOP)
+        self.stop_button.setProperty("ruolo", "stop")
+        self.stop_button.setToolTip(testi.STOP_TIP)
         self.stop_button.clicked.connect(lambda: self.comando.emit("close"))
-        for b in (self.diretta_button, self.aggiorna_button, self.save_button,
-                  self.backup_button, self.stop_button):
-            basso.addWidget(b)
+        basso.addWidget(self.stop_button)
         layout.addLayout(basso)
 
         self._timer_cursore = QTimer(self)
@@ -330,7 +494,7 @@ class TrainingPanel(QWidget):
             sorgente = LossSource(percorso)
             sorgente.ricarica()
             avviso = ("" if sorgente.errore is None else
-                      "la storia della loss non si legge: %s" % sorgente.errore)
+                      testi.loss_history_unreadable(sorgente.errore))
             try:
                 self._sorgente_pronta.emit(sorgente, generazione, avviso)
             except RuntimeError:
@@ -424,8 +588,7 @@ class TrainingPanel(QWidget):
             descrittori[nome] = normalizza(voce)
             arrivate += 1
         if not arrivate:
-            self._avviso_anteprima = ("anteprima annunciata ma non leggibile: "
-                                      "resta l'ultima arrivata")
+            self._avviso_anteprima = testi.preview_unreadable()
             self._aggiorna_stato()
             return
         self._immagini, self._descrittori = immagini, descrittori
@@ -451,7 +614,7 @@ class TrainingPanel(QWidget):
         #della loss e il ritmo tengono l'ultimo punto, ed e' proprio quello
         #che un valore storto avvelena, per tutto il resto della corsa.
         if not iterazione_utilizzabile(iterazione):
-            raise ValueError("iterazione non utilizzabile: %r" % (iterazione,))
+            raise ValueError(testi.iteration_not_usable(iterazione))
         losses = event.get("losses") or []
         #Solo se la sorgente l'ha accettato. La lista qui e' la copia che
         #serve al travaso nella sorgente che la lettura del CSV consegnera',
@@ -462,9 +625,13 @@ class TrainingPanel(QWidget):
 
         ritmo = self._ritmo.aggiorna(iterazione, time.monotonic())
 
-        self._parti = pezzi_di_stato(
+        self._coppie_stato = valori_di_stato(
             iterazione, losses, ritmo, self._model["target_iter"],
             event.get("vram_usata_gib"), event.get("vram_totale_gib"))
+        self._disegna_tessere()
+        #Il progresso e' nelle tessere adesso, ma la riga di avvisi va
+        #ricomposta lo stesso: e' lei a dire quanti valori di questa loss
+        #non erano disegnabili (`_avviso_scarti`, contati dalla sorgente).
         self._aggiorna_stato()
         self._aggiorna_grafico()
 
@@ -495,11 +662,73 @@ class TrainingPanel(QWidget):
         self.campione_selezionato = max(0, min(int(indice), self._righe_correnti() - 1))
         self._ridisegna()
 
+    def mostra_cella(self, colonna):
+        """Porta una cella nel riquadro grande. Le altre restano di lato.
+
+        Solo la colonna: le celle laterali stanno tutte nella riga di
+        adesso, quindi promuoverne una significa solo cambiare colonna. La
+        riga resta quella che era gia' -- campione_selezionato o il
+        risultato dichiarato -- cosi' un click successivo su una miniatura
+        continua a spostare il riquadro grande invece di restare congelato
+        sulla riga di quando si e' promossa la colonna.
+
+        Passa da `_ridisegna`, che ha gia' la sua rete: e' il motivo per cui
+        questo metodo puo' essere chiamato da un click senza avere una rete
+        propria.
+        """
+        self._colonna_mostrata = colonna
+        self._ridisegna()
+
+    def apri_a_dimensione_naturale(self, riga, colonna):
+        """Uno scatto: apre una finestra con quella cella, cosi' com'e' ora.
+
+        Non passa da `_ridisegna` -- non tocca i widget del pannello, ne
+        costruisce uno nuovo che vive per conto suo -- quindi ha bisogno
+        della propria rete: chiamato da un doppio click, cioe' da uno slot
+        Qt senza rete propria, dove un'eccezione non risale a nessuno e
+        porta via il processo con dentro ogni altro training aperto (la
+        stessa classe di guasto della voce 3.23).
+        """
+        try:
+            immagine = self._cella_a(riga, colonna)
+            if immagine is None:
+                return None
+            titolo = testi.preview_window_title(
+                etichetta(self.descrittore_corrente(), riga, colonna), self.iterazione_mostrata)
+            finestra = FinestraImmagine(immagine, titolo, parent=self)
+            finestra.show()
+            return finestra
+        except Exception as errore:
+            self._avviso_disegno = testi.preview_not_drawable(
+                type(errore).__name__, errore)
+            self._aggiorna_stato()
+            return None
+
+    def _apri_grande(self):
+        """Il doppio click sul riquadro grande: la cella che ha in mano ora."""
+        if self.cella_mostrata is not None:
+            self.apri_a_dimensione_naturale(*self.cella_mostrata)
+
+    def _cella_a(self, riga, colonna):
+        """La QImage di una cella qualunque della griglia di adesso, o None
+        se l'immagine, il descrittore o la coordinata non ci sono."""
+        immagine = self.immagine_intera()
+        descrittore = self.descrittore_corrente()
+        if immagine is None or descrittore is None:
+            return None
+        colonne = descrittore["colonne"]
+        righe = righe_effettive(immagine, colonne)
+        if not (0 <= riga < righe and 0 <= colonna < colonne):
+            return None
+        return celle(immagine, colonne, righe)[riga][colonna]
+
     def vai_a(self, iterazione):
         """Ferma il pannello a un'iterazione: immagine e curva insieme."""
         self.modo = "storico"
         self.iterazione_mostrata = iterazione
         self.plot.imposta_cursore(iterazione)
+        self.etichetta_cursore.setText(testi.cursor_at_iteration(iterazione))
+        self._disegna_tessere()
         self._aggiorna_grafico()
         if iterazione in self._iterazioni:
             self._muovi_cursore(self._iterazioni.index(iterazione))
@@ -514,6 +743,8 @@ class TrainingPanel(QWidget):
         self._immagine_storico = None
         self.iterazione_mostrata = self._iterazione_viva
         self.plot.imposta_cursore(None)
+        self.etichetta_cursore.setText(testi.cursor_live())
+        self._disegna_tessere()
         self._aggiorna_grafico()
         if self._iterazioni:
             self._muovi_cursore(len(self._iterazioni) - 1)
@@ -530,8 +761,7 @@ class TrainingPanel(QWidget):
         si cattura niente: si mostra soltanto cosa non e' stato applicato, in
         un campo proprio come ogni altro produttore della riga di stato.
         """
-        self._avviso_evento = "evento non applicato: %s: %s" % (
-            type(errore).__name__, errore)
+        self._avviso_evento = testi.event_not_applied(type(errore).__name__, errore)
         self._aggiorna_stato()
 
     def job_finito(self, codice):
@@ -539,7 +769,7 @@ class TrainingPanel(QWidget):
         for b in (self.stop_button, self.save_button, self.backup_button,
                   self.aggiorna_button):
             b.setVisible(False)
-        self._esito_job = "job finito (codice %d)" % codice
+        self._esito_job = testi.job_finished(codice)
         self._aggiorna_stato()
 
     # -- il resto --------------------------------------------------------
@@ -564,6 +794,30 @@ class TrainingPanel(QWidget):
             self.selettore.setCurrentText(precedente)
         self.selettore.blockSignals(bloccato)
         self.anteprima_selezionata = self.selettore.currentText() or None
+
+    def _sincronizza_selettore_campione(self, righe_sono_campioni, righe, riga):
+        """Il selettore del campione, allineato alla griglia di adesso.
+
+        Seconda via per lo stesso stato della striscia sotto, non un terzo
+        stato: le voci si ricostruiscono solo quando il numero di campioni
+        cambia, e l'indice corrente segue sempre `riga` -- con i segnali
+        bloccati, cosi' un giro di sincronizzazione non ne apre un altro.
+        E' lo stesso schema di `_sincronizza_selettore` qui sopra, per lo
+        stesso motivo.
+        """
+        if not righe_sono_campioni:
+            self.selettore_campione.setVisible(False)
+            return
+        self.selettore_campione.setVisible(True)
+        etichette = [testi.sample_label(indice) for indice in range(righe)]
+        bloccato = self.selettore_campione.blockSignals(True)
+        attuali = [self.selettore_campione.itemText(i)
+                  for i in range(self.selettore_campione.count())]
+        if attuali != etichette:
+            self.selettore_campione.clear()
+            self.selettore_campione.addItems(etichette)
+        self.selettore_campione.setCurrentIndex(riga)
+        self.selettore_campione.blockSignals(bloccato)
 
     def _su_cursore(self, indice):
         if not self._iterazioni:
@@ -599,6 +853,30 @@ class TrainingPanel(QWidget):
         if self._iterazioni and self.modo == "diretta":
             self._muovi_cursore(len(self._iterazioni) - 1)
 
+    def _disegna_tessere(self):
+        """Le tessere dell'ultimo evento `iter`, con l'iterazione di cio' che
+        si sta davvero guardando.
+
+        In diretta le due coincidono e non succede niente. Nello storico no:
+        anteprima, curva e cursore sono fermi a un'iterazione, e la tessera
+        continuava a scrivere quella viva -- il numero piu' grande dello
+        schermo che dice la cosa sbagliata proprio mentre tutto il resto ne
+        dice un'altra. Qui cambia **chiave**, non solo valore, cosi' la
+        didascalia diventa "Iteration (history)" e `valori()` continua a
+        raccontare cosa la tessera sta mostrando davvero.
+
+        Gli altri numeri restano quelli della corsa viva ed e' corretto che
+        lo siano: velocita', ETA e VRAM sono misure di adesso, non di
+        allora, e lo storico non ne conserva nessuna.
+        """
+        coppie = self._coppie_stato
+        if self.modo == "storico" and iterazione_utilizzabile(self.iterazione_mostrata):
+            coppie = tuple(
+                (testi.TILE_KEY_ITERATION_HISTORY, "%d" % self.iterazione_mostrata)
+                if chiave == testi.TILE_KEY_ITERATION else (chiave, valore)
+                for chiave, valore in coppie)
+        self.tessere.aggiorna(coppie)
+
     def _aggiorna_grafico(self):
         fino_a = self.iterazione_mostrata if self.modo == "storico" else None
         self.plot.imposta_dati(*self.loss.punti(fino_a=fino_a))
@@ -628,24 +906,30 @@ class TrainingPanel(QWidget):
         self._ridisegna()
 
     def _aggiorna_stato(self):
-        """La riga di stato, composta adesso a partire da tutti i produttori.
+        """La riga di avvisi sotto le tessere, composta dai soli produttori
+        che restano testo: il progresso adesso vive in `self.tessere`.
 
         L'ordine e' fisso e i pezzi vuoti spariscono, cosi' un avviso che va
-        e viene non sposta gli altri di posto: prima il progresso, poi cosa
-        non si e' potuto mostrare, poi cosa non si e' potuto leggere, poi
-        quali valori non si sono potuti disegnare, poi quale immagine non si
-        e' potuta disegnare, poi cosa non si e' potuto applicare, e in fondo
-        l'esito -- l'ultima parola, quando c'e'.
+        e viene non sposta gli altri di posto: prima cosa non si e' potuto
+        mostrare, poi cosa non si e' potuto leggere, poi quali valori non si
+        sono potuti disegnare, poi quale immagine non si e' potuta
+        disegnare, poi cosa non si e' potuto applicare, e in fondo l'esito
+        -- l'ultima parola, quando c'e'.
 
         Il pezzo dei valori scartati non ha un campo suo: e' la sorgente a
         contarli, e la sorgente viene sostituita a ogni consegna del CSV.
         Chiederglielo al momento di scrivere e' l'unico modo perche' il
         numero racconti la curva che si sta guardando adesso.
+
+        Nessun avviso da dire: la riga si nasconde, invece di restare a
+        schermo vuota fra le tessere e il grafico.
         """
-        pezzi = self._parti + [self._avviso_anteprima, self._avviso_loss,
-                               self._avviso_scarti(), self._avviso_disegno,
-                               self._avviso_evento, self._esito_job]
-        self.stato.setText(" | ".join(p for p in pezzi if p))
+        pezzi = [self._avviso_anteprima, self._avviso_loss,
+                self._avviso_scarti(), self._avviso_disegno,
+                self._avviso_evento, self._esito_job]
+        testo = " | ".join(p for p in pezzi if p)
+        self.stato.setText(testo)
+        self.stato.setVisible(bool(testo))
 
     def _avviso_scarti(self):
         """Quanti valori di loss non erano disegnabili, quando ce ne sono.
@@ -658,9 +942,7 @@ class TrainingPanel(QWidget):
         quanti = self.loss.scartati
         if not quanti:
             return ""
-        if quanti == 1:
-            return "1 valore di loss non disegnabile (NaN o infinito)"
-        return "%d valori di loss non disegnabili (NaN o infinito)" % quanti
+        return testi.loss_values_dropped(quanti)
 
     def _righe_correnti(self):
         immagine, descrittore = self.immagine_intera(), self.descrittore_corrente()
@@ -683,7 +965,7 @@ class TrainingPanel(QWidget):
         try:
             self._disegna()
         except Exception as errore:
-            self._avviso_disegno = "anteprima non disegnabile: %s: %s" % (
+            self._avviso_disegno = testi.preview_not_drawable(
                 type(errore).__name__, errore)
             self._aggiorna_stato()
 
@@ -702,43 +984,81 @@ class TrainingPanel(QWidget):
         descrittore = self.descrittore_corrente()
         if immagine is None:
             self.risultato.pulisci()
+            self.selettore_campione.setVisible(False)
             return
         risultato = descrittore["risultato"] if descrittore is not None else None
         if risultato is None:
             #Senza descrittore, o senza la cella che dichiara il risultato,
             #l'immagine intera: meglio nessuna etichetta che una sbagliata.
             self.risultato.imposta_immagine(immagine)
-            self.risultato.setToolTip("\n".join(_righe_dei_nomi(self._nomi_file)))
+            self.risultato.setToolTip("\n".join(
+                [testi.BIG_FRAME_WHOLE_TIP] + _righe_dei_nomi(self._nomi_file)))
+            self.selettore_campione.setVisible(False)
             return
         colonne = descrittore["colonne"]
         righe = righe_effettive(immagine, colonne)
         #Con righe_sono_campioni la riga la sceglie l'utente; senza, la
         #dichiara il modello -- le righe sono viste diverse, non campioni.
+        #Questo calcolo non cambia mai per via di una colonna promossa: e'
+        #cosi' che scegliere un altro campione continua a spostare il
+        #riquadro grande anche dopo un click su una cella laterale, invece
+        #di restare congelato sulla riga di quando si e' cliccato.
         riga = self.campione_selezionato if descrittore["righe_sono_campioni"] else risultato[0]
         riga = max(0, min(riga, righe - 1))
+        self._sincronizza_selettore_campione(descrittore["righe_sono_campioni"], righe, riga)
         griglia = celle(immagine, colonne, righe)
-        self._cella_risultato = griglia[riga][risultato[1]]
+
+        #La colonna mostrata e' uno stato della vista, non del descrittore:
+        #un click la promuove, ma non deve mai indicizzare fuori dalla
+        #griglia di adesso -- un descrittore nuovo che non la contiene piu'
+        #(meno colonne di quante ne avesse quello di prima) la riporta alla
+        #colonna del risultato dichiarato, che e' sempre valida quanto lo e'
+        #il descrittore stesso (normalizza() la valida contro le stesse
+        #`colonne` usate qui, mai ricalcolate dall'immagine come le righe).
+        colonna_grande = self._colonna_mostrata
+        if colonna_grande is not None and not (0 <= colonna_grande < colonne):
+            colonna_grande = None
+            self._colonna_mostrata = None
+        if colonna_grande is None:
+            colonna_grande = risultato[1]
+
+        self._cella_risultato = griglia[riga][colonna_grande]
+        self.cella_mostrata = (riga, colonna_grande)
         self.risultato.imposta_immagine(self._cella_risultato)
         self.risultato.setToolTip("\n".join(
-            [etichetta(descrittore, riga, risultato[1])] + _righe_dei_nomi(self._nomi_file)))
+            [testi.big_frame_tip(etichetta(descrittore, riga, colonna_grande))]
+            + _righe_dei_nomi(self._nomi_file)))
         for colonna in range(colonne):
-            if colonna != risultato[1]:
-                self.contorno.addWidget(_riquadro(griglia[riga][colonna], LATO_CONTORNO,
-                                                  etichetta(descrittore, riga, colonna)))
+            if colonna != colonna_grande:
+                laterale = _CellaLaterale(griglia[riga][colonna], LATO_CONTORNO,
+                                          etichetta(descrittore, riga, colonna),
+                                          riga, colonna, self)
+                self.contorno.addWidget(laterale)
         if descrittore["righe_sono_campioni"]:
+            #La colonna mostrata, non risultato[1]: sotto al volto che si
+            #sta guardando ci sono gli altri campioni della stessa cosa,
+            #anche dopo aver promosso una colonna diversa da quella del
+            #risultato dichiarato.
             for indice in range(righe):
-                self.striscia.addWidget(self._miniatura(griglia[indice][risultato[1]],
-                                                        indice, indice == riga))
+                self.striscia.addWidget(self._miniatura(griglia[indice][colonna_grande],
+                                                        indice, indice == riga,
+                                                        indice, colonna_grande))
         else:
             for nome in self.anteprime_disponibili():
                 self.striscia.addWidget(QLabel(nome))
+        #Senza, le miniature (gia' a misura fissa) restano allineate a
+        #sinistra ma lo spazio avanzato si spalma comunque nella riga
+        #attraverso il layout stesso; con lo stretch in coda finisce tutto
+        #alla fine della riga, dove non sposta niente.
+        self.striscia.addStretch(1)
 
-    def _miniatura(self, immagine, indice, scelto):
-        bottone = QPushButton()
+    def _miniatura(self, immagine, indice, scelto, riga, colonna):
+        bottone = _BottoneMiniatura()
         bottone.setIcon(QIcon(QPixmap.fromImage(immagine)))
         bottone.setIconSize(QSize(LATO_MINIATURA, LATO_MINIATURA))
         bottone.setCheckable(True)
         bottone.setChecked(scelto)
-        bottone.setToolTip("campione %d" % indice)
+        bottone.setToolTip(testi.thumbnail_tip(indice))
         bottone.clicked.connect(lambda _c, i=indice: self.seleziona_campione(i))
+        bottone.doppio_click = lambda r=riga, c=colonna: self.apri_a_dimensione_naturale(r, c)
         return bottone

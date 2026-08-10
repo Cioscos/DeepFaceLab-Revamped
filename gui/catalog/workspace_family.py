@@ -6,6 +6,7 @@ from gui.catalog.model import (
 STEPS = (
     StepDef(
         name="1) clear workspace",
+        summary="Wipes data_src, data_dst and model back to empty folders. Keeps the source videos and any result.",
         family="workspace",
         kind=KIND_CLEAR,
         process=PROCESS_BATCH,
@@ -17,6 +18,7 @@ STEPS = (
     ),
     StepDef(
         name="10.misc) start EBSynth",
+        summary="Opens the EBSynth application with the bundled sample project. Windows only.",
         family="workspace",
         kind=KIND_EBSYNTH,
         process=PROCESS_BATCH,

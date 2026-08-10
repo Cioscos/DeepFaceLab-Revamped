@@ -119,6 +119,15 @@ _MERGE_MODE = FieldDef(
     choices=("original", "overlay", "hist-match", "seamless",
              "seamless-hist-match", "raw-rgb", "raw-predict"),
     choice_values=(0, 1, 2, 3, 4, 5, 6),
+    choice_help=(
+        "Passes the destination frame through untouched, no face swapped in. Useful to confirm the pipeline runs before tuning anything.",
+        "Pastes the predicted face over the destination using the chosen mask. The default, and the one to start from.",
+        "Like overlay, plus a histogram match to bring the predicted face's tones closer to the destination's.",
+        "Like overlay, but blends the seam with OpenCV's seamless (Poisson) cloning instead of a plain mask edge.",
+        "Seamless cloning plus the histogram match -- the heaviest combination of the two blending styles.",
+        "Pastes the predicted face at full frame position without any mask blending, for inspecting the raw output or compositing it yourself downstream.",
+        "Outputs only the predicted face crop itself, not warped back into the frame -- what the model actually produced, nothing else.",
+    ),
     help="Non-interactive default; the interactive session's first-frame default is also 'overlay'.",
     enabled_if=("use-interactive-merger=n",),
 )
@@ -152,6 +161,18 @@ _MERGE_MASK_MODE = FieldDef(
              "XSeg-prd", "XSeg-dst", "XSeg-prd*XSeg-dst",
              "learned-prd*learned-dst*XSeg-prd*XSeg-dst"),
     choice_values=(0, 1, 2, 3, 4, 5, 6, 7, 8, 9),
+    choice_help=(
+        "No masking at all: everything inside the predicted face square is pasted, borders included.",
+        "The destination frame's own landmark mask. Follows the real face outline, but ignores anything the model learned about occlusion.",
+        "The mask the model learned to predict for the swapped face itself. The usual choice when the model was trained with masked training on.",
+        "The mask the model learned to predict for the destination face. Tends to hug the real outline more closely than the swapped-face mask above.",
+        "The two masks above kept where they agree: the most conservative combination of what the model learned.",
+        "The two masks above joined: covers more than either alone, at the risk of including area neither predicted confidently.",
+        "An XSeg mask computed on the predicted, swapped face using the trained XSeg model.",
+        "An XSeg mask computed on the destination face using the trained XSeg model. Use it when you labelled the destination with the XSeg editor.",
+        "The two XSeg masks above kept where they agree: the most conservative XSeg combination, and the one that survives hands and hair best.",
+        "All four masks above -- both learned and both XSeg -- kept only where every one of them agrees. The tightest and safest of the ten, at the risk of cutting too much.",
+    ),
     help="Not gated by Mode -- always asked when the battery runs. Differs from the interactive session's first-frame default of 'learned-prd*learned-dst'.",
     enabled_if=("use-interactive-merger=n",),
 )
@@ -202,6 +223,16 @@ _COLOR_TRANSFER_MODE = FieldDef(
     kind=FIELD_CHOICE,
     default=None,
     choices=("rct", "lct", "mkl", "mkl-m", "idt", "idt-m", "sot-m", "mix-m"),
+    choice_help=(
+        "Reinhard colour transfer: fast, matches the average colour and contrast of the destination. The safe first try.",
+        "Linear colour transfer: gentler than rct, keeps more of the predicted face's own tonality.",
+        "Monge-Kantorovich transfer: matches the full colour distribution over the whole crop, better on a strong colour cast, slower than rct/lct.",
+        "As mkl, but computed only from the pixels inside the face mask, ignoring the background around the crop.",
+        "Iterative distribution transfer over the whole crop: a closer colour match than mkl, and slower.",
+        "As idt, restricted to the face mask -- the closer match without letting the background skew it.",
+        "Sliced optimal transport restricted to the face mask: the most thorough match here, and the slowest of the eight -- expect it to cost real time per frame.",
+        "A blend: linear transfer for lightness, sliced optimal transport for colour, both restricted to the face mask. A compromise when no single mode looks right.",
+    ),
     help="Only asked by the console when Mode is not 'raw-rgb'/'raw-predict'. The console default is an empty answer, which resolves to no color transfer ('None') -- a value this field's choices cannot express, since only the eight named modes are valid answers; leaving this field unanswered has the same effect.",
     enabled_if=("use-interactive-merger=n", "choose-mode!=raw-rgb", "choose-mode!=raw-predict"),
 )
@@ -213,6 +244,11 @@ _SHARPEN_MODE = FieldDef(
     default="none",
     choices=("none", "box", "gaussian"),
     choice_values=(0, 1, 2),
+    choice_help=(
+        "No sharpening applied.",
+        "Box-filter sharpening: cheap, can look a bit harsh on edges.",
+        "Gaussian sharpening: smoother than box, usually the better default when sharpening is wanted.",
+    ),
     help="Enhance details by applying sharpen filter.",
     enabled_if=("use-interactive-merger=n",),
 )
@@ -304,9 +340,52 @@ _SAEHD_MERGE_FIELDS = (
     + (_NUMBER_OF_WORKERS, _USE_SAVED_SESSION)
 )
 
+# ---- Form sections ----------------------------------------------------
+#
+# Grouped by what a user is looking for: the general session controls
+# first (which device, which mode, how many workers, whether to resume a
+# saved session), then the three parts of the settings battery in the
+# order they visually stack on the composited frame -- the mask that
+# selects the area, the color that matches it to the plate, and the
+# sharpening/denoising/super-resolution pass applied last. AMP's own
+# `morph-factor` prompt joins the general controls, since it is asked
+# before the mode is even chosen.
+
+_SEZIONI_MERGE_AMP = (
+    ("Output", ("which-gpu-indexes-to-choose", "morph-factor",
+               "use-interactive-merger", "choose-mode",
+               "choose-output-face-scale-modifier", "number-of-workers",
+               "use-saved-session")),
+    ("Mask", ("masked-hist-match", "hist-match-threshold", "choose-mask-mode",
+             "choose-erode-mask-modifier", "choose-blur-mask-modifier",
+             "choose-motion-blur-power")),
+    ("Color", ("color-transfer-to-predicted-face",
+              "choose-image-degrade-by-denoise-power",
+              "choose-image-degrade-by-bicubic-rescale-power",
+              "degrade-color-power-of-final-image")),
+    ("Sharpening", ("choose-sharpen-mode", "choose-blursharpen-amount",
+                    "choose-super-resolution-power")),
+)
+
+_SEZIONI_MERGE_SAEHD = (
+    ("Output", ("which-gpu-indexes-to-choose", "use-interactive-merger",
+               "choose-mode", "choose-output-face-scale-modifier",
+               "number-of-workers", "use-saved-session")),
+    ("Mask", ("masked-hist-match", "hist-match-threshold", "choose-mask-mode",
+             "choose-erode-mask-modifier", "choose-blur-mask-modifier",
+             "choose-motion-blur-power")),
+    ("Color", ("color-transfer-to-predicted-face",
+              "choose-image-degrade-by-denoise-power",
+              "choose-image-degrade-by-bicubic-rescale-power",
+              "degrade-color-power-of-final-image")),
+    ("Sharpening", ("choose-sharpen-mode", "choose-blursharpen-amount",
+                    "choose-super-resolution-power")),
+)
+
 STEPS = (
     StepDef(
         name="7) merge AMP",
+        summary="Pastes the trained AMP face back onto every destination frame, with its own morph factor prompt.",
         family="fusione",
         kind=KIND_MAIN,
         process=PROCESS_SESSION,
@@ -321,12 +400,14 @@ STEPS = (
             )),
         ),
         fields=_AMP_MERGE_FIELDS,
+        sections=_SEZIONI_MERGE_AMP,
         consumes=("frame_dst", "faceset_dst", "modello"),
         produces=("merged", "merged_mask"),
         needs_model_name=True,
     ),
     StepDef(
         name="7) merge SAEHD",
+        summary="Pastes the trained face back onto every destination frame, one interactive session.",
         family="fusione",
         kind=KIND_MAIN,
         process=PROCESS_SESSION,
@@ -341,12 +422,14 @@ STEPS = (
             )),
         ),
         fields=_SAEHD_MERGE_FIELDS,
+        sections=_SEZIONI_MERGE_SAEHD,
         consumes=("frame_dst", "faceset_dst", "modello"),
         produces=("merged", "merged_mask"),
         needs_model_name=True,
     ),
     StepDef(
         name="7) merge SAEHDX",
+        summary="Pastes the trained face back onto every frame -- merges through the same path as SAEHD, none of the training speedup.",
         family="fusione",
         kind=KIND_MAIN,
         process=PROCESS_SESSION,
@@ -361,6 +444,7 @@ STEPS = (
             )),
         ),
         fields=_SAEHD_MERGE_FIELDS,
+        sections=_SEZIONI_MERGE_SAEHD,
         consumes=("frame_dst", "faceset_dst", "modello"),
         produces=("merged", "merged_mask"),
         needs_model_name=True,

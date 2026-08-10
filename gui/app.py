@@ -72,17 +72,36 @@ def _warn_about_missing_xcb_libraries():
         print(message)
 
 
+def _abilita_alta_densita():
+    """High-density scaling, turned on before any QApplication exists.
+
+    It has to be set on the class, and before the instance: past that point
+    it no longer has any effect, and nothing about it says so. This is the
+    one appearance setting that acts before a single widget exists.
+    """
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QApplication
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+
+
+def _costruisci_applicazione(argv):
+    from PyQt5.QtWidgets import QApplication
+    return QApplication(argv)
+
+
 def run(argv=None):
     _warn_about_missing_xcb_libraries()
     _sanitize_qt_plugin_env(os.environ)
 
-    from PyQt5.QtWidgets import QApplication
+    _abilita_alta_densita()
+    app = _costruisci_applicazione(argv if argv is not None else sys.argv)
 
     from gui.main_window import MainWindow
+    from gui.preferenze import ScalaTesto
     from gui.theme import apply_dark_theme
 
-    app = QApplication(argv if argv is not None else sys.argv)
-    apply_dark_theme(app)
+    apply_dark_theme(app, ScalaTesto().fattore())
     dfl_root = Path(__file__).resolve().parent.parent
     window = MainWindow(sys.executable, dfl_root)
     window.show()

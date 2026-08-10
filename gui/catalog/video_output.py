@@ -16,6 +16,7 @@ _BITRATE = FieldDef(
     label="Bitrate of output file (MB/s)",
     kind=FIELD_INT,
     default=16,
+    help="Video quality of the encoded file, in megabits per second. Higher means a larger file and fewer compression artifacts; 16 is a good default for 1080p. Ignored by the lossless containers.",
 )
 
 _CONSUMES = ("merged", "merged_mask", "video_dst")
@@ -24,6 +25,7 @@ _PRODUCES = ("risultato", "risultato_mask")
 STEPS = (
     StepDef(
         name="8) merged to avi",
+        summary="Encodes the merged frames into an AVI, audio included -- the one prompt asks its bitrate.",
         family="video-output",
         kind=KIND_MAIN,
         process=PROCESS_PROMPT,
@@ -47,6 +49,7 @@ STEPS = (
     ),
     StepDef(
         name="8) merged to mov lossless",
+        summary="Encodes the merged frames into a lossless MOV, audio included -- no bitrate to choose.",
         family="video-output",
         kind=KIND_MAIN,
         process=PROCESS_BATCH,
@@ -70,6 +73,7 @@ STEPS = (
     ),
     StepDef(
         name="8) merged to mp4 lossless",
+        summary="Encodes the merged frames into a lossless MP4, audio included -- no bitrate to choose.",
         family="video-output",
         kind=KIND_MAIN,
         process=PROCESS_BATCH,
@@ -93,6 +97,7 @@ STEPS = (
     ),
     StepDef(
         name="8) merged to mp4",
+        summary="Encodes the merged frames back into a video, audio included.",
         family="video-output",
         kind=KIND_MAIN,
         process=PROCESS_PROMPT,

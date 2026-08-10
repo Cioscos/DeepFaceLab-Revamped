@@ -211,6 +211,11 @@ _LR_DROPOUT = FieldDef(
     kind=FIELD_CHOICE,
     default="n",
     choices=("n", "y", "cpu"),
+    choice_help=(
+        "Off. The plain choice, and the right one while the model is still improving quickly.",
+        "On, on the GPU. Enable it only once the loss has stopped falling: it makes the model generalize instead of memorizing, at a measured cost of about 13% more time per iteration.",
+        "On, on the CPU. Same effect, no extra VRAM, noticeably slower -- for when the card has nothing left.",
+    ),
     help="When the face is trained enough, you can enable this option to get extra sharpness and reduce subpixel shake for less amount of iterations. Enabled it before `disable random warp` and before GAN. n - disabled. y - enabled. cpu - enabled on CPU. This allows not to use extra VRAM, sacrificing 20% time of iteration. Shown under the same condition as Autobackup every N hour.",
 )
 
@@ -263,6 +268,13 @@ _FACE_TYPE_SAEHD = FieldDef(
     kind=FIELD_CHOICE,
     default="f",
     choices=("h", "mf", "f", "wf", "head"),
+    choice_help=(
+        "Half face: eyes, nose and mouth only. The fastest and the least natural at the borders.",
+        "Middle half face: as half face, extended downwards over the chin.",
+        "Full face: the face up to the eyebrows and the chin. The classic choice.",
+        "Whole face: forehead and jaw included. The most natural merge, and the heaviest.",
+        "Head: the whole head, hair included. Needs a faceset extracted as head, and far more iterations.",
+    ),
     help="Half / mid face / full face / whole face / head. Half face has better resolution, but covers less area of cheeks. Mid face is 30% wider than half face. 'Whole face' covers full area of face include forehead. 'head' covers full head, but requires XSeg for src and dst faceset. Shown only on the first run.",
 )
 
@@ -371,6 +383,14 @@ _CT_MODE_SAEHD = FieldDef(
     kind=FIELD_CHOICE,
     default="none",
     choices=("none", "rct", "lct", "mkl", "idt", "sot"),
+    choice_help=(
+        "No color transfer: src samples keep their own colors as extracted.",
+        "Reinhard color transfer: fast, matches the average color and contrast of dst. The usual first try.",
+        "Linear color transfer: gentler than rct, keeps more of src's own tonality.",
+        "Monge-Kantorovich transfer: matches the full color distribution of dst, better on a strong color cast, slower than rct/lct.",
+        "Iterative distribution transfer: the closest color match of these, and the slowest.",
+        "Sliced optimal transport: the most thorough match of local color, and the heaviest of the six.",
+    ),
     help="Change color distribution of src samples close to dst samples. Try all modes to find the best. Shown under the same condition as Autobackup every N hour.",
 )
 
@@ -443,6 +463,11 @@ _FACE_TYPE_AMP = FieldDef(
     kind=FIELD_CHOICE,
     default="wf",
     choices=("f", "wf", "head"),
+    choice_help=(
+        "Full face: the face up to the eyebrows and the chin. Lighter to train, less area covered.",
+        "Whole face: forehead and jaw included, the more natural merge. The default for AMP.",
+        "Head: the whole head, hair included. Needs a faceset extracted as head, and far more iterations.",
+    ),
     help="whole face / head. Shown only on the first run.",
 )
 
@@ -505,6 +530,14 @@ _CT_MODE_AMP = FieldDef(
     kind=FIELD_CHOICE,
     default="none",
     choices=("none", "rct", "lct", "mkl", "idt", "sot"),
+    choice_help=(
+        "No color transfer: src samples keep their own colors as extracted.",
+        "Reinhard color transfer: fast, matches the average color and contrast of dst. The usual first try.",
+        "Linear color transfer: gentler than rct, keeps more of src's own tonality -- fine in most cases if the src faceset is diverse enough.",
+        "Monge-Kantorovich transfer: matches the full color distribution of dst, better on a strong color cast, slower than rct/lct.",
+        "Iterative distribution transfer: the closest color match of these, and the slowest.",
+        "Sliced optimal transport: the most thorough match of local color, and the heaviest of the six.",
+    ),
     help="Change color distribution of src samples close to dst samples. If src faceset is deverse enough, then lct mode is fine in most cases. Shown under the same condition as Autobackup every N hour.",
 )
 
@@ -518,9 +551,65 @@ _AMP_FIELDS = (
     _CLIPGRAD,
 )
 
+# ---- Form sections, for the four steps long enough to need them -----------
+#
+# Grouped by what a user is looking for, not by declaration order: first
+# what to train and for how long, then the network's shape, then how the
+# data is perturbed, then the two adversarial/style levers, then the
+# performance switches. SAEHD/SAEHDX share everything through GAN; SAEHDX
+# repeats the six sections with its three extra levers folded into
+# Performance. AMP has a smaller, differently-shaped option set (its own
+# `inter-dimensions`/`morph-factor`, no AdaBelief/HSV/pretrain, and none of
+# the three style-power fields) and gets five sections, not six -- an empty
+# "Style" section is not declared for it.
+
+_SEZIONI_SAEHD = (
+    ("Model", ("which-gpu-indexes-to-choose", "autobackup-every-n-hour",
+               "write-preview-history", "choose-image-for-the-preview-history",
+               "target-iteration", "batch_size", "resolution")),
+    ("Architecture", ("face-type", "ae-architecture", "autoencoder-dimensions",
+                      "encoder-dimensions", "decoder-dimensions",
+                      "decoder-mask-dimensions", "masked-training",
+                      "eyes-and-mouth-priority")),
+    ("Augmentation", ("flip-src-faces-randomly", "flip-dst-faces-randomly",
+                      "uniform-yaw-distribution-of-samples", "blur-out-mask",
+                      "enable-random-warp-of-samples",
+                      "random-huesaturationlight-intensity",
+                      "color-transfer-for-src-faceset")),
+    ("GAN", ("gan-power", "gan-patch-size", "gan-dimensions")),
+    ("Style", ("true-face-power", "face-style-power", "background-style-power")),
+    ("Performance", ("place-models-and-optimizer-on-gpu", "use-adabelief-optimizer",
+                     "use-learning-rate-dropout", "enable-gradient-clipping",
+                     "enable-pretraining-mode")),
+)
+
+_SEZIONI_SAEHDX = _SEZIONI_SAEHD[:-1] + (
+    ("Performance", _SEZIONI_SAEHD[-1][1] + (
+        "enable-cudnnbenchmark", "enable-cuda-graph-capture",
+        "enable-torchcompile",
+    )),
+)
+
+_SEZIONI_AMP = (
+    ("Model", ("which-gpu-indexes-to-choose", "autobackup-every-n-hour",
+               "write-preview-history", "choose-image-for-the-preview-history",
+               "target-iteration", "batch_size", "resolution")),
+    ("Architecture", ("face-type", "autoencoder-dimensions", "inter-dimensions",
+                      "encoder-dimensions", "decoder-dimensions",
+                      "decoder-mask-dimensions", "morph-factor")),
+    ("Augmentation", ("flip-src-faces-randomly", "flip-dst-faces-randomly",
+                      "uniform-yaw-distribution-of-samples", "blur-out-mask",
+                      "enable-random-warp-of-samples",
+                      "color-transfer-for-src-faceset")),
+    ("GAN", ("gan-power", "gan-patch-size", "gan-dimensions")),
+    ("Performance", ("use-learning-rate-dropout", "place-models-and-optimizer-on-gpu",
+                     "enable-gradient-clipping")),
+)
+
 STEPS = (
     StepDef(
         name="6) train AMP SRC-SRC",
+        summary="Trains AMP on src alone, both sides fed from data_src -- the fork's stand-in for AMP's missing pretraining.",
         family="addestramento",
         kind=KIND_MAIN,
         process=PROCESS_SESSION,
@@ -534,6 +623,7 @@ STEPS = (
             )),
         ),
         fields=_AMP_FIELDS,
+        sections=_SEZIONI_AMP,
         consumes=("faceset_src",),
         produces=("modello",),
         optional=True,
@@ -541,6 +631,7 @@ STEPS = (
     ),
     StepDef(
         name="6) train AMP",
+        summary="Trains the AMP model on both facesets: a morphable architecture with a single adjustable blend factor.",
         family="addestramento",
         kind=KIND_MAIN,
         process=PROCESS_SESSION,
@@ -554,12 +645,14 @@ STEPS = (
             )),
         ),
         fields=_AMP_FIELDS,
+        sections=_SEZIONI_AMP,
         consumes=("faceset_src", "faceset_dst"),
         produces=("modello",),
         needs_model_name=True,
     ),
     StepDef(
         name="6) train SAEHD",
+        summary="Trains the SAEHD model on both facesets: the fullest set of tunable options of the four.",
         family="addestramento",
         kind=KIND_MAIN,
         process=PROCESS_SESSION,
@@ -573,12 +666,14 @@ STEPS = (
             )),
         ),
         fields=_SAEHD_FIELDS,
+        sections=_SEZIONI_SAEHD,
         consumes=("faceset_src", "faceset_dst", "pretrain"),
         produces=("modello",),
         needs_model_name=True,
     ),
     StepDef(
         name="6) train SAEHDX",
+        summary="SAEHD in mixed precision: about 29% faster per iteration and 18% less VRAM, same result.",
         family="addestramento",
         kind=KIND_MAIN,
         process=PROCESS_SESSION,
@@ -592,6 +687,7 @@ STEPS = (
             )),
         ),
         fields=_SAEHDX_FIELDS,
+        sections=_SEZIONI_SAEHDX,
         consumes=("faceset_src", "faceset_dst", "pretrain"),
         produces=("modello",),
         needs_model_name=True,

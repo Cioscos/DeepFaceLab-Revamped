@@ -317,14 +317,18 @@ class XSegModel(ModelBase):
                      "risultato": [0, colonne.index(risultato)],
                      "righe_sono_campioni": True }
 
+        #Etichette in inglese come quelle di SAEHD e AMP: finiscono a schermo
+        #-- didascalia di ogni cella, tooltip del riquadro grande, titolo
+        #della finestra a dimensione naturale -- e sono le sole del roster
+        #che erano rimaste in italiano.
         if self.pretrain:
-            return { 'XSeg training faces': griglia(['volto', 'maschera predetta'],
-                                                    'maschera predetta') }
+            return { 'XSeg training faces': griglia(['face', 'predicted mask'],
+                                                    'predicted mask') }
 
-        applicata = ['volto', 'maschera predetta', 'maschera applicata']
-        return { 'XSeg training faces': griglia(applicata, 'maschera applicata'),
-                 'XSeg src faces':      griglia(applicata, 'maschera applicata'),
-                 'XSeg dst faces':      griglia(applicata, 'maschera applicata') }
+        applicata = ['face', 'predicted mask', 'applied mask']
+        return { 'XSeg training faces': griglia(applicata, 'applied mask'),
+                 'XSeg src faces':      griglia(applicata, 'applied mask'),
+                 'XSeg dst faces':      griglia(applicata, 'applied mask') }
 
     #override
     def export_dfm (self):

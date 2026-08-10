@@ -70,6 +70,14 @@ _XSEG_MODEL_FACE_TYPE = FieldDef(
     kind=FIELD_CHOICE,
     default="same",
     choices=("h", "mf", "f", "wf", "head", "same"),
+    choice_help=(
+        "Half face: apply the mask only within the eyes/nose/mouth area -- pick this if the XSeg model was trained on half face.",
+        "Mid-full face: apply the mask within that slightly wider area -- pick this if the XSeg model was trained on mid-full face.",
+        "Full face: apply the mask up to the eyebrows and chin -- pick this if the XSeg model was trained on full face.",
+        "Whole face: apply the mask including the forehead -- pick this if the XSeg model was trained on whole face.",
+        "Head: apply the mask over the entire head including hair -- pick this if the XSeg model was trained on head.",
+        "Assumes the XSeg model was trained on the same face type as this faceset. The default, and correct unless you know the two differ.",
+    ),
     help="Specify face type of trained XSeg model. For example if XSeg model trained as WF, but faceset is HEAD, specify WF to apply xseg only on WF part of HEAD. Default is 'same'. Shown only if the model's XSeg_data.dat does not yet have a saved face type -- e.g. before any XSeg training has run.",
 )
 
@@ -119,6 +127,13 @@ _TRAIN_FACE_TYPE = FieldDef(
     kind=FIELD_CHOICE,
     default="wf",
     choices=("h", "mf", "f", "wf", "head"),
+    choice_help=(
+        "Half face: eyes, nose and mouth only. Match this to the deepfake model this mask will feed.",
+        "Mid-full face: as half face, extended down over the chin.",
+        "Full face: the face up to the eyebrows and chin. The most common choice.",
+        "Whole face: forehead and jaw included. Pick this if the deepfake model trains on whole face.",
+        "Head: the entire head including hair. Pick this only if the deepfake model itself trains on head.",
+    ),
     help="Half / mid face / full face / whole face / head. Choose the same as your deepfake model. Shown only on the first run of this model.",
 )
 
@@ -142,6 +157,7 @@ _TRAIN_PRETRAIN = FieldDef(
 STEPS = (
     StepDef(
         name="5.XSeg Generic) data_dst whole_face mask - apply",
+        summary="Applies the bundled generic XSeg model's mask to the destination faces, no training needed.",
         family="xseg",
         kind=KIND_MAIN,
         process=PROCESS_PROMPT,
@@ -158,6 +174,7 @@ STEPS = (
     ),
     StepDef(
         name="5.XSeg Generic) data_src whole_face mask - apply",
+        summary="Applies the bundled generic XSeg model's mask to the source faces, no training needed.",
         family="xseg",
         kind=KIND_MAIN,
         process=PROCESS_PROMPT,
@@ -174,6 +191,7 @@ STEPS = (
     ),
     StepDef(
         name="5.XSeg) data_dst mask - edit",
+        summary="Opens the destination faces in the XSeg editor, to draw or fix mask polygons by hand.",
         family="xseg",
         kind=KIND_MAIN,
         process=PROCESS_SESSION,
@@ -187,6 +205,7 @@ STEPS = (
     ),
     StepDef(
         name="5.XSeg) data_dst mask - fetch",
+        summary="Copies the destination faces that carry hand-drawn XSeg polygons into a sibling aligned_xseg folder.",
         family="xseg",
         kind=KIND_MAIN,
         process=PROCESS_PROMPT,
@@ -202,6 +221,7 @@ STEPS = (
     ),
     StepDef(
         name="5.XSeg) data_dst mask - remove",
+        summary="Deletes the hand-drawn XSeg polygons from the destination faces, after a confirmation.",
         family="xseg",
         kind=KIND_MAIN,
         process=PROCESS_PROMPT,
@@ -216,6 +236,7 @@ STEPS = (
     ),
     StepDef(
         name="5.XSeg) data_dst trained mask - apply",
+        summary="Runs this project's trained XSeg model over the destination faces and writes the predicted mask.",
         family="xseg",
         kind=KIND_MAIN,
         process=PROCESS_PROMPT,
@@ -232,6 +253,7 @@ STEPS = (
     ),
     StepDef(
         name="5.XSeg) data_dst trained mask - remove",
+        summary="Deletes the mask applied by a trained XSeg model from the destination faces, after a confirmation.",
         family="xseg",
         kind=KIND_MAIN,
         process=PROCESS_PROMPT,
@@ -246,6 +268,7 @@ STEPS = (
     ),
     StepDef(
         name="5.XSeg) data_src mask - edit",
+        summary="Opens the source faces in the XSeg editor, to draw or fix mask polygons by hand.",
         family="xseg",
         kind=KIND_MAIN,
         process=PROCESS_SESSION,
@@ -259,6 +282,7 @@ STEPS = (
     ),
     StepDef(
         name="5.XSeg) data_src mask - fetch",
+        summary="Copies the source faces that carry hand-drawn XSeg polygons into a sibling aligned_xseg folder.",
         family="xseg",
         kind=KIND_MAIN,
         process=PROCESS_PROMPT,
@@ -274,6 +298,7 @@ STEPS = (
     ),
     StepDef(
         name="5.XSeg) data_src mask - remove",
+        summary="Deletes the hand-drawn XSeg polygons from the source faces, after a confirmation.",
         family="xseg",
         kind=KIND_MAIN,
         process=PROCESS_PROMPT,
@@ -288,6 +313,7 @@ STEPS = (
     ),
     StepDef(
         name="5.XSeg) data_src trained mask - apply",
+        summary="Runs this project's trained XSeg model over the source faces and writes the predicted mask.",
         family="xseg",
         kind=KIND_MAIN,
         process=PROCESS_PROMPT,
@@ -304,6 +330,7 @@ STEPS = (
     ),
     StepDef(
         name="5.XSeg) data_src trained mask - remove",
+        summary="Deletes the mask applied by a trained XSeg model from the source faces, after a confirmation.",
         family="xseg",
         kind=KIND_MAIN,
         process=PROCESS_PROMPT,
@@ -318,6 +345,7 @@ STEPS = (
     ),
     StepDef(
         name="5.XSeg) train",
+        summary="Trains the XSeg mask model on the hand-labeled faces of both sets, always under the fixed name XSeg.",
         family="xseg",
         kind=KIND_MAIN,
         process=PROCESS_SESSION,

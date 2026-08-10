@@ -36,6 +36,7 @@ _EXPORT_QUANTIZED = FieldDef(
 STEPS = (
     StepDef(
         name="6) export AMP as dfm",
+        summary="Exports the trained AMP model as a .dfm file for DeepFaceLive, with a morph_value input the others lack.",
         family="esportazione",
         kind=KIND_MAIN,
         process=PROCESS_PROMPT,
@@ -53,6 +54,7 @@ STEPS = (
     ),
     StepDef(
         name="6) export SAEHD as dfm",
+        summary="Exports the trained SAEHD model as a .dfm file, the format DeepFaceLive loads for real-time swapping.",
         family="esportazione",
         kind=KIND_MAIN,
         process=PROCESS_PROMPT,
@@ -70,6 +72,7 @@ STEPS = (
     ),
     StepDef(
         name="6) export SAEHDX as dfm",
+        summary="Exports the trained SAEHDX model as a .dfm file, through the same unmodified export SAEHD uses.",
         family="esportazione",
         kind=KIND_MAIN,
         process=PROCESS_PROMPT,

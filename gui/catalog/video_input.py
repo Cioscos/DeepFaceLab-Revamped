@@ -22,6 +22,10 @@ _OUTPUT_FORMAT = FieldDef(
     kind=FIELD_CHOICE,
     default="png",
     choices=("png", "jpg"),
+    choice_help=(
+        "Lossless. Best quality for training, but roughly ten times slower to write and ten times the disk space of jpg on a spinning disk.",
+        "Lossy but fast and compact. The practical default unless disk space and write speed are not a concern.",
+    ),
     help="png is lossless, but extraction is x10 slower for HDD, requires x10 more disk space than jpg.",
 )
 
@@ -30,6 +34,7 @@ _FROM_TIME = FieldDef(
     label="From time",
     kind=FIELD_TEXT,
     default="00:00:00.000",
+    help="Where the cut starts, as HH:MM:SS. Everything before this point is dropped from the video the rest of the pipeline will see.",
 )
 
 _TO_TIME = FieldDef(
@@ -37,6 +42,7 @@ _TO_TIME = FieldDef(
     label="To time",
     kind=FIELD_TEXT,
     default="00:00:00.000",
+    help="Where the cut ends, as HH:MM:SS. Everything after this point is dropped from the video the rest of the pipeline will see.",
 )
 
 _AUDIO_TRACK_ID = FieldDef(
@@ -44,6 +50,7 @@ _AUDIO_TRACK_ID = FieldDef(
     label="Audio track ID",
     kind=FIELD_INT,
     default=0,
+    help="Which audio stream of the source file to keep in the cut, by index starting at 0. A non-zero index silently drops the audio track if the file does not have that many streams -- including an ordinary single-track file, where anything but 0 loses the audio entirely; the video track is always kept.",
 )
 
 _CUT_BITRATE = FieldDef(
@@ -51,6 +58,7 @@ _CUT_BITRATE = FieldDef(
     label="Bitrate of output file (MB/s)",
     kind=FIELD_INT,
     default=25,
+    help="Video quality of the re-encoded cut, in megabits per second. Higher means a larger file and fewer compression artifacts; 25 is a good default for 1080p.",
 )
 
 _DENOISE_FACTOR = FieldDef(
@@ -59,11 +67,13 @@ _DENOISE_FACTOR = FieldDef(
     kind=FIELD_INT,
     default=7,
     valid_range=(1, 20),
+    help="How aggressively the destination frames are smoothed before extraction. Higher removes more grain and compression noise, but also erases fine skin detail the model would otherwise learn from.",
 )
 
 STEPS = (
     StepDef(
         name="2) extract images from video data_src",
+        summary="Turns the source video into the still frames the faces will be extracted from.",
         family="video-input",
         kind=KIND_MAIN,
         process=PROCESS_PROMPT,
@@ -80,6 +90,7 @@ STEPS = (
     ),
     StepDef(
         name="3) cut video (drop video on me)",
+        summary="Trims a video to a time range and re-encodes it, keeping one chosen audio track.",
         family="video-input",
         kind=KIND_MAIN,
         process=PROCESS_PROMPT,
@@ -92,6 +103,7 @@ STEPS = (
     ),
     StepDef(
         name="3) extract images from video data_dst FULL FPS",
+        summary="Turns the destination video into frames at its native frame rate, no frames skipped.",
         family="video-input",
         kind=KIND_MAIN,
         process=PROCESS_PROMPT,
@@ -109,6 +121,7 @@ STEPS = (
     ),
     StepDef(
         name="3.optional) denoise data_dst images",
+        summary="Smooths grain and compression noise out of the destination frames before extraction.",
         family="video-input",
         kind=KIND_MAIN,
         process=PROCESS_PROMPT,

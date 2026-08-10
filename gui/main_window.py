@@ -13,51 +13,51 @@ from pathlib import Path
 from PyQt5.QtCore import Qt, QUrl, QProcess, pyqtSignal
 from PyQt5.QtGui import QColor, QDesktopServices, QFontDatabase, QTextCursor
 from PyQt5.QtWidgets import (
-    QAction, QDockWidget, QFileDialog, QHBoxLayout, QLabel, QListWidget,
-    QListWidgetItem, QMainWindow, QMessageBox, QPushButton, QSplitter,
-    QTabBar, QTabWidget, QTextEdit, QVBoxLayout, QWidget,
+    QAction, QActionGroup, QApplication, QDockWidget, QFileDialog, QFrame, QHBoxLayout,
+    QLabel, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
+    QPushButton, QScrollArea, QSplitter, QTabBar, QTabWidget, QTextEdit, QVBoxLayout,
+    QWidget,
 )
 
+from gui import testi
 from gui.catalog import all_steps, step_by_name
 from gui.catalog.model import (
     KIND_CLEAR, KIND_EBSYNTH, KIND_MAIN, KIND_VIEWER, PROCESS_SESSION, STAGES,
 )
+from gui.delegato_passi import RUOLO_SOMMARIO, RUOLO_STATO, DelegatoPassi
 from gui.execution.jobs import JobManager, StepConflict, _model_class_from_step, _resolve
 from gui.forms import StepForm
+from gui.preferenze import ScalaTesto
 from gui.saved_options import saved_options
 from gui.status_line import (
     RitmoIterazioni, iterazione_utilizzabile, obiettivo_valido, pezzi_di_stato)
 from gui.telemetry import EventTail
-from gui.theme import CONSOLE_FONT_POINT_SIZE
+from gui.theme import CONSOLE_FONT_POINT_SIZE, SCALE_NAMES, STATO_COLORE, apply_dark_theme
 from gui.training_panel import TrainingPanel
 from gui.workspace import (
     STANDARD_SUBDIRS, STATE_BLOCKED, STATE_DONE, STATE_READY,
     RecentWorkspaces, clear_workspace, create_workspace, default_workspace,
-    saved_model_names, stage_states,
+    saved_model_names, stage_states, step_state,
 )
 
 # Console tab titles for a failed job: exit code -1 is Job's sentinel for
 # "the process never started at all" (see gui.execution.jobs.Job).
 _FAILED_TO_START = -1
 
-_STAGE_COLOR = {
-    STATE_DONE: "#2e7d32",
-    STATE_READY: "#1565c0",
-    STATE_BLOCKED: "#9e9e9e",
-}
-
-
-def _button_style(state):
-    return "QPushButton { background-color: %s; color: white; }" % _STAGE_COLOR[state]
+# Kept as an alias: gui.theme.STATO_COLORE is the single source now that the
+# color itself lives in the style sheet as a QPushButton[stato=...] rule
+# (see PipelineBar.refresh()), but this name is still what
+# tests_gui/test_theme.py reads to check the blocked color's lightness.
+_STAGE_COLOR = STATO_COLORE
 
 
 def _step_label(step):
     """The step list's display text: name, plus the two layout badges."""
     label = step.name
     if step.optional:
-        label += "  (optional)"
+        label += testi.step_list_optional_suffix()
     if step.process == PROCESS_SESSION:
-        label += "  [opens an external window]"
+        label += testi.step_list_external_window_suffix()
     return label
 
 
@@ -69,13 +69,8 @@ def _placeholder_text(step, workspace, dfl_root):
     (`gui.execution.jobs._resolve`) so the shown path is the real one, not
     the catalog template.
     """
-    if step.kind == KIND_VIEWER:
-        return "Opens %s in the system file manager." % _resolve(step.target, workspace, dfl_root)
-    if step.kind == KIND_CLEAR:
-        return "Empties and recreates the workspace's standard subdirectories."
-    if step.kind == KIND_EBSYNTH:
-        return "Launches the bundled EBSynth application."
-    return ""
+    target = _resolve(step.target, workspace, dfl_root) if step.kind == KIND_VIEWER else None
+    return testi.placeholder(step.kind, target)
 
 
 def _is_training_step(step):
@@ -103,14 +98,8 @@ def _reproducible_command(step, job, workspace, dfl_root, python_exe, extra_args
     args.extend(extra_args)
     program_args = [str(dfl_root / "main.py")] + list(invocation.verb) + args
     command = " ".join([str(python_exe)] + program_args)
-    return "\n".join([
-        command,
-        "",
-        "WORKSPACE=%s" % workspace,
-        "DFL_ANSWERS_FILE=%s" % (job.workdir / "answers.json"),
-        "DFL_EVENTS_FILE=%s" % job.events_path,
-        "DFL_COMMANDS_FILE=%s" % job.commands_path,
-    ])
+    return testi.reproducible_command(
+        command, workspace, job.workdir / "answers.json", job.events_path, job.commands_path)
 
 
 class PipelineBar(QWidget):
@@ -134,6 +123,7 @@ class PipelineBar(QWidget):
         for stage in STAGES:
             button = QPushButton(stage)
             button.setCheckable(True)
+            button.setToolTip(testi.STAGE_TIP)
             button.clicked.connect(lambda _checked, s=stage: self.select(s))
             layout.addWidget(button)
             self._buttons[stage] = button
@@ -166,10 +156,19 @@ class PipelineBar(QWidget):
         self.refresh()
 
     def refresh(self):
-        """Recompute every stage's color from the workspace's artifacts on disk."""
+        """Recompute every stage's color from the workspace's artifacts on disk.
+
+        The color itself is a style sheet rule keyed on the "stato" dynamic
+        property (QPushButton[stato="done"] etc., in gui.theme) rather than
+        a per-button setStyleSheet: changing a dynamic property does not
+        repaint by itself, so it is followed by the unpolish/polish pair Qt
+        needs to pick the new rule up.
+        """
         self._states = stage_states(self._workspace)
         for stage, button in self._buttons.items():
-            button.setStyleSheet(_button_style(self._states.get(stage, STATE_BLOCKED)))
+            button.setProperty("stato", self._states.get(stage, STATE_BLOCKED))
+            button.style().unpolish(button)
+            button.style().polish(button)
 
 
 class StepView(QWidget):
@@ -190,24 +189,75 @@ class StepView(QWidget):
         self.placeholder = None
         self.open_button = None
         layout = QVBoxLayout(self)
+
+        self._header = QWidget()
+        header = QHBoxLayout(self._header)
+        header.setContentsMargins(0, 0, 0, 0)
+        self._step_name_label = QLabel("")
+        header.addWidget(self._step_name_label)
+        self._badge_optional = QLabel(testi.BADGE_OPTIONAL)
+        self._badge_optional.setProperty("ruolo", "pastiglia")
+        header.addWidget(self._badge_optional)
+        self._badge_external = QLabel(testi.BADGE_EXTERNAL_WINDOW)
+        self._badge_external.setProperty("ruolo", "pastiglia")
+        header.addWidget(self._badge_external)
+        header.addStretch(1)
+        layout.addWidget(self._header)
+        self._header.setVisible(False)
+
         self._body = QWidget()
         self._body_layout = QVBoxLayout(self._body)
-        layout.addWidget(self._body, 1)
-        self.start_button = QPushButton("Start")
+        # A long form (36 fields, six section titles, a help strip) can ask
+        # for far more height than any real window offers -- without a
+        # scroll area nothing below the fold is reachable, Start included.
+        # Only the body scrolls: Start and the job strip stay put below it,
+        # always on screen, because they are the command, not a field to
+        # scroll past.
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.NoFrame)
+        self._scroll.setWidget(self._body)
+        layout.addWidget(self._scroll, 1)
+        # The current form's help strip (`StepForm.fascia`) lives here, not
+        # inside `self._body`: it is the surface that explains a field to
+        # someone who does not know to go looking for a tooltip, so it has
+        # to stay on screen next to whatever the mouse is over, even when
+        # the fields above it are scrolled out of view. `set_step()` moves
+        # each form's strip in here and clears the previous one out before
+        # the old form is torn down; a step with no form leaves this empty
+        # and it collapses to no height, no gap left behind.
+        self._fascia_holder = QWidget()
+        self._fascia_layout = QVBoxLayout(self._fascia_holder)
+        self._fascia_layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self._fascia_holder)
+        self.start_button = QPushButton(testi.START)
+        self.start_button.setObjectName("start")
+        self.start_button.setToolTip(testi.START_TIP)
         layout.addWidget(self.start_button)
         self.job_strip = QWidget()
         strip = QHBoxLayout(self.job_strip)
         strip.setContentsMargins(0, 0, 0, 0)
         self.job_status = QLabel("")
         strip.addWidget(self.job_status, 1)
-        self.stop_button = QPushButton("Stop")
-        self.force_stop_button = QPushButton("Force stop")
-        self.save_button = QPushButton("Save")
-        self.backup_button = QPushButton("Backup")
-        self.console_button = QPushButton("Show console")
-        for b in (self.stop_button, self.force_stop_button, self.save_button,
-                  self.backup_button, self.console_button):
-            strip.addWidget(b)
+        # Grouped by what each button targets, like the trainer's own
+        # commands: the view (console), the model on disk (save/backup),
+        # the run itself (stop/force stop).
+        self.console_button = QPushButton(testi.SHOW_CONSOLE)
+        self.console_button.setToolTip(testi.SHOW_CONSOLE_TIP)
+        strip.addWidget(self.console_button)
+        self.save_button = QPushButton(testi.SAVE)
+        self.save_button.setToolTip(testi.SAVE_TIP)
+        strip.addWidget(self.save_button)
+        self.backup_button = QPushButton(testi.BACKUP)
+        self.backup_button.setToolTip(testi.BACKUP_TIP)
+        strip.addWidget(self.backup_button)
+        self.stop_button = QPushButton(testi.STOP)
+        self.stop_button.setProperty("ruolo", "stop")
+        self.stop_button.setToolTip(testi.STOP_TIP)
+        strip.addWidget(self.stop_button)
+        self.force_stop_button = QPushButton(testi.FORCE_STOP)
+        self.force_stop_button.setToolTip(testi.FORCE_STOP_TIP)
+        strip.addWidget(self.force_stop_button)
         layout.addWidget(self.job_strip)
         self.job_strip.setVisible(False)
         self.job = None
@@ -243,7 +293,7 @@ class StepView(QWidget):
         self.stop_button.setVisible(job.running)
         for b in (self.save_button, self.backup_button, self.force_stop_button):
             b.setVisible(is_training and job.running)
-        self.job_status.setText("running" if job.running else "finished")
+        self.job_status.setText(testi.JOB_RUNNING if job.running else testi.JOB_FINISHED)
 
     def set_step(self, step):
         """Rebuild the panel for `step` (a StepDef), or clear it for None."""
@@ -254,11 +304,24 @@ class StepView(QWidget):
             widget = item.widget()
             if widget is not None:
                 widget.setParent(None)
+        # The previous step's help strip, if any, belongs to a `StepForm`
+        # about to be discarded (or to no form at all, for a viewer/clear
+        # step): detach it before that happens, so a stale strip never
+        # lingers in the fixed row below the scroll area.
+        while self._fascia_layout.count():
+            item = self._fascia_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
         self.open_button = None
         if step is None:
             self.form = None
             self.placeholder = None
             self.status_panel.setText("")
+            self._header.setVisible(False)
+            self._step_name_label.setText("")
+            self._badge_optional.setVisible(False)
+            self._badge_external.setVisible(False)
             return
         self.start_button.setVisible(step.kind != KIND_VIEWER)
         if step.kind == KIND_MAIN:
@@ -268,6 +331,7 @@ class StepView(QWidget):
                 self.form.set_model_names(saved_model_names(self._workspace / "model"))
                 self.form._model_combo.currentTextChanged.connect(self._refresh_saved_values)
             self._body_layout.addWidget(self.form)
+            self._fascia_layout.addWidget(self.form.fascia)
             self._refresh_saved_values()
         else:
             self.form = None
@@ -275,17 +339,21 @@ class StepView(QWidget):
             self.placeholder.setWordWrap(True)
             self._body_layout.addWidget(self.placeholder)
             if step.kind == KIND_VIEWER:
-                self.open_button = QPushButton("Open folder")
+                self.open_button = QPushButton(testi.OPEN_FOLDER)
+                self.open_button.setToolTip(testi.OPEN_FOLDER_TIP)
                 target = _resolve(step.target, self._workspace, self._dfl_root)
                 self.open_button.clicked.connect(
                     lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(target)))
                 self._body_layout.addWidget(self.open_button)
-        badges = []
-        if step.optional:
-            badges.append("optional")
-        if step.process == PROCESS_SESSION:
-            badges.append("opens an external window")
-        self.status_panel.setText(", ".join(badges))
+        # The two layout badges move here, beside the step's name, and leave
+        # status_panel for what it is meant to hold: what actually happened
+        # (a failed job's last lines, telemetry) rather than a fact about
+        # the catalog that never changes while this step is on screen.
+        self._header.setVisible(True)
+        self._step_name_label.setText(step.name)
+        self._badge_optional.setVisible(step.optional)
+        self._badge_external.setVisible(step.process == PROCESS_SESSION)
+        self.status_panel.setText("")
 
     def _refresh_saved_values(self):
         """Show the chosen model's saved options beside the fields.
@@ -312,18 +380,20 @@ class MainWindow(QMainWindow):
     has no Start action at all (`open_button` covers it).
     """
 
-    def __init__(self, python_exe, dfl_root, workspace=None, parent=None):
+    def __init__(self, python_exe, dfl_root, workspace=None, parent=None, settings=None):
         super().__init__(parent)
-        self.setWindowTitle("DeepFaceLab")
+        self.setWindowTitle(testi.WINDOW_TITLE)
         self._python_exe = python_exe
         self._dfl_root = Path(dfl_root)
         self.workspace = Path(workspace) if workspace is not None else default_workspace(self._dfl_root)
+        self._scala = ScalaTesto(settings)
         self.job_manager = JobManager(python_exe, self._dfl_root)
         self.job_manager.job_started.connect(lambda _job: self._refresh_running_jobs_menu())
         self.job_manager.job_finished.connect(self._on_any_job_finished)
 
         self.pipeline_bar = PipelineBar(self.workspace)
         self.step_list = QListWidget()
+        self.step_list.setItemDelegate(DelegatoPassi(self.step_list))
         self.step_view = StepView(self.workspace, self._dfl_root)
 
         passi = QWidget()
@@ -337,12 +407,12 @@ class MainWindow(QMainWindow):
         self.central_tabs = QTabWidget()
         self.central_tabs.setTabsClosable(True)
         self.central_tabs.tabCloseRequested.connect(self._on_central_tab_close_requested)
-        self.central_tabs.addTab(passi, "Passi")
-        # The "Passi" tab has no close button: it is the window itself.
+        self.central_tabs.addTab(passi, testi.TAB_STEPS)
+        # The "Steps" tab has no close button: it is the window itself.
         self.central_tabs.tabBar().setTabButton(0, QTabBar.RightSide, None)
         self.setCentralWidget(self.central_tabs)
 
-        self.console_dock = QDockWidget("Console", self)
+        self.console_dock = QDockWidget(testi.CONSOLE_DOCK, self)
         self.console_tabs = QTabWidget()
         self.console_tabs.setTabsClosable(True)
         self.console_tabs.tabCloseRequested.connect(self._on_tab_close_requested)
@@ -375,6 +445,7 @@ class MainWindow(QMainWindow):
 
     def _on_any_job_finished(self, _job, _code):
         self.pipeline_bar.refresh()
+        self._refresh_step_badges()
         self._refresh_running_jobs_menu()
 
     def select_step(self, name):
@@ -397,8 +468,28 @@ class MainWindow(QMainWindow):
             if step.stage == stage_name:
                 item = QListWidgetItem(_step_label(step))
                 item.setData(Qt.UserRole, step.name)
+                item.setData(RUOLO_SOMMARIO, step.summary)
+                item.setToolTip(step.summary)
                 self.step_list.addItem(item)
+        self._refresh_step_badges()
         self.step_view.set_step(None)
+
+    def _refresh_step_badges(self):
+        """Re-stamp RUOLO_STATO on every row already in the list, in place.
+
+        Each row's own state (`gui.workspace.step_state`, its own consumes/
+        produces, not the stage's aggregate) can change without the list
+        being rebuilt -- a job finishing, or a workspace clear -- and
+        step_list.clear() is not the fix: it would drop the user's current
+        selection along with the rows. Called once from _on_stage_selected
+        right after building the rows, and again from _on_any_job_finished
+        and run_clear_workspace, so there is exactly one place that knows
+        how to compute a row's badge.
+        """
+        for row in range(self.step_list.count()):
+            item = self.step_list.item(row)
+            step = step_by_name(item.data(Qt.UserRole))
+            item.setData(RUOLO_STATO, step_state(step, self.workspace))
 
     def _on_item_changed(self, current, _previous):
         if current is None:
@@ -440,38 +531,57 @@ class MainWindow(QMainWindow):
         """
         menubar = self.menuBar()
 
-        workspace_menu = menubar.addMenu("&Workspace")
-        open_action = QAction("Open…", self)
+        workspace_menu = menubar.addMenu(testi.MENU_WORKSPACE)
+        open_action = QAction(testi.MENU_OPEN_WORKSPACE, self)
+        open_action.setToolTip(testi.MENU_OPEN_WORKSPACE_TIP)
         open_action.triggered.connect(lambda: self._open_workspace_dialog())
         workspace_menu.addAction(open_action)
-        new_action = QAction("New…", self)
+        new_action = QAction(testi.MENU_NEW_WORKSPACE, self)
+        new_action.setToolTip(testi.MENU_NEW_WORKSPACE_TIP)
         new_action.triggered.connect(lambda: self._new_workspace_dialog())
         workspace_menu.addAction(new_action)
-        self._recent_menu = workspace_menu.addMenu("Recent")
+        self._recent_menu = workspace_menu.addMenu(testi.MENU_RECENT)
         workspace_menu.addSeparator()
-        clear_action = QAction("Clear workspace…", self)
+        clear_action = QAction(testi.MENU_CLEAR_WORKSPACE, self)
+        clear_action.setToolTip(testi.MENU_CLEAR_WORKSPACE_TIP)
         clear_action.triggered.connect(lambda: self.run_clear_workspace())
         workspace_menu.addAction(clear_action)
         self._refresh_recent_menu()
 
-        view_menu = menubar.addMenu("&View")
-        self.toggle_console_action = QAction("Console", self)
+        view_menu = menubar.addMenu(testi.MENU_VIEW)
+        self.toggle_console_action = QAction(testi.CONSOLE_DOCK, self)
+        self.toggle_console_action.setToolTip(testi.TOGGLE_CONSOLE_TIP)
         self.toggle_console_action.triggered.connect(
             lambda: self.console_dock.setVisible(not self.console_dock.isVisible()))
         view_menu.addAction(self.toggle_console_action)
-        self.running_jobs_menu = view_menu.addMenu("Running jobs")
+        self.running_jobs_menu = view_menu.addMenu(testi.MENU_RUNNING_JOBS)
         self._refresh_running_jobs_menu()
 
-        misc_menu = menubar.addMenu("&Misc")
+        text_size_menu = view_menu.addMenu(testi.MENU_TEXT_SIZE)
+        self.text_size_actions = {}
+        group = QActionGroup(self)
+        group.setExclusive(True)
+        for nome in SCALE_NAMES:
+            action = QAction(testi.TEXT_SIZE_LABELS[nome], self)
+            action.setCheckable(True)
+            action.setChecked(nome == self._scala.nome())
+            action.triggered.connect(lambda _checked=False, n=nome: self.set_text_scale(n))
+            group.addAction(action)
+            text_size_menu.addAction(action)
+            self.text_size_actions[nome] = action
+
+        misc_menu = menubar.addMenu(testi.MENU_MISC)
         for step in all_steps():
             if step.kind == KIND_VIEWER:
                 action = QAction(step.name, self)
+                action.setToolTip(testi.MISC_STEP_TIP)
                 action.triggered.connect(lambda _checked=False, n=step.name: self.select_step(n))
                 misc_menu.addAction(action)
         if sys.platform == "win32":
             for step in all_steps():
                 if step.kind == KIND_EBSYNTH:
                     action = QAction(step.name, self)
+                    action.setToolTip(testi.MISC_STEP_TIP)
                     action.triggered.connect(lambda _checked=False, n=step.name: self.select_step(n))
                     misc_menu.addAction(action)
 
@@ -485,6 +595,7 @@ class MainWindow(QMainWindow):
         self._recent_menu.clear()
         for path in RecentWorkspaces().paths():
             action = QAction(path, self._recent_menu)
+            action.setToolTip(path)
             action.triggered.connect(lambda _checked=False, p=path: self.switch_workspace(p))
             self._recent_menu.addAction(action)
 
@@ -495,9 +606,21 @@ class MainWindow(QMainWindow):
         self.running_jobs_menu.clear()
         for job in self.job_manager.active_jobs():
             action = QAction(job.step.name, self.running_jobs_menu)
+            action.setToolTip(testi.RUNNING_JOB_TIP)
             action.triggered.connect(
                 lambda _checked=False, n=job.step.name: self.select_step(n))
             self.running_jobs_menu.addAction(action)
+
+    def set_text_scale(self, nome):
+        """Change the whole application's text size and remember the choice.
+
+        The style sheet is applied to `QApplication.instance()`, not to this
+        window alone: it is one process-wide style sheet, and every open
+        window (a training tab, a dialog) reads from it.
+        """
+        self._scala.imposta(nome)
+        apply_dark_theme(QApplication.instance(), self._scala.fattore())
+        self.text_size_actions[nome].setChecked(True)
 
     # -- workspace switching -------------------------------------------------
 
@@ -511,9 +634,8 @@ class MainWindow(QMainWindow):
         active = self.job_manager.active_jobs()
         if active:
             QMessageBox.warning(
-                self, "Jobs running",
-                "Cannot switch workspace: %d job(s) are still using %s."
-                % (len(active), self.workspace))
+                self, testi.TITLE_JOBS_RUNNING,
+                testi.msg_cannot_switch_workspace(len(active), self.workspace))
             return
         path = Path(path)
         self.workspace = path
@@ -526,12 +648,13 @@ class MainWindow(QMainWindow):
         self.pipeline_bar.select(self.pipeline_bar.stage_names()[0])
 
     def _open_workspace_dialog(self):
-        path = QFileDialog.getExistingDirectory(self, "Open workspace", str(self.workspace))
+        path = QFileDialog.getExistingDirectory(self, testi.DIALOG_OPEN_WORKSPACE, str(self.workspace))
         if path:
             self.switch_workspace(path)
 
     def _new_workspace_dialog(self):
-        path = QFileDialog.getExistingDirectory(self, "New workspace location", str(self.workspace.parent))
+        path = QFileDialog.getExistingDirectory(
+            self, testi.DIALOG_NEW_WORKSPACE_LOCATION, str(self.workspace.parent))
         if path:
             create_workspace(path)
             self.switch_workspace(path)
@@ -548,19 +671,18 @@ class MainWindow(QMainWindow):
         active = self.job_manager.active_jobs()
         if active:
             QMessageBox.warning(
-                self, "Jobs running",
-                "Cannot clear workspace: %d job(s) are still using %s."
-                % (len(active), self.workspace))
+                self, testi.TITLE_JOBS_RUNNING,
+                testi.msg_cannot_clear_workspace(len(active), self.workspace))
             return
         answer = QMessageBox.question(
-            self, "Clear workspace",
-            "This empties and recreates: %s. This cannot be undone. Continue?"
-            % ", ".join(STANDARD_SUBDIRS),
+            self, testi.TITLE_CLEAR_WORKSPACE,
+            testi.msg_confirm_clear_workspace(", ".join(STANDARD_SUBDIRS)),
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if answer != QMessageBox.Yes:
             return
         clear_workspace(self.workspace)
         self.pipeline_bar.refresh()
+        self._refresh_step_badges()
 
     def _launch_ebsynth(self):
         """Detached launch of the bundled EBSynth, mirroring the generated .bat step."""
@@ -582,7 +704,7 @@ class MainWindow(QMainWindow):
             # no place in _on_job_finished_while_closing's wait), so the
             # only correct fix is to refuse the start outright, not to
             # patch the shutdown path to notice it after the fact.
-            QMessageBox.warning(self, "Closing", "The window is closing: cannot start a new job.")
+            QMessageBox.warning(self, testi.TITLE_CLOSING, testi.MSG_CLOSING_CANNOT_START)
             return
         if step.kind == KIND_CLEAR:
             self.run_clear_workspace()
@@ -595,10 +717,10 @@ class MainWindow(QMainWindow):
 
         form = self.step_view.form
         if step.passthrough and not form.extra_args():
-            QMessageBox.warning(self, "Missing input", "Select an input file before starting.")
+            QMessageBox.warning(self, testi.TITLE_MISSING_INPUT, testi.MSG_MISSING_INPUT)
             return
         if step.needs_model_name and not form.model_name():
-            QMessageBox.warning(self, "Missing model name", "Enter or choose a model name before starting.")
+            QMessageBox.warning(self, testi.TITLE_MISSING_MODEL_NAME, testi.MSG_MISSING_MODEL_NAME)
             return
 
         answers = form.answers()
@@ -609,7 +731,7 @@ class MainWindow(QMainWindow):
         try:
             job = self.job_manager.try_start(step, answers, self.workspace, extra_args=extra_args)
         except StepConflict as exc:
-            QMessageBox.warning(self, "Step busy", str(exc))
+            QMessageBox.warning(self, testi.TITLE_STEP_BUSY, str(exc))
             return
         self._attach_job(step, job, extra_args)
 
@@ -637,7 +759,7 @@ class MainWindow(QMainWindow):
         text_edit = QTextEdit()
         text_edit.setReadOnly(True)
         font = QFontDatabase.systemFont(QFontDatabase.FixedFont)
-        font.setPointSize(CONSOLE_FONT_POINT_SIZE)
+        font.setPointSize(int(CONSOLE_FONT_POINT_SIZE))
         # Belt and braces: on some platform themes (notably the offscreen QPA
         # backend the test suite runs under) FixedFont resolves to a family
         # that is not actually fixed-pitch. The console is process output --
@@ -688,7 +810,7 @@ class MainWindow(QMainWindow):
 
         Raising the tab is explicit on purpose, on a fresh one as much as on
         a reopened one: QTabWidget selects a tab by itself only when it is
-        the first in an empty widget, and here the first is always "Passi".
+        the first in an empty widget, and here the first is always "Steps".
         """
         panel = self._panels.get(job)
         if panel is None:
@@ -721,7 +843,7 @@ class MainWindow(QMainWindow):
         the strip's greyed-out buttons did once the process behind them was
         gone.
         """
-        return ("▶ %s" % job.step.name) if job.running else job.step.name
+        return testi.running_tab_title(job.step.name) if job.running else job.step.name
 
     def _command_to_job(self, job, op):
         """One tab's button reaching one job's command channel.
@@ -736,12 +858,12 @@ class MainWindow(QMainWindow):
             # save, and the strip goes on saying "running" while the trainer
             # is winding down.
             self._stop_requested.add(job)
-            self._set_job_status(job, "stopping — waiting for the trainer to save")
+            self._set_job_status(job, testi.STATUS_STOPPING)
         job.send_command(op)
 
     def _on_central_tab_close_requested(self, index):
         if index == 0:
-            return      # "Passi" has no close button; a request by index is refused too
+            return      # "Steps" has no close button; a request by index is refused too
         widget = self.central_tabs.widget(index)
         for job, panel in self._panels.items():
             if panel is widget:
@@ -750,7 +872,7 @@ class MainWindow(QMainWindow):
 
     def _attach_job(self, step, job, extra_args):
         self._jobs_in_order.append(job)
-        self._job_status_text[job] = "running"
+        self._job_status_text[job] = testi.JOB_RUNNING
         self.open_console(job)
         if self.step_view.step is step:
             self.step_view.set_job(job, _is_training_step(step))
@@ -823,7 +945,7 @@ class MainWindow(QMainWindow):
         if self.step_view.is_training:
             job.send_command("close")
             self._stop_requested.add(job)
-            self._set_job_status(job, "stopping — waiting for the trainer to save")
+            self._set_job_status(job, testi.STATUS_STOPPING)
             return
         self.job_manager.stop(job)
 
@@ -860,20 +982,20 @@ class MainWindow(QMainWindow):
                 self.central_tabs.setTabText(index, self._panel_title(job))
         if self.step_view.job is job:
             self.step_view.set_job(job, self.step_view.is_training)
-        self._set_job_status(job, "finished (exit %d)" % code)
+        self._set_job_status(job, testi.job_finished_status(code))
         self._refresh_running_jobs_menu()
         if code != 0:
             console = self._consoles.get(job)
             if console is not None:
                 index = self.console_tabs.indexOf(console)
-                self.console_tabs.setTabText(index, "%s ✗" % step.name)
+                self.console_tabs.setTabText(index, testi.failed_console_title(step.name))
                 self.console_tabs.tabBar().setTabTextColor(index, QColor("#ff6b6b"))
             if self.step_view.step is step:
                 self.step_view.status_panel.setText("\n".join(job.captured_lines[-15:]))
             if code == _FAILED_TO_START:
                 message = _reproducible_command(
                     step, job, self.workspace, self._dfl_root, self._python_exe, extra_args)
-                QMessageBox.warning(self, "Failed to start", message)
+                QMessageBox.warning(self, testi.TITLE_FAILED_TO_START, message)
 
     def _on_telemetry_event(self, step, job, state, event):
         """Where the events channel lands, and where nothing may escape.
@@ -929,14 +1051,12 @@ class MainWindow(QMainWindow):
                 # zero: the sentence still says the thing that matters,
                 # which is that the trainer saved and has not closed yet.
                 saved_at = event.get("iter", 0)
-                self._set_job_status(job, (
-                    "saved at iter %d — waiting for the trainer to close" % saved_at
-                    if iterazione_utilizzabile(saved_at) else
-                    "saved — waiting for the trainer to close"))
+                self._set_job_status(job, testi.status_saved_waiting_to_close(
+                    saved_at if iterazione_utilizzabile(saved_at) else None))
             return
         if event_type == "end":
             if job in self._stop_requested:
-                self._set_job_status(job, "closing…")
+                self._set_job_status(job, testi.STATUS_CLOSING)
             return
         if event_type != "iter":
             return
@@ -979,8 +1099,8 @@ class MainWindow(QMainWindow):
         if self._shutdown_pending:
             return
         answer = QMessageBox.question(
-            self, "Jobs running",
-            "Active jobs are still running. Stop them and close?",
+            self, testi.TITLE_JOBS_RUNNING,
+            testi.MSG_CONFIRM_CLOSE_WITH_ACTIVE_JOBS,
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if answer != QMessageBox.Yes:
             return
@@ -997,10 +1117,10 @@ class MainWindow(QMainWindow):
         # the close up. This one is always available, whatever step is
         # selected, without blocking the window like QMessageBox.question.
         self._shutdown_dialog = QMessageBox(self)
-        self._shutdown_dialog.setWindowTitle("Closing")
-        self._shutdown_dialog.setText("Waiting for the active jobs to stop before closing.")
+        self._shutdown_dialog.setWindowTitle(testi.TITLE_CLOSING)
+        self._shutdown_dialog.setText(testi.MSG_CLOSING_WAIT)
         self._shutdown_dialog.setStandardButtons(QMessageBox.NoButton)
-        force_button = self._shutdown_dialog.addButton("Force stop", QMessageBox.ActionRole)
+        force_button = self._shutdown_dialog.addButton(testi.FORCE_STOP, QMessageBox.ActionRole)
         force_button.clicked.connect(self.force_shutdown)
         self._shutdown_dialog.setModal(False)
         self._shutdown_dialog.show()
