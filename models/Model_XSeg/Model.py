@@ -304,7 +304,26 @@ class XSegModel(ModelBase):
             result += [ ('XSeg dst faces', np.concatenate (st, axis=0 )), ]
 
         return result
-        
+
+    #override
+    def get_preview_layout(self):
+        n_samples = min(4, self.get_batch_size(), 800 // self.resolution )
+
+        def griglia(colonne, risultato):
+            return { "righe": n_samples, "colonne": len(colonne),
+                     "celle": [ list(colonne) for _ in range(n_samples) ],
+                     "risultato": [0, colonne.index(risultato)],
+                     "righe_sono_campioni": True }
+
+        if self.pretrain:
+            return { 'XSeg training faces': griglia(['volto', 'maschera predetta'],
+                                                    'maschera predetta') }
+
+        applicata = ['volto', 'maschera predetta', 'maschera applicata']
+        return { 'XSeg training faces': griglia(applicata, 'maschera applicata'),
+                 'XSeg src faces':      griglia(applicata, 'maschera applicata'),
+                 'XSeg dst faces':      griglia(applicata, 'maschera applicata') }
+
     #override
     def export_dfm (self):
         # model.onnx e non model.dfm: e' l'unico dei tre export a scrivere

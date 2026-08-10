@@ -11,7 +11,7 @@ from core import imagelib
 import cv2
 import models
 from core.interact import interact as io
-from mainscripts.TrainerLib import SaveScheduler, ProgressLine, LossCsv, EventLog, CommandTail
+from mainscripts.TrainerLib import SaveScheduler, ProgressLine, LossCsv, EventLog, CommandTail, PreviewWriter
 
 _CLOSE_WAIT_SEC = 30 #how long main() waits for the training thread to save and quit after a Ctrl+C
 
@@ -23,8 +23,13 @@ OP_CLOSE = 'close'
 OP_SHOW = 'show'
 
 # the commands an external observer may write on DFL_COMMANDS_FILE, and the
-# operation each one turns into. Same three the preview window's keys send.
-_OP_BY_COMMAND = {'close': OP_CLOSE, 'save': OP_SAVE, 'backup': OP_BACKUP}
+# operation each one turns into. Same four the preview window's keys send --
+# 'preview' is the 'p' key, and it was the one missing here: the observer's
+# "refresh preview" button reached this map, found nothing, and was dropped in
+# silence while the operation it names was handled by the training thread all
+# along.
+_OP_BY_COMMAND = {'close': OP_CLOSE, 'save': OP_SAVE, 'backup': OP_BACKUP,
+                  'preview': OP_PREVIEW}
 
 def _apply_commands(commands, s2c):
     # Returns True when a close was among them, so the caller can stop
@@ -99,7 +104,9 @@ def trainerThread (s2c, c2s, e,
                     silent_start=silent_start,
                     debug=debug)
 
-        events.hello(model_class_name, model.get_target_iter())
+        events.hello(model_class_name, model.get_target_iter(),
+                     model_name=model.get_model_name(),
+                     model_dir=str(model.saved_models_path))
 
         def _vram_gib():
             import torch
@@ -138,6 +145,7 @@ def trainerThread (s2c, c2s, e,
                 nomi = getattr(model, "get_preview_filenames", None)
                 c2s.put ( {'op':OP_SHOW, 'previews': previews, 'iter':model.get_iter(),
                            'loss_history': model.get_loss_history().copy(),
+                           'layouts': model.get_preview_layout(),
                            'filenames': nomi() if nomi is not None else None } )
             else:
                 previews = [( 'debug, press update for new', model.debug_one_iter())]
@@ -166,7 +174,7 @@ def trainerThread (s2c, c2s, e,
 
                     loss_history = model.get_loss_history()
 
-                    events.iter(iter, iter_time, loss_history[-1])
+                    events.iter(iter, iter_time, loss_history[-1], vram=_vram_gib)
 
                     if shared_state['after_save']:
                         shared_state['after_save'] = False
@@ -247,7 +255,11 @@ def trainerThread (s2c, c2s, e,
 def main(**kwargs):
     io.log_info ("Running trainer.\r\n")
 
-    no_preview = kwargs.get('no_preview', False)
+    preview_dir = os.environ.get('DFL_PREVIEW_DIR')
+    #La cartella delle anteprime implica il ciclo senza finestra: chi guarda
+    #da fuori non vuole nemmeno che se ne apra una. Da riga di comando la
+    #variabile non c'e' e qui non cambia niente.
+    no_preview = kwargs.get('no_preview', False) or preview_dir is not None
 
     s2c = queue.Queue()
     c2s = queue.Queue()
@@ -288,12 +300,18 @@ def main(**kwargs):
         return
 
     if no_preview:
+        previews_writer = PreviewWriter(preview_dir, EventLog(os.environ.get('DFL_EVENTS_FILE')))
         while True:
             if not c2s.empty():
                 input = c2s.get()
                 op = input.get('op','')
                 if op == OP_CLOSE:
                     break
+                if op == OP_SHOW:
+                    previews_writer.scrivi(input.get('previews') or [],
+                                           input.get('iter', 0),
+                                           input.get('layouts'),
+                                           input.get('filenames'))
             _apply_commands(commands, s2c)
             try:
                 io.process_messages(0.1)

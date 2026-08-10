@@ -398,6 +398,27 @@ class ModelBase(object):
         #return [ ('preview_name',preview_rgb), ... ]
         return []
 
+    #overridable
+    def get_preview_layout(self):
+        """La forma della griglia che onGetPreview compone, per anteprima.
+
+        { nome: {"righe": R, "colonne": C,
+                 "celle": [[etichetta, ...], ...],    # R righe di C etichette
+                 "risultato": [riga, colonna] | None,
+                 "righe_sono_campioni": bool} }
+
+        None quando il modello non la dichiara: chi la consuma mostra
+        l'immagine intera senza etichette. Va calcolata dalle stesse
+        variabili che compongono l'immagine -- risoluzione, batch size,
+        face_type, pretrain -- o le due divergono in silenzio; la guardia
+        della suite confronta la forma dichiarata con quella dell'immagine
+        vera.
+
+        Con righe_sono_campioni=True di "risultato" conta solo la colonna:
+        la riga la sceglie l'utente dalla striscia dei campioni.
+        """
+        return None
+
     #overridable if you want model name differs from folder name
     def get_model_name(self):
         return self.model_name

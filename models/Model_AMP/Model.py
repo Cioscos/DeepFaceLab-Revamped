@@ -1223,6 +1223,26 @@ class AMPModel(ModelBase):
 
         return result
 
+    #override
+    def get_preview_layout(self):
+        #Le righe qui non sono campioni: AMP mostra un solo campione e usa
+        #le due righe per viste diverse dello stesso volto.
+        def griglia(sopra, sotto, risultato):
+            return { "righe": 2, "colonne": 3,
+                     "celle": [ list(sopra), list(sotto) ],
+                     "risultato": list(risultato),
+                     "righe_sono_campioni": False }
+
+        return { 'AMP morph 1.0':
+                     griglia(['src', 'dst', 'dst->dst'],
+                             ['src->src', 'dst->dst', 'morph 1.0'], (1, 2)),
+                 'AMP morph list':
+                     griglia(['dst->dst', 'morph 0.25', 'morph 0.50'],
+                             ['morph 0.65', 'morph 0.75', 'morph 1.0'], (1, 2)),
+                 'AMP morph list masked':
+                     griglia(['dst->dst', 'morph 0.25', 'morph 0.50'],
+                             ['morph 0.65', 'morph 0.75', 'morph 1.0'], (1, 2)) }
+
     def predictor_func (self, face, morph_value):
         face = nn.to_data_format(face[None,...], self.model_data_format, "NHWC")
 

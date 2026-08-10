@@ -15,7 +15,7 @@ from PyQt5.QtGui import QColor, QDesktopServices, QFontDatabase, QTextCursor
 from PyQt5.QtWidgets import (
     QAction, QDockWidget, QFileDialog, QHBoxLayout, QLabel, QListWidget,
     QListWidgetItem, QMainWindow, QMessageBox, QPushButton, QSplitter,
-    QTabWidget, QTextEdit, QVBoxLayout, QWidget,
+    QTabBar, QTabWidget, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from gui.catalog import all_steps, step_by_name
@@ -25,8 +25,11 @@ from gui.catalog.model import (
 from gui.execution.jobs import JobManager, StepConflict, _model_class_from_step, _resolve
 from gui.forms import StepForm
 from gui.saved_options import saved_options
+from gui.status_line import (
+    RitmoIterazioni, iterazione_utilizzabile, obiettivo_valido, pezzi_di_stato)
 from gui.telemetry import EventTail
 from gui.theme import CONSOLE_FONT_POINT_SIZE
+from gui.training_panel import TrainingPanel
 from gui.workspace import (
     STANDARD_SUBDIRS, STATE_BLOCKED, STATE_DONE, STATE_READY,
     RecentWorkspaces, clear_workspace, create_workspace, default_workspace,
@@ -84,16 +87,6 @@ def _is_training_step(step):
     other training step, so a family-based gate misses it.
     """
     return any(invocation.verb == ("train",) for invocation in step.invocations)
-
-
-def _format_eta(seconds):
-    """Format a countdown in seconds as H:MM:SS, or M:SS under an hour."""
-    seconds = max(0, int(seconds))
-    hours, remainder = divmod(seconds, 3600)
-    minutes, secs = divmod(remainder, 60)
-    if hours:
-        return "%d:%02d:%02d" % (hours, minutes, secs)
-    return "%d:%02d" % (minutes, secs)
 
 
 def _reproducible_command(step, job, workspace, dfl_root, python_exe, extra_args):
@@ -333,14 +326,21 @@ class MainWindow(QMainWindow):
         self.step_list = QListWidget()
         self.step_view = StepView(self.workspace, self._dfl_root)
 
-        central = QWidget()
-        central_layout = QVBoxLayout(central)
-        central_layout.addWidget(self.pipeline_bar)
+        passi = QWidget()
+        passi_layout = QVBoxLayout(passi)
+        passi_layout.addWidget(self.pipeline_bar)
         body = QSplitter(Qt.Horizontal)
         body.addWidget(self.step_list)
         body.addWidget(self.step_view)
-        central_layout.addWidget(body, 1)
-        self.setCentralWidget(central)
+        passi_layout.addWidget(body, 1)
+
+        self.central_tabs = QTabWidget()
+        self.central_tabs.setTabsClosable(True)
+        self.central_tabs.tabCloseRequested.connect(self._on_central_tab_close_requested)
+        self.central_tabs.addTab(passi, "Passi")
+        # The "Passi" tab has no close button: it is the window itself.
+        self.central_tabs.tabBar().setTabButton(0, QTabBar.RightSide, None)
+        self.setCentralWidget(self.central_tabs)
 
         self.console_dock = QDockWidget("Console", self)
         self.console_tabs = QTabWidget()
@@ -350,6 +350,7 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.BottomDockWidgetArea, self.console_dock)
         self.console_dock.hide()
 
+        self._panels = {}          # Job -> TrainingPanel, alive with its tab closed
         self._consoles = {}        # Job -> QTextEdit, or None when the view is closed
         self._jobs_in_order = []   # jobs in the order they were started
         self._tails = []           # active EventTail instances
@@ -671,6 +672,82 @@ class MainWindow(QMainWindow):
     def _console_title(self, job):
         return job.step.name
 
+    # -- the training tabs ---------------------------------------------------
+
+    def panel_of(self, job):
+        """The training tab of `job`, open or closed, or None if it has none."""
+        return self._panels.get(job)
+
+    def open_panel(self, job):
+        """Show `job`'s training tab, building it the first time.
+
+        The panel lives in the dictionary, not in the QTabWidget: closing its
+        tab drops a view, not the state -- the same rule the console follows,
+        and for the same reason (a training run prints, plots and previews
+        for hours).
+
+        Raising the tab is explicit on purpose, on a fresh one as much as on
+        a reopened one: QTabWidget selects a tab by itself only when it is
+        the first in an empty widget, and here the first is always "Passi".
+        """
+        panel = self._panels.get(job)
+        if panel is None:
+            panel = TrainingPanel(job.previews_path, parent=self)
+            panel.comando.connect(lambda op, job=job: self._command_to_job(job, op))
+            self._panels[job] = panel
+        index = self.central_tabs.indexOf(panel)
+        if index == -1:
+            index = self.central_tabs.addTab(panel, self._panel_title(job))
+        self.central_tabs.setCurrentIndex(index)
+        return panel
+
+    def close_panel(self, job):
+        """Drop the view. The panel keeps every point, image and message."""
+        panel = self._panels.get(job)
+        if panel is None:
+            return
+        index = self.central_tabs.indexOf(panel)
+        if index != -1:
+            self.central_tabs.removeTab(index)
+            # removeTab hands ownership back with no parent: reparenting to
+            # the window keeps the object alive and hidden until it is added
+            # again, instead of leaving its lifetime to the garbage collector.
+            panel.setParent(self)
+
+    def _panel_title(self, job):
+        """The tab title, with a marker only while the run is alive.
+
+        A marker meaning "running" that never goes away lies, in the same way
+        the strip's greyed-out buttons did once the process behind them was
+        gone.
+        """
+        return ("▶ %s" % job.step.name) if job.running else job.step.name
+
+    def _command_to_job(self, job, op):
+        """One tab's button reaching one job's command channel.
+
+        The panel emits its op without saying who it belongs to -- the
+        binding is here, per job, which is what keeps two open tabs from
+        both talking to the last one started.
+        """
+        if op == "close":
+            # Same bookkeeping as the strip's Stop: without it the "save" and
+            # "end" events of the shutdown are read as an ordinary periodic
+            # save, and the strip goes on saying "running" while the trainer
+            # is winding down.
+            self._stop_requested.add(job)
+            self._set_job_status(job, "stopping — waiting for the trainer to save")
+        job.send_command(op)
+
+    def _on_central_tab_close_requested(self, index):
+        if index == 0:
+            return      # "Passi" has no close button; a request by index is refused too
+        widget = self.central_tabs.widget(index)
+        for job, panel in self._panels.items():
+            if panel is widget:
+                self.close_panel(job)
+                return
+
     def _attach_job(self, step, job, extra_args):
         self._jobs_in_order.append(job)
         self._job_status_text[job] = "running"
@@ -703,8 +780,9 @@ class MainWindow(QMainWindow):
 
         tail = None
         if step.process == PROCESS_SESSION and _is_training_step(step):
+            self.open_panel(job)
             tail = EventTail(job.events_path, parent=self)
-            state = {"iter": None, "time": None, "target_iter": 0}
+            state = {"target_iter": 0, "ritmo": RitmoIterazioni()}
             tail.event.connect(
                 lambda event, step=step, job=job, state=state:
                 self._on_telemetry_event(step, job, state, event))
@@ -774,6 +852,12 @@ class MainWindow(QMainWindow):
             if tail in self._tails:
                 self._tails.remove(tail)
         self._stop_requested.discard(job)
+        panel = self._panels.get(job)
+        if panel is not None:
+            panel.job_finito(code)
+            index = self.central_tabs.indexOf(panel)
+            if index != -1:
+                self.central_tabs.setTabText(index, self._panel_title(job))
         if self.step_view.job is job:
             self.step_view.set_job(job, self.step_view.is_training)
         self._set_job_status(job, "finished (exit %d)" % code)
@@ -792,9 +876,45 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Failed to start", message)
 
     def _on_telemetry_event(self, step, job, state, event):
+        """Where the events channel lands, and where nothing may escape.
+
+        This is a Qt slot: an exception raised here reaches no caller.
+        PyQt5 turns it into qFatal and the process dies with "Aborted (core
+        dumped)", taking every other live training with it. The event is
+        JSON written by another process, so a key with an unexpected type
+        -- `"iter": "cinque"`, a null loss -- is a real possibility rather
+        than a hypothetical, and it reaches *both* readers below: the
+        training tab, and the strip's own formatting six lines further
+        down. A net around one of the two is decoration; this one is around
+        everything the slot does.
+        """
+        try:
+            self._apply_telemetry_event(step, job, state, event)
+        except Exception as error:
+            panel = self._panels.get(job)
+            if panel is not None:
+                panel.evento_non_applicato(error)
+
+    def _apply_telemetry_event(self, step, job, state, event):
+        panel = self._panels.get(job)
+        if panel is not None:
+            try:
+                panel.applica_evento(event)
+            except Exception as error:
+                # The tab and the strip read the same event and neither
+                # needs the other: a tab that cannot apply it -- a preview
+                # file that will not decode, a malformed VRAM reading only
+                # the tab looks at -- must not cost the strip the update it
+                # could perfectly well make. Hence a second, narrower net
+                # inside the one above, whose job is only "never die".
+                panel.evento_non_applicato(error)
         event_type = event.get("type")
         if event_type == "hello":
-            state["target_iter"] = event.get("target_iter", 0)
+            # Validato prima di essere ricordato, come l'iterazione: il
+            # confronto con `target_iter` avviene a ogni evento successivo,
+            # quindi un obiettivo storto non rompe l'evento che lo porta --
+            # rompe tutti quelli buoni che vengono dopo.
+            state["target_iter"] = obiettivo_valido(event.get("target_iter", 0))
             return
         if event_type == "save":
             # Only meaningful mid-stop: EventLog.save() also fires on every
@@ -802,7 +922,17 @@ class MainWindow(QMainWindow):
             # message implying the trainer is about to close would be wrong
             # outside that window.
             if job in self._stop_requested:
-                self._set_job_status(job, "saved at iter %d — waiting for the trainer to close" % event.get("iter", 0))
+                # The iteration comes off the channel like every other
+                # number here, and this is the one place that formats one
+                # with %d without going through pezzi_di_stato. An
+                # unreadable one drops the number rather than inventing a
+                # zero: the sentence still says the thing that matters,
+                # which is that the trainer saved and has not closed yet.
+                saved_at = event.get("iter", 0)
+                self._set_job_status(job, (
+                    "saved at iter %d — waiting for the trainer to close" % saved_at
+                    if iterazione_utilizzabile(saved_at) else
+                    "saved — waiting for the trainer to close"))
             return
         if event_type == "end":
             if job in self._stop_requested:
@@ -810,24 +940,17 @@ class MainWindow(QMainWindow):
             return
         if event_type != "iter":
             return
-        now = time.monotonic()
         iteration = event.get("iter", 0)
-        rate = None
-        if state["iter"] is not None and now > state["time"]:
-            elapsed = now - state["time"]
-            if elapsed > 0:
-                rate = (iteration - state["iter"]) / elapsed
-        state["iter"], state["time"] = iteration, now
+        # The tracker validates before it remembers, which is what keeps a
+        # single malformed event from poisoning every good one after it --
+        # see `gui.status_line.RitmoIterazioni`.
+        rate = state["ritmo"].aggiorna(iteration, time.monotonic())
 
-        parts = ["iter %d" % iteration]
-        losses = event.get("losses") or []
-        if losses:
-            parts.append("loss " + ", ".join("%.4f" % v for v in losses))
-        if rate is not None:
-            parts.append("%.2f it/s" % rate)
-            target_iter = state.get("target_iter", 0)
-            if target_iter and target_iter > iteration and rate > 0:
-                parts.append("ETA %s" % _format_eta((target_iter - iteration) / rate))
+        # The strip says the same thing the training tab says under its plot,
+        # so the wording lives in one place (`gui.status_line`). VRAM is the
+        # tab's alone: it has the room for it, a one-line strip does not.
+        parts = pezzi_di_stato(iteration, event.get("losses") or [], rate,
+                               state.get("target_iter", 0))
 
         if self.step_view.step is step:
             self.step_view.status_panel.setText(" | ".join(parts))

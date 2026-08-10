@@ -1248,6 +1248,28 @@ Examples: df, liae, df-d, df-ud, liae-ud, ...
 
         return result
 
+    #override
+    def get_preview_layout(self):
+        n_samples = min(4, self.get_batch_size(), 800 // self.resolution )
+
+        def griglia(colonne, risultato):
+            return { "righe": n_samples, "colonne": len(colonne),
+                     "celle": [ list(colonne) for _ in range(n_samples) ],
+                     "risultato": [0, colonne.index(risultato)],
+                     "righe_sono_campioni": True }
+
+        if self.resolution <= 256:
+            colonne = ['src', 'src->src', 'dst', 'dst->dst', 'dst->src']
+            return { 'SAEHD':        griglia(colonne, 'dst->src'),
+                     'SAEHD masked': griglia(colonne, 'dst->src') }
+
+        return { 'SAEHD src-src':        griglia(['src', 'src->src'], 'src->src'),
+                 'SAEHD dst-dst':        griglia(['dst', 'dst->dst'], 'dst->dst'),
+                 'SAEHD pred':           griglia(['dst', 'dst->src'], 'dst->src'),
+                 'SAEHD masked src-src': griglia(['src', 'src->src'], 'src->src'),
+                 'SAEHD masked dst-dst': griglia(['dst', 'dst->dst'], 'dst->dst'),
+                 'SAEHD masked pred':    griglia(['dst', 'dst->src'], 'dst->src') }
+
     def predictor_func (self, face=None):
         face = nn.to_data_format(face[None,...], self.model_data_format, "NHWC")
 

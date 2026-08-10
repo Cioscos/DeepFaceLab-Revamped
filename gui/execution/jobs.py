@@ -95,13 +95,14 @@ class Job(QObject):
     output_update = pyqtSignal(str)  # the last line, rewritten in place
     finished = pyqtSignal(int)       # overall exit code (0 = every invocation ok)
 
-    def __init__(self, step, workdir, events_path, commands_path, python_exe, dfl_root,
+    def __init__(self, step, workdir, events_path, commands_path, previews_path, python_exe, dfl_root,
                  invocation_args, env, parent=None):
         super().__init__(parent)
         self.step = step
         self.workdir = workdir
         self.events_path = events_path
         self.commands_path = commands_path
+        self.previews_path = previews_path
         self.running = True
         self.buffer = ConsoleBuffer()
         # One assembler for the whole job, not one per invocation: a step
@@ -273,6 +274,7 @@ class JobManager(QObject):
         answers_path.write_text(json.dumps(answers), encoding="utf-8")
         events_path = workdir / "events.jsonl"
         commands_path = workdir / "commands.jsonl"
+        previews_path = workdir / "previews"
 
         for pattern in step.mkdirs:
             Path(_resolve(pattern, workspace, self._dfl_root)).mkdir(
@@ -289,8 +291,9 @@ class JobManager(QObject):
         env.insert("DFL_ANSWERS_FILE", str(answers_path))
         env.insert("DFL_EVENTS_FILE", str(events_path))
         env.insert("DFL_COMMANDS_FILE", str(commands_path))
+        env.insert("DFL_PREVIEW_DIR", str(previews_path))
 
-        job = Job(step, workdir, events_path, commands_path, self._python_exe, self._dfl_root,
+        job = Job(step, workdir, events_path, commands_path, previews_path, self._python_exe, self._dfl_root,
                   invocation_args, env, parent=self)
         job.finished.connect(lambda code, job=job: self._on_job_finished(job, code))
         self._jobs.append(job)

@@ -5,8 +5,13 @@ exercised with an injected clock instead of real time.
 """
 import collections
 import json
+import os
 import time
 from pathlib import Path
+
+import numpy as np
+
+from core.cv2ex import cv2_imwrite
 
 
 class SaveScheduler(object):
@@ -172,20 +177,45 @@ class EventLog(object):
         with open(self.path, "a", encoding="utf-8") as f:
             f.write(json.dumps(payload) + "\n")
 
-    def hello(self, model_name, target_iter):
+    def hello(self, model_name_class, target_iter, model_name=None, model_dir=None):
+        #model_name/model_dir sono additivi (VERSION resta 1): senza di loro
+        #un osservatore non puo' trovare i file del modello, che portano il
+        #nome dell'istanza e non quello della classe.
         self._write({"type": "hello", "version": self.VERSION,
-                     "model": model_name, "target_iter": target_iter})
+                     "model": model_name_class, "target_iter": target_iter,
+                     "model_name": model_name, "model_dir": model_dir})
 
-    def iter(self, iter, iter_time, losses):
+    def iter(self, iter, iter_time, losses, vram=None):
+        #Senza osservatore non si guarda nemmeno l'orologio. Le due ragioni
+        #per cui un evento non viene scritto sono due, e la guardia le
+        #copriva a meta': la limitazione di frequenza stava qui, l'assenza
+        #dell'osservatore soltanto dentro `_write`, cioe' dopo. Il risultato
+        #era che una corsa da riga di comando -- dove path e' None e non
+        #verra' scritto niente, mai -- interrogava comunque la GPU due volte
+        #al secondo per tutta la sua durata, con una chiamata che su quel
+        #percorso, prima di questo canale, non esisteva affatto.
+        if self.path is None:
+            return
         now = self.clock()
         if now - self._last_iter_emit < self.ITER_EVERY_SEC:
             return
         self._last_iter_emit = now
+        #vram puo' essere una coppia o una funzione che la produce. La
+        #seconda forma esiste perche' misurarla interroga la GPU: valutarla
+        #a ogni iterazione per poi scartare l'evento sarebbe un costo per
+        #niente, e da qui in giu' l'evento verra' scritto di sicuro.
+        misura = vram() if callable(vram) else vram
+        usata, totale = misura if misura is not None else (None, None)
         self._write({"type": "iter", "iter": iter, "iter_time": iter_time,
-                     "losses": [float(v) for v in losses]})
+                     "losses": [float(v) for v in losses],
+                     "vram_usata_gib": usata, "vram_totale_gib": totale})
 
     def save(self, iter):
         self._write({"type": "save", "iter": iter})
+
+    def preview(self, iter, immagini, nomi_file=None):
+        self._write({"type": "preview", "iter": iter, "immagini": immagini,
+                     "nomi_file": nomi_file})
 
     def end(self):
         self._write({"type": "end"})
@@ -229,3 +259,47 @@ class CommandTail(object):
             if isinstance(payload, dict) and isinstance(payload.get("op"), str):
                 ops.append(payload["op"])
         return ops
+
+
+class PreviewWriter(object):
+    """
+    Le anteprime per un osservatore esterno: un PNG per anteprima nella
+    cartella indicata, piu' una riga sul canale eventi che le annuncia.
+    dir_path=None rende scrivi() un no-op, quindi una corsa senza osservatore
+    si comporta esattamente come prima.
+
+    Due regole, ed entrambe esistono perche' il lettore guarda la cartella
+    mentre questa la riscrive: il file si scrive su '.tmp' e poi si rinomina
+    (os.replace e' atomico su entrambi i sistemi), cosi' nessuno vede mai
+    mezza immagine; e l'evento si appende DOPO la rinomina, mai prima, cosi'
+    non annuncia mai un file che non c'e'.
+
+    I nomi sono l'indice dell'anteprima, non il suo nome: stabili fra una
+    scrittura e l'altra -- la cartella non cresce -- e senza il problema dei
+    caratteri che un nome di anteprima puo' contenere e un filesystem no.
+    """
+    def __init__(self, dir_path, events):
+        self.dir_path = Path(dir_path) if dir_path is not None else None
+        self.events = events
+
+    def scrivi(self, previews, iter, layouts=None, nomi_file=None):
+        """Scrive le anteprime e le annuncia. Ritorna le voci annunciate."""
+        if self.dir_path is None:
+            return []
+        self.dir_path.mkdir(parents=True, exist_ok=True)
+        immagini = []
+        for indice, (nome, immagine) in enumerate(previews):
+            nome_file = "%d.png" % indice
+            finale = self.dir_path / nome_file
+            provvisorio = self.dir_path / ("%d.tmp.png" % indice)
+            cv2_imwrite(provvisorio, (np.clip(immagine, 0, 1) * 255).astype(np.uint8))
+            if not provvisorio.exists():
+                continue    # cv2_imwrite ingoia i suoi errori: qui li vediamo
+            os.replace(str(provvisorio), str(finale))
+            voce = {"nome": nome, "file": nome_file}
+            if layouts is not None and nome in layouts:
+                voce.update(layouts[nome])
+            immagini.append(voce)
+        if immagini:
+            self.events.preview(iter, immagini, nomi_file)
+        return immagini
