@@ -384,7 +384,15 @@ class TrainingPanel(QWidget):
         #che ha il proprio ruolo per il foglio di stile (il rosso viene da
         #li', non da un colore impostato a mano) e resta l'ultimo, isolato
         #dagli altri quattro perche' e' l'unico che ferma il training.
-        basso = QHBoxLayout()
+        #
+        #Stanno in un contenitore proprio, non direttamente nel layout del
+        #pannello, perche' a job finito sparisce la riga *intera*: nasconderli
+        #per nome lasciava indietro i due separatori, che un nome non ce
+        #l'hanno, e ogni comando aggiunto qui domani avrebbe lo stesso
+        #destino.
+        self.comandi = QWidget()
+        basso = QHBoxLayout(self.comandi)
+        basso.setContentsMargins(0, 0, 0, 0)
         self.diretta_button = QPushButton(testi.LIVE)
         self.diretta_button.setToolTip(testi.LIVE_TIP)
         self.diretta_button.clicked.connect(self.torna_in_diretta)
@@ -408,7 +416,7 @@ class TrainingPanel(QWidget):
         self.stop_button.setToolTip(testi.STOP_TIP)
         self.stop_button.clicked.connect(lambda: self.comando.emit("close"))
         basso.addWidget(self.stop_button)
-        layout.addLayout(basso)
+        layout.addWidget(self.comandi)
 
         self._timer_cursore = QTimer(self)
         self._timer_cursore.setSingleShot(True)
@@ -771,10 +779,22 @@ class TrainingPanel(QWidget):
         self._aggiorna_stato()
 
     def job_finito(self, codice):
-        """Il figlio non c'e' piu': via i comandi, il contenuto resta."""
-        for b in (self.stop_button, self.save_button, self.backup_button,
-                  self.aggiorna_button):
-            b.setVisible(False)
+        """Il figlio non c'e' piu': via i comandi, il contenuto resta.
+
+        La riga se ne va **intera**, separatori compresi, e Live con gli
+        altri quattro: senza un figlio a cui parlare nessuno dei cinque ha
+        piu' un interlocutore, e la via che Live apriva -- tornare
+        all'ultimo fotogramma dopo aver guardato indietro -- la apre gia' il
+        cursore portato in fondo (`_su_cursore`).
+
+        Nascondere il contenitore invece dei figli uno per uno non e' una
+        scorciatoia: e' la ragione per cui `self.comandi` esiste. I due
+        separatori restavano a schermo -- due righe bianche in fondo a
+        destra, col bottone superstite allargato a tutta la larghezza --
+        proprio perche' questo elenco li nominava per nome e loro un nome
+        non ce l'hanno.
+        """
+        self.comandi.setVisible(False)
         self._esito_job = testi.job_finished(codice)
         self._aggiorna_stato()
 
