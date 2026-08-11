@@ -26,7 +26,11 @@ label text, since that is what the catalog's `enabled_if` strings quote.
 the fields: `gui.fascia_aiuto.osserva()` hooks every field's widget (the
 container, for a path field -- that is what the mouse actually crosses) so
 hovering it, focusing it from the keyboard, or highlighting one of its
-dropdown entries shows that field's `help`/`choice_help` there. It only
+dropdown entries shows that field's `help`/`choice_help` there. The row's
+*name* and the row container are hooked to the same filter, so the whole
+row answers and not only the box where the value is typed -- pointing at
+the name is what a person does when the name is what they do not
+understand. It only
 reads -- it never marks a field touched, so `answers()` keeps sending only
 what the user actually changed. Every combo entry also carries its
 `choice_help` as a native `Qt.ToolTipRole`, set in `_build_choice`.
@@ -294,6 +298,12 @@ class StepForm(QWidget):
         by_key = {field.key: field for field in step.fields}
         groups = step.sections or (("", tuple(field.key for field in step.fields)),)
         hover_widgets = {}
+        # The whole row is the hover target, not just the control: the label
+        # is built here instead of letting `addRow(str, ...)` build one
+        # inside Qt, which is what made it unreachable before -- a name with
+        # nothing behind it is exactly what a person points at to find out
+        # what a field means.
+        self._labels = {}
 
         for title, keys in groups:
             if title:
@@ -310,7 +320,11 @@ class StepForm(QWidget):
                 self._badges[field.key] = badge
                 self._rows[field.key] = row
                 hover_widgets[field.key] = layout_widget
-                self._layout.addRow(field.label, row)
+                label = QLabel(field.label)
+                if field.help:
+                    label.setToolTip(field.help)
+                self._labels[field.key] = label
+                self._layout.addRow(label, row)
                 signal.connect(self._revalidate)
                 signal.connect(lambda *_a, key=field.key: self._touched.add(key))
 
@@ -327,7 +341,8 @@ class StepForm(QWidget):
             # the fastest way to make the one surface meant to explain lie.
             scarto = 1 if field.kind == FIELD_CHOICE and field.default is None else 0
             osserva(hover_widgets[field.key], self.fascia, field.label, field.help,
-                    per_voce=field.choice_help, scarto=scarto)
+                    per_voce=field.choice_help, scarto=scarto,
+                    anche=(self._labels[field.key], self._rows[field.key]))
 
         self._revalidate()
 
@@ -343,6 +358,15 @@ class StepForm(QWidget):
     def saved_badge(self, key):
         """The pill beside field `key` that shows its value on disk."""
         return self._badges[key]
+
+    def label_widget(self, key):
+        """The name shown to the left of field `key`'s control.
+
+        Built here rather than by `QFormLayout.addRow(str, ...)` precisely
+        so it can be reached: it is a hover surface for the help strip, and
+        one Qt builds inside itself is not.
+        """
+        return self._labels[key]
 
     def _raw_values(self):
         return {key: get() for key, (get, _set) in self._controls.items()}

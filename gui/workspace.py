@@ -118,12 +118,30 @@ def step_state(step, workspace):
     DONE by vacuous truth -- the same rule `stage_states` applies to its own
     aggregate, applied here to one step instead of a stage's whole scored set.
     """
+    return step_reason(step, workspace)[0]
+
+
+def step_reason(step, workspace):
+    """(stato, mancanti, soddisfatti) per un passo: lo stato e il perche'.
+
+    Lo stato da solo non si spiega -- "blocked" senza dire *cosa* manca
+    lascia l'utente a indovinare quale passo fare prima, che e' esattamente
+    la domanda per cui la pipeline esiste. Le tre liste sono nomi di
+    artefatti (`gui.catalog.artifacts`), non testo: la frase la compone
+    `gui.testi`, come ogni altra cosa che si legge a schermo.
+
+    `step_state` e' definito su questa, non accanto: sono la stessa regola,
+    e due copie avrebbero potuto divergere proprio nel caso in cui il
+    suggerimento serve di piu' -- un colore che dice una cosa e la frase
+    sotto un'altra.
+    """
     present = _present_checker(workspace)
     if step.produces and all(present(name) for name in step.produces):
-        return STATE_DONE
+        return STATE_DONE, [], list(step.produces)
     if step.consumes and all(present(name) for name in step.consumes):
-        return STATE_READY
-    return STATE_BLOCKED
+        return STATE_READY, [], list(step.consumes)
+    mancanti = [name for name in step.consumes if not present(name)]
+    return STATE_BLOCKED, mancanti, [name for name in step.consumes if present(name)]
 
 
 def stage_states(workspace):
@@ -148,6 +166,18 @@ def stage_states(workspace):
     functions share `_present_checker` instead, which is the part that
     would actually have been a duplication risk.
     """
+    return {stage: motivo[0] for stage, motivo in stage_reasons(workspace).items()}
+
+
+def stage_reasons(workspace):
+    """{fase: (stato, mancanti, chi_puo_partire)} -- lo stato e il perche'.
+
+    Stessa scelta di `step_reason`: `stage_states` e' definito su questa,
+    cosi' il colore della pillola e la frase che lo spiega non possono
+    raccontare due cose diverse. `chi_puo_partire` e' il nome del primo
+    passo eseguibile quando la fase e' READY (la domanda vera: "e adesso
+    cosa lancio?"), e la lista degli artefatti gia' prodotti quando e' DONE.
+    """
     present = _present_checker(workspace)
 
     steps_by_stage = {}
@@ -157,7 +187,7 @@ def stage_states(workspace):
             continue
         steps_by_stage.setdefault(stage, []).append(step)
 
-    states = {}
+    reasons = {}
     for stage in STAGES:
         steps = steps_by_stage.get(stage, ())
         required = [s for s in steps if not s.optional]
@@ -165,16 +195,20 @@ def stage_states(workspace):
 
         produced = {name for s in scored for name in s.produces}
         if produced and all(present(name) for name in produced):
-            states[stage] = STATE_DONE
+            reasons[stage] = (STATE_DONE, [], sorted(produced))
             continue
 
-        ready = any(
-            s.consumes and all(present(name) for name in s.consumes)
-            for s in scored
-        )
-        states[stage] = STATE_READY if ready else STATE_BLOCKED
+        pronti = [s for s in scored
+                  if s.consumes and all(present(name) for name in s.consumes)]
+        if pronti:
+            reasons[stage] = (STATE_READY, [], [pronti[0].name])
+            continue
 
-    return states
+        mancanti = sorted({name for s in scored for name in s.consumes
+                           if not present(name)})
+        reasons[stage] = (STATE_BLOCKED, mancanti, [])
+
+    return reasons
 
 
 def saved_model_names(model_dir):

@@ -169,6 +169,20 @@ class LossSource(object):
             return self._vivi[-1][0]
         return self._iter[-1] if self._iter else None
 
+    def ultimo_punto(self):
+        """L'ultimo punto vivo accettato, `(iterazione, valori)`, o None.
+
+        Esiste perche' il grafico possa allungarsi di un punto invece di
+        ripubblicare tutta la storia a ogni evento, **senza** rifare qui
+        fuori il lavoro di `_disegnabile`: i valori che tornano da qui sono
+        gia' quelli che questa classe ha accettato, buchi compresi. Una
+        seconda conversione dal lato del chiamante sarebbe una seconda
+        regola su cosa e' disegnabile, libera di divergere da questa.
+        """
+        if not self._vivi:
+            return None
+        return self._vivi[-1]
+
     def punti(self, fino_a=None):
         """Iterazioni e serie, opzionalmente troncate a `fino_a` compreso."""
         iters = list(self._iter) + [v[0] for v in self._vivi]

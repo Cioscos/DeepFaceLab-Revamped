@@ -160,10 +160,33 @@ QCheckBox::indicator {
 QListWidget::item {
     padding: 4px 6px;
 }
+/* Ogni proprieta' di queste due regole va dichiarata, anche quelle che
+   "si vedono gia' giuste": basta una riga in `QTabBar::tab` perche' Qt
+   smetta di far disegnare le schede allo stile nativo e le disegni col
+   motore del foglio di stile, che per cio' che non trova scritto usa i
+   propri valori di default -- e il default del bordo e' il **bianco**.
+   Era la cornice chiara attorno alle schede, che non veniva da nessun
+   colore di questo file: veniva dal non averlo detto. Misurato: col
+   foglio, 143 pixel bianchi puri nella barra delle schede; senza, zero. */
+QTabWidget::pane {
+    border: 1px solid %(bordo)s;
+    background: %(finestra)s;
+    top: -1px;
+}
 QTabBar::tab {
     padding: 6px 12px;
+    background: %(finestra)s;
+    color: %(testo_lieve)s;
+    border: 1px solid %(bordo)s;
+    border-bottom: 1px solid %(bordo)s;
+    margin-right: 2px;
+}
+QTabBar::tab:hover {
+    color: %(testo)s;
 }
 QTabBar::tab:selected {
+    background: %(lieve)s;
+    color: %(testo)s;
     border-bottom: 2px solid %(accento)s;
 }
 QLabel[ruolo="sezione"] {

@@ -18,6 +18,7 @@ modulo esiste per non avere.
 from PyQt5.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from gui import testi
+from gui.rimozione import svuota
 
 
 class TessereStato(QWidget):
@@ -41,12 +42,14 @@ class TessereStato(QWidget):
         nuove, la sua tessera sparisce -- non resta a schermo col valore
         vecchio, che sarebbe una bugia silenziosa (un training che ha
         raggiunto l'obiettivo, con l'ETA di un minuto fa ancora li').
+
+        Lo smontaggio passa da `gui.rimozione`, non da un `setParent(None)`
+        scritto qui: staccare un widget senza nasconderlo prima lo lascia
+        diventare una finestra di primo livello che Qt ri-mostra da sola --
+        ed e' proprio questo il punto del programma dove il difetto si
+        vedeva di piu', perche' e' quello che ricostruisce piu' spesso.
         """
-        while self._layout.count():
-            widget = self._layout.takeAt(0).widget()
-            if widget is not None:
-                widget.setParent(None)
-                widget.deleteLater()
+        svuota(self._layout)
         for etichetta, valore in coppie:
             self._layout.addWidget(self._tessera(etichetta, valore))
 

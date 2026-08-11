@@ -28,6 +28,7 @@ from gui.loss_plot import COLORI, INTERVALLI, LossPlot
 from gui.loss_source import LossSource
 from gui.preview_grid import celle, etichetta, normalizza, righe_effettive
 from gui.preview_history import StoricoAnteprime
+from gui.rimozione import svuota
 from gui.status_line import (
     RitmoIterazioni, iterazione_utilizzabile, obiettivo_valido, valori_di_stato)
 from gui.tessere_stato import TessereStato
@@ -123,12 +124,13 @@ def _righe_dei_nomi(nomi_file):
 
 
 def _svuota(layout):
-    """Toglie i widget di un layout: il contorno si ricostruisce ogni volta."""
-    while layout.count():
-        widget = layout.takeAt(0).widget()
-        if widget is not None:
-            widget.setParent(None)
-            widget.deleteLater()
+    """Toglie i widget di un layout: il contorno si ricostruisce ogni volta.
+
+    Nome tenuto -- lo importano i test -- ma il come sta in `gui.rimozione`,
+    insieme al motivo per cui nascondere prima di staccare non e' un
+    dettaglio: senza, ogni cella tolta diventa una finestrella a se'.
+    """
+    svuota(layout)
 
 
 class _Riquadro(QLabel):
@@ -622,6 +624,13 @@ class TrainingPanel(QWidget):
         #fuori ordine -- se lo riporta dentro al primo `hello`.
         if self.loss.aggiungi_vivo(iterazione, losses):
             self._vivi.append((iterazione, list(losses)))
+            #Un punto in coda, non tutta la storia da capo. A settantacinquemila
+            #iterazioni ripubblicarla costava 12,6 ms per evento, con gli
+            #eventi che arrivano fino a due al secondo -- e cresceva con
+            #l'allenamento. I valori li da' la sorgente, gia' passati dalla
+            #sua regola su cosa e' disegnabile: rileggerli da `losses`
+            #sarebbe una seconda regola libera di divergere.
+            self.plot.aggiungi_punto(*self.loss.ultimo_punto())
 
         ritmo = self._ritmo.aggiorna(iterazione, time.monotonic())
 
@@ -633,7 +642,6 @@ class TrainingPanel(QWidget):
         #ricomposta lo stesso: e' lei a dire quanti valori di questa loss
         #non erano disegnabili (`_avviso_scarti`, contati dalla sorgente).
         self._aggiorna_stato()
-        self._aggiorna_grafico()
 
     # -- lo stato che si legge da fuori ------------------------------------
 
@@ -729,7 +737,6 @@ class TrainingPanel(QWidget):
         self.plot.imposta_cursore(iterazione)
         self.etichetta_cursore.setText(testi.cursor_at_iteration(iterazione))
         self._disegna_tessere()
-        self._aggiorna_grafico()
         if iterazione in self._iterazioni:
             self._muovi_cursore(self._iterazioni.index(iterazione))
         #Riavviabile: un secondo movimento prima della scadenza sostituisce
@@ -745,7 +752,6 @@ class TrainingPanel(QWidget):
         self.plot.imposta_cursore(None)
         self.etichetta_cursore.setText(testi.cursor_live())
         self._disegna_tessere()
-        self._aggiorna_grafico()
         if self._iterazioni:
             self._muovi_cursore(len(self._iterazioni) - 1)
         self._ridisegna()
@@ -878,8 +884,19 @@ class TrainingPanel(QWidget):
         self.tessere.aggiorna(coppie)
 
     def _aggiorna_grafico(self):
-        fino_a = self.iterazione_mostrata if self.modo == "storico" else None
-        self.plot.imposta_dati(*self.loss.punti(fino_a=fino_a))
+        """Ripubblica la storia intera: solo quando cambia davvero.
+
+        Sono tre momenti e sono tutti rari -- un `hello`, il CSV riletto, il
+        CSV riconsegnato dal lettore -- e da qui in poi il grafico si
+        allunga da solo, un punto per evento.
+
+        Il taglio allo storico non passa piu' di qui: era `punti(fino_a=...)`
+        a ogni scatto del cursore, cioe' una copia dell'intera storia per
+        ogni pixel di trascinamento, e disegnava **esattamente** la stessa
+        curva -- il grafico non guarda comunque niente oltre la finestra, e
+        la finestra si ferma al cursore. Adesso lo dice solo al cursore.
+        """
+        self.plot.imposta_dati(*self.loss.punti())
 
     def _carica_dallo_storico(self):
         """Lo scatto dell'iterazione ferma, o il piu' vicino che si legga."""

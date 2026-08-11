@@ -235,16 +235,29 @@ class _Filtro(QObject):
                              self._per_voce[posizione])
 
 
-def osserva(widget, fascia, titolo, testo, per_voce=(), scarto=0):
+def osserva(widget, fascia, titolo, testo, per_voce=(), scarto=0, anche=()):
     """Aggancia un controllo alla fascia. Torna il filtro, gia' installato.
 
     Il filtro diventa figlio del widget: senza un riferimento vivo Qt lo
     raccoglie e l'aggancio smette di funzionare **senza dirlo**, che e' il
     modo peggiore in cui questo codice possa rompersi.
+
+    `anche` sono le altre superfici della stessa riga -- il nome
+    dell'opzione a sinistra, il contenitore che tiene controllo e
+    pastiglia. Ricevono lo **stesso** filtro, non uno per ciascuna, e la
+    differenza conta: `_proprietario` e' un oggetto solo, quindi il Leave di
+    una superficie e l'Enter della sua vicina non si contendono la fascia --
+    con due filtri distinti l'uscita dal nome cancellerebbe l'aiuto che
+    l'ingresso nel campo ha appena messo. Passare col mouse sul nome
+    dell'opzione e' il gesto naturale di chi cerca di capire cosa sia:
+    prima rispondeva solo la casella dove si scrive il valore.
     """
     combo = widget if isinstance(widget, QComboBox) else None
     filtro = _Filtro(fascia, titolo, testo, per_voce, combo, scarto, parent=widget)
     widget.installEventFilter(filtro)
+    for altro in anche:
+        if altro is not None:
+            altro.installEventFilter(filtro)
     if combo is not None:
         combo.highlighted.connect(filtro.su_voce)
     return filtro

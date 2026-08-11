@@ -124,6 +124,55 @@ def step_badge_label(stato):
     return _STEP_BADGE_LABEL.get(stato, "")
 
 
+# -- perche' un passo o una fase e' in quello stato -------------------------
+# Il colore dice *cosa*, queste frasi dicono *perche'*. Senza, "blocked" e'
+# un vicolo cieco: l'utente vede il rosso e non sa quale passo fare prima,
+# che e' esattamente la domanda per cui la pipeline esiste.
+_ELENCO = ", "
+STEP_TIP_DONE = "Done: it has already produced %s."
+STEP_TIP_READY = "Ready to run: everything it needs is here (%s)."
+STEP_TIP_BLOCKED = "Blocked: %s is missing. Run the step that produces it first."
+STEP_TIP_BLOCKED_NO_INPUT = (
+    "Blocked: this step declares no inputs, so its state cannot be worked out "
+    "from what is on disk.")
+STAGE_TIP_DONE = "Done: everything this stage produces is on disk (%s)."
+STAGE_TIP_READY = "Ready to run: %s can start now."
+STAGE_TIP_BLOCKED = "Blocked: %s is missing, so nothing here can run yet."
+STAGE_TIP_BLOCKED_NO_INPUT = "Blocked: nothing here can run on this workspace yet."
+
+
+def _artefatti(nomi):
+    return _ELENCO.join(artifact_label(nome) for nome in nomi)
+
+
+def step_state_tip(stato, mancanti, soddisfatti):
+    """Why a step's badge says what it says. `""` for an unknown state.
+
+    Takes what `gui.workspace.step_reason` returns, unpacked -- the rule
+    lives there, the wording lives here, and neither knows the other's job.
+    """
+    if stato == STATE_DONE:
+        return STEP_TIP_DONE % _artefatti(soddisfatti)
+    if stato == STATE_READY:
+        return STEP_TIP_READY % _artefatti(soddisfatti)
+    if stato == STATE_BLOCKED:
+        return (STEP_TIP_BLOCKED % _artefatti(mancanti) if mancanti
+                else STEP_TIP_BLOCKED_NO_INPUT)
+    return ""
+
+
+def stage_state_tip(stato, mancanti, pronti):
+    """Why a stage's pill has the colour it has, after `STAGE_TIP`."""
+    if stato == STATE_DONE:
+        return STAGE_TIP_DONE % _artefatti(pronti)
+    if stato == STATE_READY:
+        return STAGE_TIP_READY % (pronti[0] if pronti else "")
+    if stato == STATE_BLOCKED:
+        return (STAGE_TIP_BLOCKED % _artefatti(mancanti) if mancanti
+                else STAGE_TIP_BLOCKED_NO_INPUT)
+    return ""
+
+
 # -- il segnaposto al posto del form, per i passi non KIND_MAIN -------------
 PLACEHOLDER_VIEWER = "Opens %s in the system file manager."
 PLACEHOLDER_CLEAR = "Empties and recreates the workspace's standard subdirectories."

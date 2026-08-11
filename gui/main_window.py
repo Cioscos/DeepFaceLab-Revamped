@@ -28,6 +28,7 @@ from gui.delegato_passi import RUOLO_SOMMARIO, RUOLO_STATO, DelegatoPassi
 from gui.execution.jobs import JobManager, StepConflict, _model_class_from_step, _resolve
 from gui.forms import StepForm
 from gui.preferenze import ScalaTesto
+from gui.rimozione import svuota
 from gui.saved_options import saved_options
 from gui.status_line import (
     RitmoIterazioni, iterazione_utilizzabile, obiettivo_valido, pezzi_di_stato)
@@ -37,7 +38,7 @@ from gui.training_panel import TrainingPanel
 from gui.workspace import (
     STANDARD_SUBDIRS, STATE_BLOCKED, STATE_DONE, STATE_READY,
     RecentWorkspaces, clear_workspace, create_workspace, default_workspace,
-    saved_model_names, stage_states, step_state,
+    saved_model_names, stage_reasons, step_reason,
 )
 
 # Console tab titles for a failed job: exit code -1 is Job's sentinel for
@@ -163,10 +164,19 @@ class PipelineBar(QWidget):
         a per-button setStyleSheet: changing a dynamic property does not
         repaint by itself, so it is followed by the unpolish/polish pair Qt
         needs to pick the new rule up.
+
+        The tooltip is rebuilt here too, and says *why* the pill has that
+        colour: a colour alone is a dead end -- it shows that nothing can
+        run without saying what to do about it, which is the one question
+        the pipeline bar exists to answer.
         """
-        self._states = stage_states(self._workspace)
+        reasons = stage_reasons(self._workspace)
+        self._states = {stage: reason[0] for stage, reason in reasons.items()}
         for stage, button in self._buttons.items():
-            button.setProperty("stato", self._states.get(stage, STATE_BLOCKED))
+            state, missing, ready = reasons.get(stage, (STATE_BLOCKED, [], []))
+            button.setProperty("stato", state)
+            button.setToolTip("\n".join(
+                [testi.STAGE_TIP, testi.stage_state_tip(state, missing, ready)]))
             button.style().unpolish(button)
             button.style().polish(button)
 
@@ -299,20 +309,15 @@ class StepView(QWidget):
         """Rebuild the panel for `step` (a StepDef), or clear it for None."""
         self.step = step
         self.set_job(None, False)
-        while self._body_layout.count():
-            item = self._body_layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.setParent(None)
+        # Through `gui.rimozione`, like every other place that empties a
+        # layout: a widget detached without being hidden first is a
+        # top-level window Qt shows again by itself (see that module).
+        svuota(self._body_layout)
         # The previous step's help strip, if any, belongs to a `StepForm`
         # about to be discarded (or to no form at all, for a viewer/clear
         # step): detach it before that happens, so a stale strip never
         # lingers in the fixed row below the scroll area.
-        while self._fascia_layout.count():
-            item = self._fascia_layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.setParent(None)
+        svuota(self._fascia_layout)
         self.open_button = None
         if step is None:
             self.form = None
@@ -485,11 +490,19 @@ class MainWindow(QMainWindow):
         right after building the rows, and again from _on_any_job_finished
         and run_clear_workspace, so there is exactly one place that knows
         how to compute a row's badge.
+
+        The row's tooltip is re-stamped in the same pass, for the same
+        reason the stage pills' is: the badge says "blocked", the tooltip
+        says which artifact is missing -- and both come out of the same
+        `step_reason` call, so they cannot disagree.
         """
         for row in range(self.step_list.count()):
             item = self.step_list.item(row)
             step = step_by_name(item.data(Qt.UserRole))
-            item.setData(RUOLO_STATO, step_state(step, self.workspace))
+            state, missing, satisfied = step_reason(step, self.workspace)
+            item.setData(RUOLO_STATO, state)
+            item.setToolTip("\n".join(
+                [step.summary, testi.step_state_tip(state, missing, satisfied)]))
 
     def _on_item_changed(self, current, _previous):
         if current is None:
@@ -602,7 +615,14 @@ class MainWindow(QMainWindow):
     def _refresh_running_jobs_menu(self):
         """Rebuild the list of active jobs. Actions belong to the submenu, so
         `clear()` deletes them -- the same ownership rule as the recent
-        workspaces submenu."""
+        workspaces submenu.
+
+        An empty submenu is hidden outright rather than left in place: a
+        `QMenu` shows its arrow whether or not it has anything behind it,
+        and an arrow that opens onto nothing reads as a broken menu. The
+        entry comes back by itself the moment a job starts -- every caller
+        of this method is already a point where that changed.
+        """
         self.running_jobs_menu.clear()
         for job in self.job_manager.active_jobs():
             action = QAction(job.step.name, self.running_jobs_menu)
@@ -610,6 +630,8 @@ class MainWindow(QMainWindow):
             action.triggered.connect(
                 lambda _checked=False, n=job.step.name: self.select_step(n))
             self.running_jobs_menu.addAction(action)
+        self.running_jobs_menu.menuAction().setVisible(
+            not self.running_jobs_menu.isEmpty())
 
     def set_text_scale(self, nome):
         """Change the whole application's text size and remember the choice.
