@@ -13,8 +13,8 @@ from pathlib import Path
 from PyQt5.QtCore import Qt, QUrl, QProcess, pyqtSignal
 from PyQt5.QtGui import QColor, QDesktopServices, QFontDatabase, QTextCursor
 from PyQt5.QtWidgets import (
-    QAction, QActionGroup, QApplication, QDockWidget, QFileDialog, QFrame, QHBoxLayout,
-    QLabel, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
+    QAction, QActionGroup, QApplication, QCheckBox, QDockWidget, QFileDialog, QFrame,
+    QHBoxLayout, QInputDialog, QLabel, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
     QPushButton, QScrollArea, QSplitter, QTabBar, QTabWidget, QTextEdit, QVBoxLayout,
     QWidget,
 )
@@ -25,11 +25,17 @@ from gui.catalog.model import (
     KIND_CLEAR, KIND_EBSYNTH, KIND_MAIN, KIND_VIEWER, PROCESS_SESSION, STAGES,
 )
 from gui.delegato_passi import RUOLO_SOMMARIO, RUOLO_STATO, DelegatoPassi
+from gui.duplicazione import DialogoDuplicazione
 from gui.execution.jobs import JobManager, StepConflict, _model_class_from_step, _resolve
 from gui.forms import StepForm
 from gui.preferenze import ScalaTesto
+from gui.progetti import (
+    ArchivioProgetti, adesso, dimensione, identita_workspace, leggi_progetto, radice_progetti,
+    scrivi_progetto, serve_migrazione, slug, stesso_workspace,
+)
 from gui.rimozione import svuota
 from gui.saved_options import saved_options
+from gui.selettore_progetti import SelettoreProgetti
 from gui.status_line import (
     RitmoIterazioni, iterazione_utilizzabile, obiettivo_valido, pezzi_di_stato)
 from gui.telemetry import EventTail
@@ -37,7 +43,7 @@ from gui.theme import CONSOLE_FONT_POINT_SIZE, SCALE_NAMES, STATO_COLORE, apply_
 from gui.training_panel import TrainingPanel
 from gui.workspace import (
     STANDARD_SUBDIRS, STATE_BLOCKED, STATE_DONE, STATE_READY,
-    RecentWorkspaces, clear_workspace, create_workspace, default_workspace,
+    RecentWorkspaces, clear_workspace, default_workspace,
     saved_model_names, stage_reasons, step_reason,
 )
 
@@ -332,6 +338,15 @@ class StepView(QWidget):
         if step.kind == KIND_MAIN:
             self.form = StepForm(step)
             self.placeholder = None
+            # The project's memory goes in first, the model's own saved
+            # options after (_refresh_saved_values, below): when both have
+            # something to say about a field, the truth is what the model
+            # has on disk, not what a previous run of this same step typed.
+            progetto = leggi_progetto(self._workspace)
+            if progetto is not None:
+                ricordate = progetto.memoria.get("answers", {}).get(step.name)
+                if ricordate:
+                    self.form.set_remembered_values(ricordate)
             if step.needs_model_name:
                 self.form.set_model_names(saved_model_names(self._workspace / "model"))
                 self.form._model_combo.currentTextChanged.connect(self._refresh_saved_values)
@@ -390,10 +405,18 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(testi.WINDOW_TITLE)
         self._python_exe = python_exe
         self._dfl_root = Path(dfl_root)
-        self.workspace = Path(workspace) if workspace is not None else default_workspace(self._dfl_root)
-        self._scala = ScalaTesto(settings)
+        self.archivio = ArchivioProgetti(radice_progetti(self._dfl_root))
+        self.workspace = Path(workspace) if workspace is not None else self._workspace_iniziale()
+        if settings is None:
+            from PyQt5.QtCore import QSettings
+            settings = QSettings("DeepFaceLab", "gui")
+        self._settings = settings
+        self._scala = ScalaTesto(self._settings)
         self.job_manager = JobManager(python_exe, self._dfl_root)
-        self.job_manager.job_started.connect(lambda _job: self._refresh_running_jobs_menu())
+        self.selettore = SelettoreProgetti(self.archivio)
+        self.selettore.progetto_scelto.connect(
+            lambda progetto: self.switch_workspace(progetto.cartella))
+        self.job_manager.job_started.connect(self._on_job_started)
         self.job_manager.job_finished.connect(self._on_any_job_finished)
 
         self.pipeline_bar = PipelineBar(self.workspace)
@@ -403,6 +426,7 @@ class MainWindow(QMainWindow):
 
         passi = QWidget()
         passi_layout = QVBoxLayout(passi)
+        passi_layout.addWidget(self.selettore)
         passi_layout.addWidget(self.pipeline_bar)
         body = QSplitter(Qt.Horizontal)
         body.addWidget(self.step_list)
@@ -447,10 +471,53 @@ class MainWindow(QMainWindow):
 
         self._build_menus()
         self.pipeline_bar.select(self.pipeline_bar.stage_names()[0])
+        self._aggiorna_selettore()
 
-    def _on_any_job_finished(self, _job, _code):
-        self.pipeline_bar.refresh()
-        self._refresh_step_badges()
+    def _workspace_iniziale(self):
+        """Il workspace da mostrare a un avvio senza `workspace=` esplicito.
+
+        Rispecchia il primo dei tre livelli che setenv.bat/.sh risolvono: il
+        progetto che il puntatore nomina, se ne nomina uno valido,
+        altrimenti la radice -- la stessa ricaduta di sempre per
+        un'installazione non ancora migrata. Senza questo la GUI ricadeva
+        sempre sulla radice, mentre uno script lanciato a mano nello stesso
+        momento segue il puntatore: i due si contraddicevano a ogni
+        riavvio.
+        """
+        progetto = self.archivio.attivo()
+        return progetto.cartella if progetto is not None else default_workspace(self._dfl_root)
+
+    def _on_job_started(self, _job):
+        # Slot diretto di job_manager.job_started: protetto con
+        # _esegui_protetta come le altre azioni che toccano l'archivio dei
+        # progetti (qui, _aggiorna_selettore scandisce il disco).
+        self._esegui_protetta(self._on_job_started_ora)
+
+    def _on_job_started_ora(self):
+        self._refresh_running_jobs_menu()
+        self._aggiorna_selettore()
+
+    def _on_any_job_finished(self, job, _code):
+        # Slot diretto di job_manager.job_finished, protetto con
+        # _esegui_protetta per la stessa ragione di _on_job_started sopra --
+        # un job che finisce non deve poter portarsi via l'intera finestra
+        # per un errore di lettura del disco.
+        self._esegui_protetta(lambda: self._on_any_job_finished_ora(job))
+
+    def _on_any_job_finished_ora(self, job):
+        # Un job di un altro progetto non tocca cio' che questa finestra sta
+        # guardando: rileggere pipeline_bar/step badges e' lavoro sprecato
+        # (entrambi scandiscono il disco) e una barra che si ridisegna sotto
+        # le mani, per un progetto che non e' quello aperto, legge come un
+        # errore. Il selettore invece si aggiorna sempre: e' l'unica
+        # superficie che mostra anche i progetti che non sono quello aperto.
+        # `job` puo' essere None -- una chiamata diretta che vuole solo
+        # forzare il ricalcolo dal disco, senza un job vero dietro -- e in
+        # quel caso non c'e' nessun workspace da confrontare: si aggiorna.
+        if job is None or stesso_workspace(identita_workspace(self.workspace), job.identita):
+            self.pipeline_bar.refresh()
+            self._refresh_step_badges()
+        self._aggiorna_selettore()
         self._refresh_running_jobs_menu()
 
     def select_step(self, name):
@@ -519,16 +586,29 @@ class MainWindow(QMainWindow):
             self._set_job_status(job, self._job_status_text.get(job, self.step_view.job_status.text()))
 
     def _job_for_step(self, step):
-        """The most recent job of `step`, or None.
+        """The most recent job of `step` on *this window's* workspace, or None.
 
         Scans `_jobs_in_order` newest-first and returns the first match, not
         the whole history: on 51 `main` steps exactly one -- "3) cut video
         (drop video on me)" -- neither produces nor modifies any artifact,
         so the conflict matrix has nothing to contend and lets a second copy
         of that step start, and this is the one the step view should show.
+
+        The workspace check (C1, found by re-reading the whole multi-project
+        cycle end to end) is not optional: the catalog's step objects are
+        module-level singletons (`gui/catalog/__init__.py`), so with a
+        training active on project A and the window on project C, selecting
+        the same-named step used to hand the step view A's job just because
+        `job.step is step` matched -- from there Stop sent `close` to A's
+        training and Force stop killed it, from a screen that shows C. Same
+        predicate as `_job_attivi_su`: identity or path, never `==` on a bare
+        path. `_refresh_running_jobs_menu` deliberately does *not* filter --
+        it is the one surface that lists the jobs of projects you are not
+        looking at.
         """
+        identita = identita_workspace(self.workspace)
         for job in reversed(self._jobs_in_order):
-            if job.step is step:
+            if job.step is step and stesso_workspace(identita, job.identita):
                 return job
         return None
 
@@ -544,21 +624,33 @@ class MainWindow(QMainWindow):
         """
         menubar = self.menuBar()
 
-        workspace_menu = menubar.addMenu(testi.MENU_WORKSPACE)
-        open_action = QAction(testi.MENU_OPEN_WORKSPACE, self)
-        open_action.setToolTip(testi.MENU_OPEN_WORKSPACE_TIP)
-        open_action.triggered.connect(lambda: self._open_workspace_dialog())
-        workspace_menu.addAction(open_action)
-        new_action = QAction(testi.MENU_NEW_WORKSPACE, self)
-        new_action.setToolTip(testi.MENU_NEW_WORKSPACE_TIP)
-        new_action.triggered.connect(lambda: self._new_workspace_dialog())
-        workspace_menu.addAction(new_action)
-        self._recent_menu = workspace_menu.addMenu(testi.MENU_RECENT)
-        workspace_menu.addSeparator()
+        self._project_menu = menubar.addMenu(testi.MENU_PROJECT)
+        new_action = QAction(testi.MENU_NEW_PROJECT, self)
+        new_action.setToolTip(testi.MENU_NEW_PROJECT_TIP)
+        new_action.triggered.connect(lambda: self._new_project_dialog())
+        self._project_menu.addAction(new_action)
+        open_action = QAction(testi.MENU_OPEN_PROJECT, self)
+        open_action.setToolTip(testi.MENU_OPEN_PROJECT_TIP)
+        open_action.triggered.connect(lambda: self._open_project_dialog())
+        self._project_menu.addAction(open_action)
+        self._recent_menu = self._project_menu.addMenu(testi.MENU_RECENT)
+        rename_action = QAction(testi.MENU_RENAME_PROJECT, self)
+        rename_action.setToolTip(testi.MENU_RENAME_PROJECT_TIP)
+        rename_action.triggered.connect(lambda: self._rename_project_dialog())
+        self._project_menu.addAction(rename_action)
+        duplicate_action = QAction(testi.MENU_DUPLICATE_PROJECT, self)
+        duplicate_action.setToolTip(testi.MENU_DUPLICATE_PROJECT_TIP)
+        duplicate_action.triggered.connect(lambda: self._duplicate_project_dialog())
+        self._project_menu.addAction(duplicate_action)
+        delete_action = QAction(testi.MENU_DELETE_PROJECT, self)
+        delete_action.setToolTip(testi.MENU_DELETE_PROJECT_TIP)
+        delete_action.triggered.connect(lambda: self._delete_project_dialog())
+        self._project_menu.addAction(delete_action)
+        self._project_menu.addSeparator()
         clear_action = QAction(testi.MENU_CLEAR_WORKSPACE, self)
         clear_action.setToolTip(testi.MENU_CLEAR_WORKSPACE_TIP)
         clear_action.triggered.connect(lambda: self.run_clear_workspace())
-        workspace_menu.addAction(clear_action)
+        self._project_menu.addAction(clear_action)
         self._refresh_recent_menu()
 
         view_menu = menubar.addMenu(testi.MENU_VIEW)
@@ -625,13 +717,50 @@ class MainWindow(QMainWindow):
         """
         self.running_jobs_menu.clear()
         for job in self.job_manager.active_jobs():
-            action = QAction(job.step.name, self.running_jobs_menu)
+            titolo = testi.tab_title(self._nome_progetto_di(job), job.step.name)
+            action = QAction(titolo, self.running_jobs_menu)
             action.setToolTip(testi.RUNNING_JOB_TIP)
             action.triggered.connect(
-                lambda _checked=False, n=job.step.name: self.select_step(n))
+                lambda _checked=False, j=job: self._vai_al_job(j))
             self.running_jobs_menu.addAction(action)
         self.running_jobs_menu.menuAction().setVisible(
             not self.running_jobs_menu.isEmpty())
+
+    def _nome_progetto_di(self, job):
+        """The readable name of `job`'s project, or the folder name when
+        it isn't (or isn't anymore) a project -- an unmigrated install."""
+        progetto = leggi_progetto(job.workspace)
+        return progetto.nome if progetto is not None else job.workspace.name
+
+    def _vai_al_job(self, job):
+        """Reach the job itself, not the same-named step of whatever
+        project is on screen.
+
+        With jobs on more than one project, selecting by step name lands on
+        the right row of the wrong list: another project's step can share
+        the name, with a different workspace underneath it.
+
+        Protetta con _esegui_protetta: select_step (in fondo) solleva
+        KeyError se il nome del passo non e' nel catalogo -- non dovrebbe
+        mai succedere per un job vero, ma e' comunque uno slot Qt raggiunto
+        da un click, non vale il rischio di un crash per una difesa che
+        costa una riga.
+        """
+        self._esegui_protetta(lambda: self._vai_al_job_ora(job))
+
+    def _vai_al_job_ora(self, job):
+        pannello = self._panels.get(job)
+        if pannello is not None:
+            self.central_tabs.setCurrentWidget(pannello)
+            return
+        console = self.console_of(job)
+        if console is not None:
+            self.console_tabs.setCurrentWidget(console)
+            self.console_dock.show()
+            return
+        if job.workspace != self.workspace:
+            self.switch_workspace(job.workspace)
+        self.select_step(job.step.name)
 
     def set_text_scale(self, nome):
         """Change the whole application's text size and remember the choice.
@@ -646,51 +775,342 @@ class MainWindow(QMainWindow):
 
     # -- workspace switching -------------------------------------------------
 
-    def switch_workspace(self, path):
-        """Point the whole window at `path`. Refused while any job is active.
+    def _esegui_protetta(self, azione):
+        """Esegue `azione()` proteggendo lo slot Qt che la chiama.
 
-        A running job's environment (WORKSPACE, and every path resolved
-        against it) is fixed at launch -- switching from under it would
-        leave the job writing into a workspace the GUI no longer shows.
+        Uno slot Qt e' un vicolo cieco per un'eccezione -- stessa ragione di
+        `_on_telemetry_event`, sopra: PyQt5 la trasforma in qFatal e il
+        processo se ne va con dentro ogni altro training aperto nella stessa
+        finestra. Usato da ogni azione del menu Project che tocca il disco --
+        crea, apri, rinomina, elimina, svuota, riallinea la cartella, passa
+        a un altro progetto -- cosi' un permesso negato, un antivirus che
+        tiene un handle, una finestra di Esplora risorse aperta sulla
+        cartella diventano un avviso, non un crash. Un aiutante solo, non
+        una copia per azione: due copie di questa protezione potrebbero
+        divergere proprio nel punto in cui serve.
+
+        Cattura `Exception` senza distinguere: un `AttributeError` da un
+        difetto di programmazione arriva all'utente con lo stesso avviso di
+        un permesso negato sul disco. E' una scelta, non una svista --
+        `_on_telemetry_event`, sopra, ha gia' la stessa postura in questo
+        file -- ma e' il rischio tipico di questa rete: un vero difetto puo'
+        diventare un avviso invece di un traceback visibile durante lo
+        sviluppo. Va saputo, non solo accettato in silenzio.
+
+        Torna True se `azione()` e' arrivata in fondo, False se ha
+        sollevato -- chi chiama puo' usarlo per non proseguire dopo un
+        fallimento.
         """
-        active = self.job_manager.active_jobs()
+        try:
+            azione()
+        except Exception as error:
+            QMessageBox.warning(
+                self, testi.TITLE_PROJECT_ACTION_FAILED, testi.msg_project_action_failed(str(error)))
+            return False
+        return True
+
+    def _aggiorna_selettore(self):
+        """Ricostruisce il pulsante-selettore dallo stato corrente.
+
+        `occupati` porta la cartella di ogni job attivo, con le ripetizioni
+        -- non un insieme (era cosi' prima di questa correzione, ed
+        e' per cui il tooltip diceva sempre "1 running": due job sullo
+        stesso progetto collassavano nella stessa voce di un insieme).
+        Confrontate per percorso (`SelettoreProgetti._occupati_quanti`) e
+        non per identita' del filesystem come `_job_attivi_su`: qui il costo
+        di uno `stat` per progetto a ogni ridisegno non e' giustificato da
+        un pallino/conteggio che nel peggiore dei casi sbaglia di poco -- un
+        difetto cosmetico, non una corsa sui dati.
+        """
+        occupati = [job.workspace for job in self.job_manager.active_jobs()]
+        self.selettore.aggiorna(self.archivio.elenca(), occupati)
+        self.selettore.imposta_corrente(leggi_progetto(self.workspace))
+
+    def proponi_migrazione(self):
+        """Propone di spostare il vecchio workspace dentro un progetto.
+
+        Mai automatica: sposta i dati dell'utente, e una cartella che si
+        muove da sola e' cio' che si scopre quando un backup non trova piu'
+        la sorgente. Chiamato una volta, all'avvio, dopo che la finestra e'
+        costruita ma prima che sia mostrata. Protetto con _esegui_protetta
+        come ogni altra azione di questo menu che tocca il disco: un
+        permesso negato durante lo spostamento non deve costare la finestra
+        intera all'avvio.
+        """
+        self._esegui_protetta(self._proponi_migrazione_ora)
+
+    def _proponi_migrazione_ora(self):
+        if str(self._settings.value("skipMigration", "")) == "1":
+            return
+        if not serve_migrazione(self.archivio.radice):
+            return
+        finestra = QMessageBox(self)
+        finestra.setWindowTitle(testi.TITLE_MIGRATE)
+        finestra.setText(testi.msg_migrate(self.archivio.radice))
+        finestra.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        finestra.setDefaultButton(QMessageBox.No)
+        non_chiedere = QCheckBox(testi.DONT_ASK_AGAIN, finestra)
+        finestra.setCheckBox(non_chiedere)
+        if finestra.exec_() != QMessageBox.Yes:
+            if non_chiedere.isChecked():
+                self._settings.setValue("skipMigration", "1")
+            return
+        nome, ok = QInputDialog.getText(
+            self, testi.TITLE_MIGRATE, testi.PROMPT_MIGRATE_NAME)
+        if not ok or not nome.strip():
+            return
+        # migra() scrive project.json prima di spostare le sottocartelle
+        # (vedi il suo stesso docstring): un fallimento a meta' spostamento
+        # lascia comunque un progetto valido e gia' visibile su disco, con
+        # dentro la parte che ce l'ha fatta. Il refresh nel finally lo porta
+        # subito nel selettore anche in quel caso -- non dopo un riavvio --
+        # cosi' chi vede l'avviso di errore ha gia' davanti dove sono finiti
+        # i dati spostati, invece di dover indovinare.
+        try:
+            progetto = self.archivio.migra(nome.strip())
+        finally:
+            self._aggiorna_selettore()
+        self.switch_workspace(progetto.cartella)
+
+    def _new_project_dialog(self):
+        nome, ok = QInputDialog.getText(
+            self, testi.DIALOG_NEW_PROJECT, testi.DIALOG_NEW_PROJECT_NAME_LABEL)
+        if not ok or not nome.strip():
+            return
+        self._esegui_protetta(lambda: self._crea_progetto_ora(nome.strip()))
+
+    def _crea_progetto_ora(self, nome):
+        progetto = self.archivio.crea(nome)
+        self.switch_workspace(progetto.cartella)
+
+    def _open_project_dialog(self):
+        path = QFileDialog.getExistingDirectory(
+            self, testi.DIALOG_OPEN_PROJECT, str(self.archivio.radice))
+        if not path:
+            return
+        self._esegui_protetta(lambda: self._apri_progetto_ora(path))
+
+    def _apri_progetto_ora(self, path):
+        try:
+            progetto = self.archivio.apri(path)
+        except ValueError:
+            QMessageBox.warning(self, testi.TITLE_NOT_A_PROJECT, testi.msg_not_a_project(path))
+            return
+        self.switch_workspace(progetto.cartella)
+
+    def _rename_project_dialog(self):
+        """Cambia il nome leggibile del progetto corrente, poi propone di
+        riallineare anche la cartella -- vedi _propose_folder_tidy."""
+        progetto = leggi_progetto(self.workspace)
+        if progetto is None:
+            return
+        nome, ok = QInputDialog.getText(
+            self, testi.TITLE_RENAME_PROJECT, testi.PROMPT_RENAME_PROJECT, text=progetto.nome)
+        if not ok or not nome.strip():
+            return
+        self._esegui_protetta(lambda: self._rinomina_progetto_ora(progetto, nome.strip()))
+
+    def _rinomina_progetto_ora(self, progetto, nome):
+        progetto = self.archivio.rinomina(progetto, nome)
+        self._aggiorna_selettore()
+        self._propose_folder_tidy(progetto)
+
+    def _propose_folder_tidy(self, progetto):
+        """Se la cartella puo' essere riallineata al nome, adesso, lo chiede.
+
+        Chiamato subito dopo una rinomina e di nuovo ogni volta che il
+        progetto viene aperto (switch_workspace, sotto): la condizione puo'
+        diventare vera piu' tardi -- il job che la bloccava finisce, il nome
+        di destinazione si libera -- senza che l'utente abbia rifatto Rename.
+        Un rifiuto (compreso "No" alla conferma) semplicemente non fa nulla:
+        si puo' riprovare piu' tardi. Protetto con _esegui_protetta come ogni
+        altra azione di questo menu che tocca il disco (os.replace dentro
+        riconcilia, la scrittura del puntatore, i recenti) -- un fallimento
+        qui non deve costare la finestra intera, e riportarlo separatamente
+        da chi ha chiamato (rinomina o switch_workspace) dice all'utente cosa
+        e' davvero andato storto: il progetto e' comunque gia' rinominato o
+        gia' aperto a quel punto, solo il riallineamento non e' riuscito.
+        """
+        self._esegui_protetta(lambda: self._propose_folder_tidy_ora(progetto))
+
+    def _propose_folder_tidy_ora(self, progetto):
+        job_attivi = len(self._job_attivi_su(progetto.cartella))
+        if not self.archivio.riconciliabile(progetto, job_attivi):
+            return
+        vecchia = progetto.cartella
+        nuova = self.archivio.radice / slug(progetto.nome)
+        risposta = QMessageBox.question(
+            self, testi.TITLE_TIDY_FOLDER, testi.msg_tidy_folder(vecchia, nuova),
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if risposta != QMessageBox.Yes:
+            return
+        risultato = self.archivio.riconcilia(progetto)
+        if risultato is None:
+            return
+        if self.workspace == vecchia:
+            self.workspace = risultato
+            self.pipeline_bar.set_workspace(risultato)
+            self.step_view.set_workspace(risultato)
+        # La vecchia cartella non esiste piu' -- os.replace l'ha appena
+        # spostata -- quindi va tolta dai recenti, non solo affiancata dalla
+        # nuova: restare cliccabile punterebbe la finestra su un percorso
+        # morto. Diverso dal caso di un disco esterno scollegato (una voce
+        # legittima che qui non si tocca): li' non sappiamo che il percorso
+        # non esiste, qui lo sappiamo per certo, l'abbiamo spostato noi.
+        recenti = RecentWorkspaces()
+        recenti.remove(vecchia)
+        recenti.add(risultato)
+        # Senza questo, il menu a schermo resta con la voce morta finche'
+        # qualcos'altro non ricostruisce il sottomenu Recent -- e cliccarla
+        # riaprirebbe un progetto fantasma sulla cartella appena spostata.
+        self._refresh_recent_menu()
+        self._aggiorna_selettore()
+
+    def _duplicate_project_dialog(self):
+        """Copia il modello, i dataset o i video del progetto corrente in
+        uno nuovo -- il dialogo (nome, cosa, avanzamento annullabile) vive
+        in gui.duplicazione, cosi' la copia gira sul suo thread invece di
+        bloccare la finestra per i minuti che un model/ o un data_dst/
+        possono richiedere.
+
+        Protetta con _esegui_protetta come ogni altra voce di questo menu
+        che tocca il disco: la copia stessa e' gia' al riparo di un
+        try/except dentro CopiaProgetto.run (ogni eccezione che duplica()
+        solleva, non solo DuplicazioneIncompleta -- C2, revisione finale),
+        ma switch_workspace, alla fine, e' comunque un'azione sincrona sul
+        thread dell'interfaccia che puo' sollevare per le stesse ragioni di
+        ogni altra qui.
+        """
+        progetto = leggi_progetto(self.workspace)
+        if progetto is None:
+            return
+        self._esegui_protetta(lambda: self._duplica_progetto_ora(progetto))
+
+    def _duplica_progetto_ora(self, progetto):
+        nuovo = DialogoDuplicazione(self.archivio, progetto, self).esegui()
+        if nuovo is None:
+            return
+        self.switch_workspace(nuovo.cartella)
+
+    def _delete_project_dialog(self):
+        """Elimina il progetto corrente -- l'unica operazione davvero
+        irreversibile del menu Project.
+
+        Rifiutata con un job attivo sul progetto, per la stessa ragione di
+        run_clear_workspace: elimina fa shutil.rmtree sulla cartella, e farlo
+        sotto un processo che ci scrive e' una corsa sui dati, non solo un
+        difetto cosmetico. Il conteggio passa da _job_attivi_su, non da un
+        confronto diretto fra percorsi -- due nomi diversi della stessa
+        cartella devono contare come la stessa cartella.
+
+        La conferma ha "No" come predefinito, nomina il percorso per esteso
+        e la dimensione su disco -- niente ridigitazione del nome, che
+        sarebbe l'unico punto della finestra con quello stile: la dimensione
+        in GB comunica lo stesso peso in modo piu' utile.
+        """
+        progetto = leggi_progetto(self.workspace)
+        if progetto is None:
+            return
+        active = self._job_attivi_su(progetto.cartella)
         if active:
             QMessageBox.warning(
                 self, testi.TITLE_JOBS_RUNNING,
-                testi.msg_cannot_switch_workspace(len(active), self.workspace))
+                testi.msg_cannot_delete_project(len(active), progetto.cartella))
             return
-        path = Path(path)
+        gigabyte = dimensione(progetto.cartella) / 1e9
+        risposta = QMessageBox.question(
+            self, testi.TITLE_DELETE_PROJECT,
+            testi.msg_confirm_delete_project(progetto.cartella, gigabyte),
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if risposta != QMessageBox.Yes:
+            return
+        # Protetto con _esegui_protetta: shutil.rmtree puo' sollevare per un
+        # permesso negato, un antivirus o Esplora risorse che tengono un
+        # handle aperto sulla cartella -- scenari ordinari su Windows, non
+        # ipotetici. Senza questa rete, l'eccezione arriverebbe fino a
+        # QAction.triggered (uno slot Qt) e PyQt5 la trasformerebbe in
+        # qFatal: il processo se ne andrebbe con dentro ogni altro training
+        # aperto nella stessa finestra, per un'operazione che si voleva solo
+        # rifiutare con un avviso.
+        self._esegui_protetta(lambda: self._elimina_progetto_ora(progetto))
+
+    def _elimina_progetto_ora(self, progetto):
+        self.archivio.elimina(progetto)
+        RecentWorkspaces().remove(progetto.cartella)
+        restanti = self.archivio.elenca()
+        self.switch_workspace(restanti[0].cartella if restanti else self.archivio.radice)
+
+    def _job_attivi_su(self, workspace):
+        """I job attivi che scrivono in `workspace`, di qualunque progetto sia.
+
+        Il confronto passa dal predicato di gui/progetti.py, non da == fra
+        percorsi: due nomi diversi della stessa cartella devono contare come
+        la stessa cartella, o una cancellazione partirebbe sotto un processo
+        che ci sta scrivendo.
+        """
+        identita = identita_workspace(workspace)
+        return [job for job in self.job_manager.active_jobs()
+                if stesso_workspace(identita, job.identita)]
+
+    def switch_workspace(self, path):
+        """Punta la finestra su `path`. Permesso anche con job in corso.
+
+        L'ambiente di un job (WORKSPACE, e ogni percorso risolto contro di
+        esso) e' fissato al lancio: cambiare progetto qui non lo tocca, il
+        job continua a scrivere dove e' partito. Cio' che cambia e' solo
+        cosa mostra la finestra -- compreso il puntatore al progetto attivo
+        (`ArchivioProgetti.imposta_attivo`), scritto solo quando `path` e'
+        davvero un progetto: e' cio' che fa seguire la riga di comando.
+
+        E' lo slot diretto del segnale del selettore di progetti
+        (`progetto_scelto`) e di ogni voce del sottomenu Recent, oltre a
+        essere chiamato da altre azioni gia' protette (New/Open/Delete): per
+        questo e' protetta anche lei, con _esegui_protetta -- non solo chi
+        la chiama.
+        """
+        self._esegui_protetta(lambda: self._switch_workspace_ora(Path(path)))
+
+    def _switch_workspace_ora(self, path):
         self.workspace = path
         self.pipeline_bar.set_workspace(path)
         self.step_view.set_workspace(path)
         RecentWorkspaces().add(path)
+        progetto = leggi_progetto(path)
+        if progetto is not None:
+            self.archivio.imposta_attivo(progetto)
+        else:
+            # I1, variante (revisione finale): la finestra mostra una
+            # cartella che non e' un progetto (la radice, un'installazione
+            # non ancora migrata) -- il puntatore non deve continuare a
+            # nominare il progetto precedente, o la riga di comando
+            # lavorerebbe su un progetto che la GUI non mostra piu' nemmeno
+            # a sessione aperta, non solo al prossimo riavvio.
+            self.archivio.pulisci_attivo()
         self.step_list.clear()
         self.step_view.set_step(None)
         self._refresh_recent_menu()
+        self._aggiorna_selettore()
         self.pipeline_bar.select(self.pipeline_bar.stage_names()[0])
-
-    def _open_workspace_dialog(self):
-        path = QFileDialog.getExistingDirectory(self, testi.DIALOG_OPEN_WORKSPACE, str(self.workspace))
-        if path:
-            self.switch_workspace(path)
-
-    def _new_workspace_dialog(self):
-        path = QFileDialog.getExistingDirectory(
-            self, testi.DIALOG_NEW_WORKSPACE_LOCATION, str(self.workspace.parent))
-        if path:
-            create_workspace(path)
-            self.switch_workspace(path)
+        if progetto is not None:
+            self._propose_folder_tidy(progetto)
 
     def run_clear_workspace(self):
         """Confirm (default No), then empty and recreate the workspace's subdirectories.
 
-        Refused while any job is active -- the same guard as
-        `switch_workspace`: a job's process writes into the workspace on
-        disk, and `clear_workspace` runs `shutil.rmtree` on it, so clearing
-        under a running job is a live filesystem race, not a switch of the
-        window's own state.
+        Refused while a job is active on *this* workspace -- a job's process
+        writes into the workspace on disk, and `clear_workspace` runs
+        `shutil.rmtree` on it, so clearing under a running job is a live
+        filesystem race. A job active on a different project does not block
+        this: `_job_attivi_su` scopes the check to the workspace being
+        cleared.
+
+        Protetta con _esegui_protetta come ogni altra voce del menu Project
+        che tocca il disco: `clear_workspace` fa `shutil.rmtree` senza un
+        proprio try/except, la stessa classe del Critical di Delete... --
+        non una simile, la stessa -- e questa voce sta nello stesso
+        `self._project_menu`, un click accanto a quella gia' protetta.
         """
-        active = self.job_manager.active_jobs()
+        active = self._job_attivi_su(self.workspace)
         if active:
             QMessageBox.warning(
                 self, testi.TITLE_JOBS_RUNNING,
@@ -702,6 +1122,9 @@ class MainWindow(QMainWindow):
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if answer != QMessageBox.Yes:
             return
+        self._esegui_protetta(self._clear_workspace_ora)
+
+    def _clear_workspace_ora(self):
         clear_workspace(self.workspace)
         self.pipeline_bar.refresh()
         self._refresh_step_badges()
@@ -756,6 +1179,36 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, testi.TITLE_STEP_BUSY, str(exc))
             return
         self._attach_job(step, job, extra_args)
+        # Only what the user actually touched -- the same set answers()
+        # already restricted itself to -- goes into the project's memory,
+        # so the next time this step is opened it preloads exactly what was
+        # sent, not the whole form. A project.json the disk refuses to
+        # write (permission, an antivirus holding a handle) must not take
+        # the window down with it: this runs through the same guard as
+        # every other action that touches the project on disk.
+        self._esegui_protetta(lambda: self._ricorda_risposte(step, answers, form))
+
+    def _ricorda_risposte(self, step, answers, form):
+        progetto = leggi_progetto(self.workspace)
+        if progetto is None:
+            return
+        # Fusa, non sostituita: `answers` e' solo cio' che QUESTO avvio ha
+        # toccato -- correttamente vuoto quando l'utente non ha cambiato
+        # nulla -- e un'assegnazione al posto di un aggiornamento
+        # cancellerebbe quanto un avvio precedente aveva gia' fatto
+        # ricordare, un campo alla volta, fino ad azzerare tutto nel giro di
+        # pochi avvii "senza tocchi". Il prezzo di questa scelta: un valore
+        # ricordato non si puo' piu' *dimenticare* da solo -- se l'utente
+        # vuole tornare al default del catalogo deve reimpostarlo a mano,
+        # perche' qui non esiste un modo per dire "scorda questo campo". E'
+        # il compromesso giusto: una memoria che si cancella da sola e'
+        # peggio di una che non dimentica.
+        progetto.memoria.setdefault("answers", {}).setdefault(step.name, {}).update(answers)
+        progetto.memoria["last_step"] = step.name
+        if step.needs_model_name:
+            progetto.memoria["last_model_name"] = form.model_name()
+        progetto.usato = adesso()
+        scrivi_progetto(progetto)
 
     def console_of(self, job):
         """The open console view of `job`, or None when it is closed."""
@@ -814,7 +1267,7 @@ class MainWindow(QMainWindow):
                 return
 
     def _console_title(self, job):
-        return job.step.name
+        return testi.tab_title(self._nome_progetto_di(job), job.step.name)
 
     # -- the training tabs ---------------------------------------------------
 
@@ -865,7 +1318,8 @@ class MainWindow(QMainWindow):
         the strip's greyed-out buttons did once the process behind them was
         gone.
         """
-        return testi.running_tab_title(job.step.name) if job.running else job.step.name
+        titolo = testi.tab_title(self._nome_progetto_di(job), job.step.name)
+        return testi.running_tab_title(titolo) if job.running else titolo
 
     def _command_to_job(self, job, op):
         """One tab's button reaching one job's command channel.
@@ -898,6 +1352,11 @@ class MainWindow(QMainWindow):
         self.open_console(job)
         if self.step_view.step is step:
             self.step_view.set_job(job, _is_training_step(step))
+            # set_job() above just wrote its own unprefixed default
+            # ("running"/"finished") -- re-set it through _set_job_status so
+            # the strip carries the project name (I2) from the first paint,
+            # not only after the next navigation or status change.
+            self._set_job_status(job, testi.JOB_RUNNING)
         self._refresh_running_jobs_menu()
 
         def _on_output(line):
@@ -947,10 +1406,20 @@ class MainWindow(QMainWindow):
         the label from job.running alone on every navigation, and without
         this dict a stop requested while looking at a different step would
         read as a plain "running" the moment the user came back to it.
+
+        `text` itself is stored raw (unprefixed), and the project name is
+        added only where it is displayed: with jobs on more than one
+        project (I2, found alongside C1), a bare
+        "running"/"stopping…" gives no way to notice which project it
+        belongs to -- the same reason C1 fixed which job the strip can
+        attach to at all. Wrapping happens here, in the one place every
+        caller of this method already goes through, so every status this
+        strip ever shows -- not just the first one -- carries the name.
         """
         self._job_status_text[job] = text
         if self.step_view.job is job:
-            self.step_view.job_status.setText(text)
+            self.step_view.job_status.setText(
+                testi.job_strip_status(self._nome_progetto_di(job), text))
 
     def _on_stop_clicked(self):
         """Stop the strip's job: politely for a training, hard for anything else.
@@ -1010,7 +1479,7 @@ class MainWindow(QMainWindow):
             console = self._consoles.get(job)
             if console is not None:
                 index = self.console_tabs.indexOf(console)
-                self.console_tabs.setTabText(index, testi.failed_console_title(step.name))
+                self.console_tabs.setTabText(index, testi.failed_console_title(self._console_title(job)))
                 self.console_tabs.tabBar().setTabTextColor(index, QColor("#ff6b6b"))
             if self.step_view.step is step:
                 self.step_view.status_panel.setText("\n".join(job.captured_lines[-15:]))

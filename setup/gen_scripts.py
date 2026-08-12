@@ -128,6 +128,12 @@ def render_bat(cmd: Command) -> bytes:
         lines.append("pause")
 
     lines.append('call "%~dp0..\\_internal\\setenv.bat"')
+    # setenv.bat puo' uscire con errore (progetto puntato da DFL_PROJECT
+    # inesistente): 'call' riporta quell'errorlevel al chiamante ma non
+    # ferma da solo lo script chiamante, quindi senza questa riga si
+    # proseguirebbe con WORKSPACE/DFL_ROOT non definite o, peggio, STANTIE
+    # da un comando precedente riuscito nella stessa sessione cmd.
+    lines.append("if %errorlevel% NEQ 0 exit /b %errorlevel%")
 
     if cmd.kind == KIND_CLEAR:
         # L'ancora non ha riga vuota dopo 'call' per questo comando: le

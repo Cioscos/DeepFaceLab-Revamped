@@ -21,6 +21,7 @@ from gui.console_buffer import ConsoleBuffer
 from gui.console_stream import LineAssembler
 from gui.execution.conflicts import conflict
 from gui.model_lock_status import busy_holder
+from gui.progetti import identita_workspace, stesso_workspace
 
 _KILL_GRACE_MS = 5000
 
@@ -104,10 +105,14 @@ class Job(QObject):
     output_update = pyqtSignal(str)  # the last line, rewritten in place
     finished = pyqtSignal(int)       # overall exit code (0 = every invocation ok)
 
-    def __init__(self, step, workdir, events_path, commands_path, previews_path, python_exe, dfl_root,
+    def __init__(self, step, workspace, workdir, events_path, commands_path, previews_path, python_exe, dfl_root,
                  invocation_args, env, parent=None):
         super().__init__(parent)
         self.step = step
+        self.workspace = Path(workspace)
+        # Presa al lancio, non al confronto: e' l'istante in cui il figlio ha
+        # davvero cominciato a scrivere li' dentro.
+        self.identita = identita_workspace(workspace)
         self.workdir = workdir
         self.events_path = events_path
         self.commands_path = commands_path
@@ -248,7 +253,13 @@ class JobManager(QObject):
         self._jobs = []
 
     def try_start(self, step, answers: dict, workspace, extra_args=()) -> Job:
+        identita = identita_workspace(workspace)
         for job in self.active_jobs():
+            if not stesso_workspace(identita, job.identita):
+                # Due progetti diversi non si contendono niente: gli unici
+                # artefatti che vivono fuori dal workspace sono di sola
+                # lettura, nessun passo li produce o li modifica.
+                continue
             artifact = conflict(step, job.step)
             if artifact is not None:
                 raise StepConflict(artifact, job.step.name)
@@ -303,7 +314,7 @@ class JobManager(QObject):
         env.insert("DFL_COMMANDS_FILE", str(commands_path))
         env.insert("DFL_PREVIEW_DIR", str(previews_path))
 
-        job = Job(step, workdir, events_path, commands_path, previews_path, self._python_exe, self._dfl_root,
+        job = Job(step, workspace, workdir, events_path, commands_path, previews_path, self._python_exe, self._dfl_root,
                   invocation_args, env, parent=self)
         job.finished.connect(lambda code, job=job: self._on_job_finished(job, code))
         self._jobs.append(job)

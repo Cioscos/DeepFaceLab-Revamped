@@ -19,16 +19,22 @@ CONSOLE_DOCK = "Console"
 STAGE_TIP = "Show this stage's steps in the list on the left."
 
 # -- i menu' ----------------------------------------------------------------
-MENU_WORKSPACE = "&Workspace"
+MENU_PROJECT = "&Project"
 MENU_VIEW = "&View"
 MENU_MISC = "&Misc"
 MENU_RECENT = "Recent"
 MENU_RUNNING_JOBS = "Running jobs"
 
-MENU_OPEN_WORKSPACE = "Open…"
-MENU_OPEN_WORKSPACE_TIP = "Open an existing workspace folder."
-MENU_NEW_WORKSPACE = "New…"
-MENU_NEW_WORKSPACE_TIP = "Create a new workspace folder with the standard subdirectories."
+MENU_NEW_PROJECT = "New…"
+MENU_NEW_PROJECT_TIP = "Create a new project with the standard subdirectories."
+MENU_OPEN_PROJECT = "Open…"
+MENU_OPEN_PROJECT_TIP = "Open an existing project folder."
+MENU_RENAME_PROJECT = "Rename…"
+MENU_RENAME_PROJECT_TIP = "Change the project's display name."
+MENU_DUPLICATE_PROJECT = "Duplicate…"
+MENU_DUPLICATE_PROJECT_TIP = "Copy this project's model, datasets or videos into a new one."
+MENU_DELETE_PROJECT = "Delete…"
+MENU_DELETE_PROJECT_TIP = "Delete this project and everything in it."
 MENU_CLEAR_WORKSPACE = "Clear workspace…"
 MENU_CLEAR_WORKSPACE_TIP = "Empty and recreate the current workspace's standard subdirectories."
 TOGGLE_CONSOLE_TIP = "Show or hide the console dock."
@@ -37,6 +43,19 @@ RUNNING_JOB_TIP = "Switch to this running step."
 
 MENU_TEXT_SIZE = "Text size"
 TEXT_SIZE_LABELS = {"normal": "Normal", "large": "Large", "xlarge": "Extra large"}
+
+# -- il selettore di progetti -------------------------------------------------
+PROJECT_SELECTOR_TIP = "The project every step runs against. A dot marks projects with running steps."
+NO_PROJECT = "No project"
+
+
+def project_button(nome):
+    return "Project: %s" % nome
+
+
+def project_with_jobs(nome, quanti):
+    return "%s — %d running" % (nome, quanti)
+
 
 # -- i comandi della vista passo --------------------------------------------
 START = "Start"
@@ -79,6 +98,21 @@ def status_saved_waiting_to_close(iteration=None):
 def job_finished_status(exit_code):
     """The strip's text once the process has exited."""
     return "finished (exit %d)" % exit_code
+
+
+def tab_title(progetto, passo):
+    """The title of a tab: which project it comes from, and which step it is."""
+    return "%s · %s" % (progetto, passo)
+
+
+def job_strip_status(progetto, testo):
+    """The step view's job strip: which project the job belongs to, next to
+    its current status ("running", "stopping — waiting…", "finished (exit
+    0)", …). Without the project name here, a strip reading "running" gives
+    no way to notice it belongs to a different project than the one on
+    screen (I2, found alongside C1 by re-reading the whole multi-project
+    cycle end to end)."""
+    return "%s · %s" % (progetto, testo)
 
 
 def running_tab_title(step_name):
@@ -191,9 +225,18 @@ def placeholder(kind, target=None):
 
 
 # -- le finestre di dialogo native -------------------------------------------
-DIALOG_OPEN_WORKSPACE = "Open workspace"
-DIALOG_NEW_WORKSPACE_LOCATION = "New workspace location"
+DIALOG_NEW_PROJECT = "New project"
+DIALOG_NEW_PROJECT_NAME_LABEL = "Project name:"
+DIALOG_OPEN_PROJECT = "Open project"
 DIALOG_SELECT_FILE = "Select file"
+
+TITLE_DUPLICATE_PROJECT = "Duplicate project"
+COPYING_PROJECT = "Copying…"
+CANCEL = "Cancel"
+DUPLICATE_WHAT = "What should the new project start from?"
+DUPLICATE_MODEL = "Model (trained weights)"
+DUPLICATE_DATASET = "Datasets (data_src, data_dst)"
+DUPLICATE_VIDEO = "Source videos"
 
 # -- i titoli e i corpi dei QMessageBox --------------------------------------
 TITLE_JOBS_RUNNING = "Jobs running"
@@ -203,24 +246,76 @@ TITLE_MISSING_INPUT = "Missing input"
 TITLE_MISSING_MODEL_NAME = "Missing model name"
 TITLE_STEP_BUSY = "Step busy"
 TITLE_FAILED_TO_START = "Failed to start"
+TITLE_NOT_A_PROJECT = "Not a project"
+TITLE_RENAME_PROJECT = "Rename project"
+TITLE_TIDY_FOLDER = "Rename the folder too?"
+TITLE_DELETE_PROJECT = "Delete project"
+TITLE_PROJECT_ACTION_FAILED = "Action failed"
+TITLE_DUPLICATE_INCOMPLETE = "Duplication incomplete"
+TITLE_MIGRATE = "Move your workspace into a project?"
 
 MSG_CLOSING_CANNOT_START = "The window is closing: cannot start a new job."
 MSG_MISSING_INPUT = "Select an input file before starting."
 MSG_MISSING_MODEL_NAME = "Enter or choose a model name before starting."
 MSG_CLOSING_WAIT = "Waiting for the active jobs to stop before closing."
 MSG_CONFIRM_CLOSE_WITH_ACTIVE_JOBS = "Active jobs are still running. Stop them and close?"
+PROMPT_RENAME_PROJECT = "New name for this project:"
+PROMPT_MIGRATE_NAME = "Name for this project:"
+DONT_ASK_AGAIN = "Don't ask again"
 
 
-def msg_cannot_switch_workspace(job_count, workspace):
-    return "Cannot switch workspace: %d job(s) are still using %s." % (job_count, workspace)
+def msg_not_a_project(path):
+    return "%s has no project.json: it is not a project." % path
+
+
+def msg_tidy_folder(vecchio, nuovo):
+    return ("The project's name no longer matches its folder.\n\n"
+            "Rename\n    %s\nto\n    %s ?\n\n"
+            "Shortcuts, backups or scripts pointing at the old path will "
+            "need updating." % (vecchio, nuovo))
 
 
 def msg_cannot_clear_workspace(job_count, workspace):
     return "Cannot clear workspace: %d job(s) are still using %s." % (job_count, workspace)
 
 
+def msg_cannot_delete_project(job_count, workspace):
+    return "Cannot delete project: %d job(s) are still using %s." % (job_count, workspace)
+
+
+def msg_confirm_delete_project(percorso, gigabyte):
+    return ("Delete this project and everything in it?\n\n"
+            "    %s\n    %.1f GB on disk\n\n"
+            "This cannot be undone." % (percorso, gigabyte))
+
+
+def msg_project_action_failed(error):
+    """Shown when a project action (new, open, rename, delete, move) raised
+    partway through -- caught before it could reach a Qt slot and take the
+    whole application, and every training running in it, down with it."""
+    return "The action could not be completed: %s" % error
+
+
+def msg_duplicate_incomplete(destinazione):
+    """Shown when a canceled duplication could not remove its own partial
+    copy -- a denied permission, a handle still open on the folder. The
+    destination is never a valid project (see DuplicazioneIncompleta), but
+    it is not gone either, and the user is the only one who can clear it."""
+    return ("The duplication was canceled, but the partial copy could not "
+            "be removed:\n\n    %s\n\nCheck that folder by hand." % destinazione)
+
+
 def msg_confirm_clear_workspace(subdirs):
     return "This empties and recreates: %s. This cannot be undone. Continue?" % subdirs
+
+
+def msg_migrate(radice):
+    return ("Your data currently sits directly in\n    %s\n\n"
+            "Projects let you keep several sets of data side by side and "
+            "work on one while another is training.\n\n"
+            "Move data_src, data_dst, model and any videos into a project "
+            "of their own? Nothing is deleted, and command-line scripts "
+            "will follow." % radice)
 
 
 # -- the artifacts, as the user reads them ----------------------------------

@@ -104,5 +104,6 @@ def run(argv=None):
     apply_dark_theme(app, ScalaTesto().fattore())
     dfl_root = Path(__file__).resolve().parent.parent
     window = MainWindow(sys.executable, dfl_root)
+    window.proponi_migrazione()
     window.show()
     return app.exec_()

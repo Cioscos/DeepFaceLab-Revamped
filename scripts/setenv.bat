@@ -52,5 +52,62 @@ SET PATH=%PYTHON_PATH%;%PYTHON_PATH%\Scripts;%PATH%
 rem ========== ADDITIONAL ENV ==========
 SET FFMPEG_PATH=%INTERNAL%\ffmpeg
 SET PATH=%FFMPEG_PATH%;%PATH%
-SET WORKSPACE=%INTERNAL%\..\workspace
+rem ========== PROGETTO ==========
+rem WORKSPACE si risolve su tre livelli: DFL_PROJECT, il puntatore scritto
+rem dall'interfaccia grafica, la radice. Il terzo caso e' il comportamento che
+rem questo file ha sempre avuto: un'installazione senza progetti non si accorge
+rem di niente, output compreso.
+SET DFL_PROJECTS_ROOT=%INTERNAL%\..\workspace
+SET DFL_PROGETTO=
+SET DFL_CANDIDATO=
+if defined DFL_PROJECT (
+    if exist "%DFL_PROJECTS_ROOT%\%DFL_PROJECT%\" (
+        SET DFL_PROGETTO=%DFL_PROJECT%
+    ) else (
+        rem Nessuna ricaduta: chi ha impostato la variabile ha detto su cosa
+        rem vuole lavorare, e farlo lavorare su altro e' peggio che fermarsi.
+        echo DFL_PROJECT names a project that does not exist: %DFL_PROJECT% 1>&2
+        exit /b 1
+    )
+) else (
+    if exist "%DFL_PROJECTS_ROOT%\.progetto-attivo" (
+        set /p DFL_CANDIDATO=<"%DFL_PROJECTS_ROOT%\.progetto-attivo"
+    )
+)
+rem Le stesse esclusioni del lato .sh (`case "" | */* | *\* | .*`), che sono
+rem anche la regola di gui/progetti.py::_nome_esce_dalla_radice: vuoto, una
+rem barra in qualunque verso, i due punti di una lettera di unita' (senza
+rem barra un'unita' non e' altrimenti intercettata: "C:" da solo), un nome
+rem che inizia per punto. Lettura e controlli in blocchi separati per la
+rem stessa ragione della set /p sopra: dentro il blocco parentesizzato
+rem %DFL_CANDIDATO% si espanderebbe prima di essere scritta.
+if defined DFL_CANDIDATO if not "%DFL_CANDIDATO%"=="%DFL_CANDIDATO:\=%" SET DFL_CANDIDATO=
+if defined DFL_CANDIDATO if not "%DFL_CANDIDATO%"=="%DFL_CANDIDATO:/=%" SET DFL_CANDIDATO=
+if defined DFL_CANDIDATO if not "%DFL_CANDIDATO%"=="%DFL_CANDIDATO::=%" SET DFL_CANDIDATO=
+if defined DFL_CANDIDATO if "%DFL_CANDIDATO:~0,1%"=="." SET DFL_CANDIDATO=
+if defined DFL_CANDIDATO SET DFL_PROGETTO=%DFL_CANDIDATO%
+SET DFL_CANDIDATO=
+if defined DFL_PROGETTO (
+    if not exist "%DFL_PROJECTS_ROOT%\%DFL_PROGETTO%\" SET DFL_PROGETTO=
+)
+if defined DFL_PROGETTO (
+    SET WORKSPACE=%DFL_PROJECTS_ROOT%\%DFL_PROGETTO%
+    echo Project: %DFL_PROGETTO%
+) else (
+    SET WORKSPACE=%DFL_PROJECTS_ROOT%
+)
 SET DFL_ROOT=%INTERNAL%\DeepFaceLab
+rem Errorlevel pulito prima di tornare al chiamante. Il solo cammino che deve
+rem propagare un errore (DFL_PROJECT che nomina un progetto inesistente,
+rem sopra) esce gia' con `exit /b 1` prima di arrivare qui: ogni altro
+rem cammino e' un successo, ma puo' aver lasciato un errorlevel diverso da
+rem zero per conto suo -- `set /p` su un puntatore che esiste ed e' vuoto
+rem (zero byte: una ricaduta benigna sulla radice) lascia %errorlevel%=1
+rem pendente, misurato con cmd.exe vero. Da quando lo script chiamante
+rem controlla l'errorlevel subito dopo la call (setup/gen_scripts.py), un
+rem residuo cosi' fermerebbe ogni comando dell'utente in silenzio, senza un
+rem messaggio. Un `exit /b 0` esplicito qui elimina l'intera classe, non
+rem solo questo caso: qualunque comando sopra che lasci un errorlevel
+rem sporco viene comunque ripulito da questa riga, che dev'essere l'ultima
+rem del file.
+exit /b 0

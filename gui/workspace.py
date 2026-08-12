@@ -260,6 +260,20 @@ class RecentWorkspaces:
         del paths[_RECENT_MAX:]
         self._settings.setValue(_RECENT_KEY, json.dumps(paths))
 
+    def remove(self, path):
+        """Drops `path` from the list, if it was there. A no-op otherwise --
+        callers do not need to check membership first (a folder that moved
+        out from under a project is the only case that calls this today, see
+        gui/main_window.py's folder-tidy helper: the old path is dead, and
+        leaving it clickable would point the window at a folder that no
+        longer exists)."""
+        paths = self.paths()
+        text = str(path)
+        if text not in paths:
+            return
+        paths.remove(text)
+        self._settings.setValue(_RECENT_KEY, json.dumps(paths))
+
     def paths(self):
         raw = self._settings.value(_RECENT_KEY, "[]")
         if not raw:

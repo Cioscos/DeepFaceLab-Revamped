@@ -426,6 +426,27 @@ class StepForm(QWidget):
         if self._input_edit is not None:
             self._input_edit.setText(path)
 
+    def set_remembered_values(self, values):
+        """Preload the values this project remembers for this step.
+
+        Enters through the same door as the model's own saved values --
+        fill the widget, then drop the key from `_touched` -- because the
+        same invariant holds either way: what the user has not touched is
+        never sent to the launched process. It does not use `set_value`,
+        which marks the key as touched instead -- the right behavior for
+        something the user actually did, the wrong one for a preload.
+
+        Must be called BEFORE `set_saved_values`: when both have something
+        to say about a field, the truth is what the model actually has on
+        disk. No badge appears next to the field for this -- the badge
+        means "this is what the model has saved", and a value remembered
+        by the project is not that.
+        """
+        for field in self._step.fields:
+            if field.key not in values:
+                continue
+            self._write_untouched(field, values[field.key])
+
     def set_saved_values(self, values):
         """Show what the chosen model was trained with: in the widget, and
         in a badge beside it.
