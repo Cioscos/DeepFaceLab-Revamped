@@ -75,11 +75,25 @@ if __name__ == "__main__":
     def process_sort(arguments):
         osex.set_process_lowest_prio()
         from mainscripts import Sorter
-        Sorter.main (input_path=Path(arguments.input_dir), sort_by_method=arguments.sort_by_method)
+        par = Sorter.Parametri(target_count=arguments.target_count,
+                               ref_dir=arguments.ref_dir,
+                               similar=arguments.similar,
+                               threshold=arguments.threshold)
+        Sorter.main (input_path=Path(arguments.input_dir),
+                     sort_by_method=arguments.sort_by_method,
+                     par=par)
+
+    from mainscripts.SorterCatalog import CHIAVI as SORT_CHIAVI
 
     p = subparsers.add_parser( "sort", help="Sort faces in a directory.")
     p.add_argument('--input-dir', required=True, action=fixPathAction, dest="input_dir", help="Input directory. A directory containing the files you wish to process.")
-    p.add_argument('--by', dest="sort_by_method", default=None, choices=("blur", "motion-blur", "face-yaw", "face-pitch", "face-source-rect-size", "hist", "hist-dissim", "brightness", "hue", "black", "origname", "oneface", "final-by-blur", "final-by-size", "absdiff"), help="Method of sorting. 'origname' sort by original filename to recover original sequence." )
+    p.add_argument('--by', dest="sort_by_method", default=None, choices=SORT_CHIAVI, help="Method of sorting. 'origname' sort by original filename to recover original sequence." )
+    p.add_argument('--target-count', type=int, default=None, dest="target_count", help="How many faces to keep, for the methods that cut the faceset down. Asked interactively when omitted.")
+    p.add_argument('--ref-dir', action=fixPathAction, default=None, dest="ref_dir", help="Reference faceset for 'match-dst'. Defaults to the sibling data_dst/aligned when omitted.")
+    p.add_argument('--threshold', type=int, default=None, dest="threshold", help="Distance threshold for 'dedup'. Asked interactively when omitted.")
+    grp = p.add_mutually_exclusive_group()
+    grp.add_argument('--similar', dest="similar", action='store_true', default=None, help="For 'absdiff' and 'absdiff-fast': group similar faces together.")
+    grp.add_argument('--dissimilar', dest="similar", action='store_false', default=None, help="For 'absdiff' and 'absdiff-fast': push the most different faces to the front.")
     p.set_defaults (func=process_sort)
 
     def process_util(arguments):
