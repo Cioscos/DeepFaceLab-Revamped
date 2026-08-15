@@ -100,10 +100,29 @@ def _resolve(text, workspace, dfl_root):
                 .replace("{INTERNAL}", str(dfl_root.parent)))
 
 
+def _sostituisci_input_dir(args, input_dir):
+    """Il valore dopo --input-dir diventa un altro. Non un secondo flag
+    accodato: argparse terrebbe l'ultimo e funzionerebbe, ma la riga di
+    comando che l'utente legge in console direbbe una cosa falsa su cosa
+    e' stato eseguito."""
+    if input_dir is None:
+        return args
+    args = list(args)
+    posizioni = [i for i, a in enumerate(args) if a == "--input-dir"]
+    if len(posizioni) != 1:
+        raise ValueError("--input-dir compare %d volte, attesa 1" % len(posizioni))
+    i = posizioni[0]
+    if i + 1 >= len(args):
+        raise ValueError("--input-dir non ha un valore da sostituire")
+    args[i + 1] = str(input_dir)
+    return args
+
+
 class Job(QObject):
     output = pyqtSignal(str)         # a new merged stdout/stderr line
     output_update = pyqtSignal(str)  # the last line, rewritten in place
     finished = pyqtSignal(int)       # overall exit code (0 = every invocation ok)
+    progress = pyqtSignal(dict)      # una riga del canale DFL_PROGRESS_FILE
 
     def __init__(self, step, workspace, workdir, events_path, commands_path, previews_path, python_exe, dfl_root,
                  invocation_args, env, parent=None):
@@ -117,6 +136,11 @@ class Job(QObject):
         self.events_path = events_path
         self.commands_path = commands_path
         self.previews_path = previews_path
+        # Il canale del progresso vive nella stessa workdir degli altri:
+        # una cartella per job, quindi nessun inseguitore puo' leggere le
+        # righe di un altro.
+        self.progress_path = Path(workdir) / "progress.jsonl"
+        self._progress_tail = None
         self.running = True
         self.buffer = ConsoleBuffer()
         # One assembler for the whole job, not one per invocation: a step
@@ -127,10 +151,17 @@ class Job(QObject):
         self._dfl_root = dfl_root
         self._invocation_args = invocation_args  # list, one resolved-args list per invocation
         self._env = env
+        self.env = env
         self._index = 0
         self.process = None
         self._current_program = None
         self._start_invocation(0)
+
+    def start_progress_tail(self):
+        from gui.telemetry import EventTail
+        if self._progress_tail is None:
+            self._progress_tail = EventTail(str(self.progress_path), parent=self)
+            self._progress_tail.event.connect(self.progress)
 
     @property
     def captured_lines(self):
@@ -202,6 +233,8 @@ class Job(QObject):
         if not self.running:
             return
         self.running = False
+        if self._progress_tail is not None:
+            self._progress_tail.stop()
         self.finished.emit(code)
 
     def stop(self):
@@ -252,7 +285,7 @@ class JobManager(QObject):
         self._dfl_root = Path(dfl_root)
         self._jobs = []
 
-    def try_start(self, step, answers: dict, workspace, extra_args=()) -> Job:
+    def try_start(self, step, answers: dict, workspace, extra_args=(), input_dir=None) -> Job:
         identita = identita_workspace(workspace)
         for job in self.active_jobs():
             if not stesso_workspace(identita, job.identita):
@@ -304,6 +337,7 @@ class JobManager(QObject):
         invocation_args = []
         for invocation in step.invocations:
             resolved = [_resolve(a, workspace, self._dfl_root) for a in invocation.args]
+            resolved = _sostituisci_input_dir(resolved, input_dir)
             resolved.extend(extra_args)
             invocation_args.append(resolved)
 
@@ -313,9 +347,11 @@ class JobManager(QObject):
         env.insert("DFL_EVENTS_FILE", str(events_path))
         env.insert("DFL_COMMANDS_FILE", str(commands_path))
         env.insert("DFL_PREVIEW_DIR", str(previews_path))
+        env.insert("DFL_PROGRESS_FILE", str(workdir / "progress.jsonl"))
 
         job = Job(step, workspace, workdir, events_path, commands_path, previews_path, self._python_exe, self._dfl_root,
                   invocation_args, env, parent=self)
+        job.start_progress_tail()
         job.finished.connect(lambda code, job=job: self._on_job_finished(job, code))
         self._jobs.append(job)
         self.job_started.emit(job)

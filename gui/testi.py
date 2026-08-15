@@ -10,11 +10,13 @@ funzioni, non stringhe con un `%` lasciato in giro, cosi' chi li chiama non
 puo' sbagliare il numero di argomenti senza accorgersene.
 """
 from gui.catalog.model import KIND_CLEAR, KIND_EBSYNTH, KIND_VIEWER
+from gui.faceset.indice import STATO_ASSENTE, STATO_PARZIALE
 from gui.workspace import STATE_BLOCKED, STATE_DONE, STATE_READY
 
 # -- la finestra ----------------------------------------------------------
 WINDOW_TITLE = "DeepFaceLab"
 TAB_STEPS = "Steps"
+TAB_FACESET = "Faceset curation"
 CONSOLE_DOCK = "Console"
 STAGE_TIP = "Show this stage's steps in the list on the left."
 
@@ -602,3 +604,135 @@ def preview_window_title(cell_label, iteration):
     if iteration is None:
         return "%s (iteration unknown)" % cell_label
     return "%s (iteration %d)" % (cell_label, iteration)
+
+
+# -- la pagina di cura del faceset ------------------------------------------
+FACESET_SRC = "src"
+FACESET_DST = "dst"
+FACESET_INDEX_NOW = "Index now"
+FACESET_UPDATE_INDEX = "Update"
+
+
+def faceset_index_state(stato, mancanti):
+    if stato == STATO_ASSENTE:
+        return "Index this folder to enable pose distribution and masks."
+    if stato == STATO_PARZIALE:
+        return "%d faces not indexed." % mancanti
+    return "Indexed."
+
+
+def progress_bar_format(descrizione):
+    """Il testo dentro la barra: la fase, poi i numeri che Qt sostituisce."""
+    return "%s  %%v / %%m" % descrizione if descrizione else "%v / %m"
+
+
+HEATMAP_TITLE = "Pose distribution"
+HEATMAP_BINS_TIP = "How finely the yaw/pitch grid is divided."
+HEATMAP_COLLAPSE_TIP = ("Hide the pose distribution and give the room to the "
+                        "faces. Any active pose filter stays on.")
+
+
+def heatmap_bins_label(n):
+    """«8×8 bins»: la griglia e' quadrata, e un «8» solo non direbbe di che
+    cosa -- otto colonne di imbardata, otto righe di beccheggio."""
+    return "%d×%d bins" % (n, n)
+
+
+def heatmap_legend(minimo, massimo, senza_posa):
+    """La legenda dichiara i conteggi VERI agli estremi -- la scala e'
+    logaritmica, e un colore senza numeri mentirebbe su quanto vale."""
+    testo = "%d to %d faces per cell" % (minimo, massimo)
+    if senza_posa:
+        testo += " · %d faces without pose data are not shown" % senza_posa
+    return testo
+
+
+HEATMAP_FILTER_CLEAR = "Clear"
+
+# L'href non e' un testo: e' la chiave che `linkActivated` consegna, e non
+# la legge nessuno all'infuori del collegamento stesso. Sta qui perche' qui
+# si compone il markup, non perche' sia un testo da tradurre.
+_HEATMAP_FILTER_HREF = "clear"
+
+
+def heatmap_filter_pill(mostrati, totali, quanti_bin):
+    return "Showing %d of %d · %d pose bins" % (mostrati, totali, quanti_bin)
+
+
+def heatmap_filter_pill_html(mostrati, totali, quanti_bin):
+    """La stessa pastiglia col comando che la spegne DENTRO
+    («Showing 412 of 1 619 · 2 pose bins · [Clear]»).
+
+    Una funzione sola sopra l'altra e non due testi paralleli: con dei bin
+    accesi la pastiglia e' l'unica cosa a schermo che dice che la griglia
+    e' una fetta, e il modo di tornare indietro deve stare li' e non
+    altrove.
+    """
+    return '%s · <a href="%s">%s</a>' % (
+        heatmap_filter_pill(mostrati, totali, quanti_bin),
+        _HEATMAP_FILTER_HREF, HEATMAP_FILTER_CLEAR)
+
+
+FACESET_SIZE_TIP = "How large the faces are drawn in the grid."
+FACESET_MASK_OFF = "No mask"
+FACESET_MASK_OVERLAY = "Mask overlay"
+FACESET_MASK_ONLY = "Mask only"
+FACESET_MASK_TIP = ("Show the XSeg masks the index holds: tinted over the "
+                    "face, or on their own.")
+FACESET_NO_MASKS = ("No face in this folder has an XSeg mask in the index. "
+                    "Index the folder, or apply XSeg first.")
+FACESET_LANDMARKS = "Landmarks"
+FACESET_LANDMARKS_TIP = "Draw the 68 alignment points on top of the face."
+FACESET_NO_LANDMARKS = "This face carries no landmarks: there is nothing to draw."
+
+
+def action_not_applicable(etichetta, nome_cartella):
+    return "%s works on a folder of aligned faces; “%s” is not one." % (
+        etichetta, nome_cartella)
+
+
+def job_holds(nome_passo, artefatto):
+    """Perche' un'azione della pagina e' grigia: chi sta scrivendo.
+
+    Nomina il passo per intero, come l'utente lo legge nella lista: dire
+    solo "busy" lascerebbe cercare la corsa che tiene la cartella fra
+    tutte quelle aperte.
+    """
+    return "“%s” is running and holds %s." % (nome_passo, artifact_label(artefatto))
+
+
+def action_src_only(etichetta):
+    """Perche' un'operazione senza gemello dst non c'e' sul dataset dst.
+
+    Il passo src esiste e girerebbe, ma dichiarerebbe di modificare il
+    faceset src mentre riscrive quello dst: la pagina resterebbe verde
+    sopra la cartella che si sta riscrivendo.
+    """
+    return "%s exists for the source dataset only." % etichetta
+
+
+FACESET_TOOLS = "Tools"
+FACESET_DELETE = "Delete"
+FACESET_UNDO_DELETE = "Undo delete"
+FACESET_OPEN_FOLDER = "Open in file manager"
+FACESET_TOOLS_TIP = "Operations on the folder shown, not on the one the step normally points at."
+FACESET_DELETE_TIP = "Move the selected faces to the folder's trash."
+FACESET_UNDO_DELETE_TIP = "Put the faces of the last delete back where they were."
+FACESET_OPEN_FOLDER_TIP = "Open the folder shown in the system file manager."
+FACESET_NO_FOLDER = "This dataset has no folder to work on yet."
+TITLE_FACESET_ONE_AT_A_TIME = "One at a time"
+
+
+def faceset_one_job_at_a_time(nome_passo):
+    """Perche' questa pagina lancia un job alla volta.
+
+    Non e' solo la barra di avanzamento condivisa: indicizzare mentre si
+    ordina e' sbagliato comunque, perche' il sort rinomina i file sotto
+    l'indice.
+    """
+    return ("“%s” is still running on this page. Wait for it to finish: "
+            "this page runs one job at a time." % nome_passo)
+
+
+FACESET_DETAIL_TITLE = "Face detail"
+FACESET_DETAIL_NO_DFL = "This file carries no DFL data: landmarks and mask are unavailable."

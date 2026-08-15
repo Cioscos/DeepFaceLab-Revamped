@@ -51,15 +51,18 @@ class EventTail(QObject):
             QTimer.singleShot(self.interval_ms, self._tick)
 
     def _tick(self):
-        """Read new lines from file and emit events."""
+        """Read new lines from file, emit events, and schedule the next tick."""
         if not self._active:
             return
+        self._read_once()
+        self._schedule_tick()
 
+    def _read_once(self):
+        """Read whatever is newly available in the file and emit events for it."""
         if not os.path.exists(self.path):
             # File disappeared; reset position and inode so file recreation is treated as new
             self.file_pos = 0
             self._ino = None
-            self._schedule_tick()
             return
 
         # Check if file was truncated/recreated by comparing inode and file size
@@ -74,7 +77,6 @@ class EventTail(QObject):
                 self.file_pos = 0
                 self._ino = st.st_ino
         except (OSError, IOError):
-            self._schedule_tick()
             return
 
         try:
@@ -82,11 +84,9 @@ class EventTail(QObject):
                 f.seek(self.file_pos)
                 data = f.read()
         except (OSError, IOError):
-            self._schedule_tick()
             return
 
         if not data:
-            self._schedule_tick()
             return
 
         # Find the last newline; we only process complete lines
@@ -94,7 +94,6 @@ class EventTail(QObject):
 
         if last_newline == -1:
             # No complete line; partial line is buffered until next tick
-            self._schedule_tick()
             return
 
         # Decode data up to and including the last newline
@@ -116,8 +115,16 @@ class EventTail(QObject):
 
         # Update file position to right after the last newline
         self.file_pos += last_newline + 1
-        self._schedule_tick()
 
     def stop(self):
-        """Stop reading events."""
+        """Stop reading events.
+
+        Reads once more before deactivating, so any line written after the
+        last tick (or before the first one ever fired) is still delivered --
+        a job that finishes in under one interval must not lose everything
+        its child wrote. Idempotent: a second call finds ``_active`` already
+        false and reads nothing further; unlike ``_tick``, this final read
+        never reschedules another one.
+        """
+        self._read_once()
         self._active = False

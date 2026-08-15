@@ -35,6 +35,76 @@ def prompt_key(text):
     s = re.sub(r"[^a-z0-9_\s-]", "", s)
     return re.sub(r"\s+", "-", s.strip())
 
+class ProgressLog:
+    """Il quinto canale: le barre di avanzamento, come righe JSON.
+
+    Nasce solo se DFL_PROGRESS_FILE c'e' E se siamo il processo che
+    l'utente ha lanciato: i pool nascono con spawn ed ereditano
+    l'ambiente, e otto figli sullo stesso file farebbero danzare la barra
+    all'indietro.
+    """
+
+    MIN_INTERVALLO = 0.5
+
+    def __init__(self, path, clock=time.time):
+        self.path = path
+        self._clock = clock
+        self._id = 0
+        self._aperta = False
+        self._n = 0
+        self._ultima = 0.0
+
+    @staticmethod
+    def da_ambiente(environ=None, nome_processo=None, clock=time.time):
+        environ = os.environ if environ is None else environ
+        path = environ.get("DFL_PROGRESS_FILE")
+        if not path:
+            return None
+        nome = nome_processo or multiprocessing.current_process().name
+        if nome != "MainProcess":
+            return None
+        return ProgressLog(path, clock=clock)
+
+    def apri(self, desc, total, initial=0):
+        if self._aperta:
+            self.chiudi()
+        self._id += 1
+        self._aperta = True
+        self._n = initial or 0
+        self._scrivi({"op": "open", "id": self._id, "desc": str(desc or ""),
+                      "total": total, "initial": self._n})
+        self._ultima = self._clock()
+
+    def inc(self, c):
+        if not self._aperta:
+            return
+        self._n += c
+        ora = self._clock()
+        if ora - self._ultima < self.MIN_INTERVALLO:
+            return
+        self._ultima = ora
+        self._scrivi({"op": "inc", "id": self._id, "n": self._n})
+
+    def chiudi(self):
+        if not self._aperta:
+            return
+        self._scrivi({"op": "inc", "id": self._id, "n": self._n})
+        self._scrivi({"op": "close", "id": self._id})
+        self._aperta = False
+
+    def _scrivi(self, payload):
+        # allow_nan=False: un NaN solleva qui, dove costa una riga persa,
+        # invece di attraversare il canale e morire dentro un paintEvent.
+        try:
+            riga = json.dumps(payload, allow_nan=False)
+        except ValueError:
+            return
+        try:
+            with open(self.path, "a", encoding="utf-8") as f:
+                f.write(riga + "\n")
+        except OSError:
+            pass
+
 class InteractBase(object):
     EVENT_LBUTTONDOWN = 1
     EVENT_LBUTTONUP = 2
@@ -51,6 +121,7 @@ class InteractBase(object):
         self.mouse_events = {}
         self.key_events = {}
         self.pg_bar = None
+        self.pg_log = ProgressLog.da_ambiente()
         self.focus_wnd_name = None
         self.error_log_line_prefix = '/!\\ '
 
@@ -180,26 +251,38 @@ class InteractBase(object):
     def progress_bar(self, desc, total, leave=True, initial=0):
         if self.pg_bar is None:
             self.pg_bar = tqdm( total=total, desc=desc, leave=leave, ascii=True, initial=initial )
+            if self.pg_log is not None:
+                self.pg_log.apri(desc, total, initial)
         else: print("progress_bar: already set.")
 
     def progress_bar_inc(self, c):
         if self.pg_bar is not None:
             self.pg_bar.n += c
             self.pg_bar.refresh()
+            if self.pg_log is not None:
+                self.pg_log.inc(c)
         else: print("progress_bar not set.")
 
     def progress_bar_close(self):
         if self.pg_bar is not None:
             self.pg_bar.close()
             self.pg_bar = None
+            if self.pg_log is not None:
+                self.pg_log.chiudi()
         else: print("progress_bar not set.")
 
     def progress_bar_generator(self, data, desc=None, leave=True, initial=0):
         self.pg_bar = tqdm( data, desc=desc, leave=leave, ascii=True, initial=initial )
+        if self.pg_log is not None:
+            self.pg_log.apri(desc, getattr(self.pg_bar, "total", None), initial)
         for x in self.pg_bar:
             yield x
+            if self.pg_log is not None:
+                self.pg_log.inc(1)
         self.pg_bar.close()
         self.pg_bar = None
+        if self.pg_log is not None:
+            self.pg_log.chiudi()
 
     def add_process_messages_callback(self, func ):
         tid = threading.get_ident()

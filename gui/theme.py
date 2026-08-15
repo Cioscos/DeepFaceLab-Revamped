@@ -148,6 +148,17 @@ QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
 QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {
     border-color: %(accento)s;
 }
+/* Come QPushButton:disabled sopra, e per lo stesso motivo. Senza questa
+   riga il testo di un campo spento resta acceso: Qt ingrigisce da se' solo
+   cio' che disegna lo stile nativo, e queste regole lo hanno gia' portato
+   sul motore del foglio. Misurato sul selettore delle maschere della
+   pagina di cura del faceset: 52 pixel chiari nella tendina
+   attiva, gli stessi 52 in quella disabilitata -- accanto a un bottone
+   correttamente grigio, cioe' due controlli spenti che si leggono in due
+   modi diversi nella stessa barra. */
+QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled {
+    color: %(testo_lieve)s;
+}
 QComboBox QAbstractItemView {
     background: %(campo)s;
     border: 1px solid %(bordo)s;
@@ -195,6 +206,28 @@ QLabel[ruolo="sezione"] {
     letter-spacing: 1px;
     text-transform: uppercase;
     color: %(testo_lieve)s;
+}
+/* Il titolo della heatmap e' un QToolButton, non una QLabel: e' il comando
+   che la collassa. Senza questa regola resterebbe al font di sistema
+   accanto agli altri titoli di sezione -- e col bordo del proprio stile,
+   in una fascia dove nient'altro ne ha uno. */
+QToolButton[ruolo="sezione"] {
+    /* La freccia di un QToolButton e' la sua ICONA, e l'icona non segue il
+       font: resta a 16 px mentre il testo del ruolo va da 17 a 22 px fra
+       `normal` e `xlarge` (misurato). Qui la si lega alla scala come tutto
+       il resto -- il foglio si rigenera a ogni cambio di «View > Text
+       size», quindi la freccia lo segue senza nessun changeEvent. */
+    qproperty-iconSize: %(freccia)dpx %(freccia)dpx;
+    font-size: %(sezione).1fpt;
+    font-weight: bold;
+    letter-spacing: 1px;
+    color: %(testo_lieve)s;
+    border: none;
+    background: transparent;
+    padding: 2px 4px;
+}
+QToolButton[ruolo="sezione"]:hover {
+    color: %(testo)s;
 }
 QLabel[ruolo="minore"] {
     font-size: %(minore).1fpt;
@@ -260,6 +293,10 @@ def stylesheet(scala=1.0):
         # NOTA: "tessera" era gia' qui, calcolato e non usato da nessuna
         # regola prima di questa -- lo consuma QLabel[ruolo="tessera"] sopra.
         "minore": punti("minore", scala), "console": punti("console", scala),
+        # I punti sono tipografici, i pixel di un'icona no: 4/3 e' il
+        # rapporto a 96 dpi, ed e' l'unico modo per far crescere la freccia
+        # insieme alla scritta che le sta accanto.
+        "freccia": round(punti("sezione", scala) * 4 / 3),
         "testo": TEXT.name(), "testo_lieve": testo_lieve,
         "finestra": WINDOW.name(), "campo": BASE.name(),
         "accento": ACCENT.name(), "bordo": bordo, "lieve": sfondo_lieve,

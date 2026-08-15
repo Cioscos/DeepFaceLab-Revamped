@@ -22,7 +22,8 @@ from PyQt5.QtWidgets import (
 from gui import testi
 from gui.catalog import all_steps, step_by_name
 from gui.catalog.model import (
-    KIND_CLEAR, KIND_EBSYNTH, KIND_MAIN, KIND_VIEWER, PROCESS_SESSION, STAGES,
+    FAMILY_STAGE, KIND_CLEAR, KIND_EBSYNTH, KIND_MAIN, KIND_VIEWER, PROCESS_SESSION,
+    STAGES,
 )
 from gui.delegato_passi import RUOLO_SOMMARIO, RUOLO_STATO, DelegatoPassi
 from gui.duplicazione import DialogoDuplicazione
@@ -50,6 +51,11 @@ from gui.workspace import (
 # Console tab titles for a failed job: exit code -1 is Job's sentinel for
 # "the process never started at all" (see gui.execution.jobs.Job).
 _FAILED_TO_START = -1
+
+# Derivato da FAMILY_STAGE, non riscritto come letterale: un refuso qui
+# ripristinerebbe in silenzio l'elenco dei diciassette passi al posto della
+# pagina, e nessun test se ne accorgerebbe finche' non guarda una lista vuota.
+STAGE_CURA_FACESET = FAMILY_STAGE["cura-faceset"]
 
 # Kept as an alias: gui.theme.STATO_COLORE is the single source now that the
 # color itself lives in the style sheet as a QPushButton[stato=...] rule
@@ -449,6 +455,7 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.BottomDockWidgetArea, self.console_dock)
         self.console_dock.hide()
 
+        self._pagina_faceset = None  # PaginaCuraFaceset, costruita al primo apri_pagina_faceset
         self._panels = {}          # Job -> TrainingPanel, alive with its tab closed
         self._consoles = {}        # Job -> QTextEdit, or None when the view is closed
         self._jobs_in_order = []   # jobs in the order they were started
@@ -531,10 +538,26 @@ class MainWindow(QMainWindow):
                 if item.data(Qt.UserRole) == name:
                     self.step_list.setCurrentRow(row)
                     return
+        # Un passo con stage ma assente dalla lista -- da questo ciclo, ogni
+        # passo della famiglia cura-faceset: pipeline_bar.select() sopra ha
+        # gia' portato in primo piano la pagina (apri_pagina_faceset), non
+        # la scheda "Steps" dove vive step_view. Il Misc menu (i tre
+        # KIND_VIEWER) e la navigazione da job continuano a passare da qui,
+        # quindi la scheda va riportata avanti o la vista costruita sotto
+        # resterebbe nascosta -- isVisible() falso, non un crash.
+        self.central_tabs.setCurrentIndex(0)
         self.step_list.clearSelection()
         self.step_view.set_step(step)
 
     def _on_stage_selected(self, stage_name):
+        if stage_name == STAGE_CURA_FACESET:
+            # La fase E' la pagina: la lista dei passi non elenca piu' i
+            # diciassette, e la scheda si apre (o torna in primo piano --
+            # lezione della voce 3.21: QTabWidget seleziona da se' solo la
+            # prima scheda di un contenitore vuoto).
+            self.step_list.clear()
+            self.apri_pagina_faceset()
+            return
         self.step_list.clear()
         for step in all_steps():
             if step.stage == stage_name:
@@ -1072,8 +1095,22 @@ class MainWindow(QMainWindow):
 
     def _switch_workspace_ora(self, path):
         self.workspace = path
+        # La cache dei volti vive fuori dai progetti (decisione dell'utente:
+        # duplicare o rinominare un progetto non deve copiare gigabyte di
+        # maschere), e il prezzo di quella scelta si paga qui -- cancellare
+        # un progetto lascia una cache orfana, e senza questa riga
+        # `_internal/_e` cresce per sempre. Al CAMBIO di progetto e non alla
+        # costruzione della pagina: la pagina puo' non essere mai aperta, e
+        # questo e' il momento in cui il disco e' appena cambiato. La
+        # potatura si decide sull'origine registrata in ogni `meta.json`,
+        # quindi non ha bisogno di sapere quali progetti esistono; non
+        # solleva mai (ogni ramo cattura OSError da se').
+        from gui.faceset import cache as cache_faceset
+        cache_faceset.pota_orfane(self._dfl_root.parent / "_e")
         self.pipeline_bar.set_workspace(path)
         self.step_view.set_workspace(path)
+        if self._pagina_faceset is not None:
+            self._pagina_faceset.imposta_workspace(path)
         RecentWorkspaces().add(path)
         progetto = leggi_progetto(path)
         if progetto is not None:
@@ -1268,6 +1305,37 @@ class MainWindow(QMainWindow):
 
     def _console_title(self, job):
         return testi.tab_title(self._nome_progetto_di(job), job.step.name)
+
+    # -- la pagina di cura del faceset ----------------------------------------
+
+    def apri_pagina_faceset(self):
+        """Mostra la scheda della pagina, costruendola la prima volta.
+
+        Una sola pagina per finestra, indicizzata per progetto e non per
+        job -- a differenza di TrainingPanel. `indexOf` prima di `addTab` e'
+        la stessa cautela di `open_panel`: QTabWidget seleziona da se' solo
+        la prima scheda di un contenitore vuoto (voce 3.21).
+        """
+        if self._pagina_faceset is None:
+            from gui.faceset import avvio
+            from gui.faceset.pagina import PaginaCuraFaceset
+            avvio.configura(self._python_exe, self._dfl_root)
+            self._pagina_faceset = PaginaCuraFaceset(
+                self._dfl_root.parent / "_e", self._settings)
+            # Prima del workspace: e' il gestore a dire quali azioni sono
+            # libere, e imposta_workspace rigenera gia' la barra.
+            self._pagina_faceset.imposta_job_manager(self.job_manager)
+            self._pagina_faceset.imposta_workspace(self.workspace)
+        indice = self.central_tabs.indexOf(self._pagina_faceset)
+        if indice < 0:
+            indice = self.central_tabs.addTab(self._pagina_faceset, testi.TAB_FACESET)
+            # Come "Steps": una scheda sola, sempre presente, che segue lo
+            # stato del progetto -- non un artefatto per job da poter
+            # scartare e ricostruire. Il bottone di chiusura non farebbe
+            # niente (non e' in self._panels), quindi non c'e'.
+            self.central_tabs.tabBar().setTabButton(indice, QTabBar.RightSide, None)
+        self.central_tabs.setCurrentIndex(indice)
+        return self._pagina_faceset
 
     # -- the training tabs ---------------------------------------------------
 

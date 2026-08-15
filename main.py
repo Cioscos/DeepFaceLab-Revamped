@@ -300,7 +300,31 @@ if __name__ == "__main__":
         from mainscripts import FacesetResizer
         FacesetResizer.process_folder ( Path(arguments.input_dir) )
     p.set_defaults(func=process_faceset_resizer)
-    
+
+
+    p = facesettool_parser.add_parser ("index", help="Index a faceset folder for the graphical interface.")
+    p.add_argument('--input-dir', required=True, action=fixPathAction, dest="input_dir", help="Input directory of aligned faces.")
+    p.add_argument('--cache-dir', required=True, action=fixPathAction, dest="cache_dir", help="Where the index and the mask blob are written.")
+    p.add_argument('--only-missing', action="store_true", dest="only_missing", default=False, help="Index only the faces the cache does not already hold.")
+
+    def process_faceset_index(arguments):
+        osex.set_process_lowest_prio()
+        from mainscripts import FacesetIndex
+        FacesetIndex.indicizza ( Path(arguments.input_dir),
+                                  Path(arguments.cache_dir),
+                                  only_missing=arguments.only_missing )
+    p.set_defaults(func=process_faceset_index)
+
+
+    p = facesettool_parser.add_parser ("detail", help="Serve one face at a time to the graphical interface.")
+    p.add_argument('--workdir', required=True, action=fixPathAction, dest="workdir", help="Where the raster answers are written.")
+
+    def process_faceset_detail(arguments):
+        osex.set_process_lowest_prio()
+        from mainscripts import FacesetDetail
+        FacesetDetail.main ( Path(arguments.workdir) )
+    p.set_defaults(func=process_faceset_detail)
+
     def process_dev_test(arguments):
         osex.set_process_lowest_prio()
         from mainscripts import dev_misc

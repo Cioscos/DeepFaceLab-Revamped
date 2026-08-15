@@ -115,3 +115,40 @@ def iterazione_utilizzabile(valore):
     #cifre la conversione a float che quella funzione fa solleverebbe
     #`OverflowError`, mentre il confronto col tetto risponde "no" da solo.
     return 0 <= valore <= MASSIMA_ITERAZIONE
+
+
+#L'intero del C++ che sta sotto Qt e' a 32 bit con segno, e le firme che lo
+#prendono (QPoint, QProgressBar.setValue/setMaximum, ...) non ci arrotondano
+#dentro: PyQt5 solleva `OverflowError` -- «argument 1 overflowed: value must
+#be in the range -2147483648 to 2147483647» -- e lo solleva nel posto
+#peggiore, dentro un paintEvent o uno slot, dove nessuna cattura del
+#chiamante arriva e il processo se ne va con dentro ogni altra scheda.
+MASSIMO_INTERO_QT = 2 ** 31 - 1
+MINIMO_INTERO_QT = -2 ** 31
+
+
+def intero_qt_utilizzabile(valore):
+    """True se `valore` puo' diventare l'`int` che una firma Qt si aspetta.
+
+    E' `numero_finito` **piu' il tetto di grandezza**, e la seconda meta' e'
+    quella che serve davvero: `1e300` e' finito, quindi attraversa ogni
+    controllo di finitezza senza fare rumore, e muore solo dentro l'`int()`
+    che lo consegna a Qt. Un tetto di plausibilita' esisteva gia' per le
+    iterazioni (MASSIMA_ITERAZIONE, nato nel ciclo v3 proprio per delle
+    coordinate) e la lezione di quel ciclo e' che deve stare qui, in un
+    predicato solo, e non ricopiato in ognuna delle superfici che disegnano.
+
+    Il confine e' quello vero dell'`int` a 32 bit e non un numero scelto per
+    il dominio (le coordinate di un volto stanno in poche migliaia di
+    pixel): un predicato che vale per chi disegna, per chi muove una barra e
+    per chiunque altro consegni un numero a Qt non puo' conoscere il dominio
+    di ognuno, mentre il limite della firma e' lo stesso per tutti. Chi ha
+    anche un limite di dominio lo aggiunge da se', sopra questo.
+
+    **Non solleva mai**, come il predicato che usa: un `int` di 400 cifre
+    esce gia' da `numero_finito`, che il confronto col tetto non lo vedrebbe
+    nemmeno arrivare.
+    """
+    if not numero_finito(valore):
+        return False
+    return MINIMO_INTERO_QT <= valore <= MASSIMO_INTERO_QT
