@@ -126,9 +126,9 @@ class Griglia(QListView):
     selezione_cambiata = pyqtSignal(list)
 
     # Il tetto e' in BYTE, non in voci, e la ragione e' misurata: le
-    # maschere del faceset di prova pesano 64,0 KiB l'una, misurate, ma
-    # sono 256x256 in scala di
-    # grigi -- una cartella a 512 ne peserebbe quattro volte tanto e
+    # maschere del faceset di prova pesano 64,0 KiB l'una, ma sono
+    # 256x256 in scala di grigi -- una cartella a 512 ne peserebbe
+    # quattro volte tanto e
     # sfonderebbe lo stesso tetto a numero senza che nessuna costante sia
     # cambiata. Prima non c'era nessun tetto: 50 000 volti
     # scorsi facevano ~3,2 GiB che non tornavano indietro finche' la

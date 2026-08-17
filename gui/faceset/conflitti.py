@@ -8,7 +8,7 @@ superficie in piu'.
 """
 from collections import namedtuple
 
-from gui.execution.conflicts import conflict
+from gui.execution.conflicts import conflict, occupanti_di
 from gui.progetti import identita_workspace, stesso_workspace
 
 PassoFittizio = namedtuple("PassoFittizio", ["name", "consumes", "produces", "modifies"])
@@ -50,4 +50,12 @@ def chi_occupa(job_manager, workspace, cartella, dataset):
         artefatto = conflict(mio, job.step)
         if artefatto is not None:
             return (job.step.name, artefatto)
+    # Un occupante che non e' un Job -- oggi solo la sessione manuale di
+    # estrazione (gui/estrazione/pagina.py), un QProcess che job_manager
+    # non traccia. Senza questo, questa pagina non vedrebbe mai una
+    # sessione manuale in corso sullo stesso `aligned` (I4 del ledger).
+    for passo_esterno in occupanti_di(identita):
+        artefatto = conflict(mio, passo_esterno)
+        if artefatto is not None:
+            return (passo_esterno.name, artefatto)
     return None

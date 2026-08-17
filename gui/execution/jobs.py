@@ -19,7 +19,7 @@ from PyQt5.QtCore import QObject, QProcess, QProcessEnvironment, QTimer, pyqtSig
 from gui import testi
 from gui.console_buffer import ConsoleBuffer
 from gui.console_stream import LineAssembler
-from gui.execution.conflicts import conflict
+from gui.execution.conflicts import conflict, occupanti_di
 from gui.model_lock_status import busy_holder
 from gui.progetti import identita_workspace, stesso_workspace
 
@@ -296,6 +296,17 @@ class JobManager(QObject):
             artifact = conflict(step, job.step)
             if artifact is not None:
                 raise StepConflict(artifact, job.step.name)
+
+        # Un occupante che non e' un Job -- oggi solo la sessione manuale
+        # di estrazione (gui/estrazione/pagina.py), un QProcess che questo
+        # gestore non traccia affatto, quindi il giro su active_jobs()
+        # sopra non lo vede. Senza questo, un lavoro avviato dalla lista
+        # Steps sullo stesso `aligned` non verrebbe mai rifiutato mentre
+        # la sessione manuale scrive li'.
+        for passo_esterno in occupanti_di(identita):
+            artifact = conflict(step, passo_esterno)
+            if artifact is not None:
+                raise StepConflict(artifact, passo_esterno.name)
 
         if _is_training_step(step):
             # Only a training step actually contends for the lock -- merging

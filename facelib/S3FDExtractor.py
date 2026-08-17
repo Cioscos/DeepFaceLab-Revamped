@@ -7,10 +7,47 @@ import torch
 import torch.nn.functional as F
 
 from core.leras import nn
+# Dati puri, nessun import a catena (il modulo importa solo `collections`) e
+# `mainscripts` non ha __init__.py: costa quanto leggere una costante. E' lo
+# stesso import che fa gia' facelib/motori.py, e per la stessa ragione -- il
+# catalogo dei motori e' la sorgente unica dei default, e una seconda copia
+# del 40 qui sarebbe libera di scostarsi da quella che il form mostra.
+from mainscripts import MotoriCatalog
+
+
+def scala_di_ingresso(lato_lungo, lato_rete):
+    """Il lato a cui il frame viene portato prima di entrare nella rete.
+
+    `lato_rete=640` riproduce la regola storica alla lettera, e la regola
+    storica NON e' un tetto: sotto i 1280 px dimezza comunque. Scambiarla per
+    un tetto raddoppierebbe la risoluzione di ingresso di ogni 720p, che e' il
+    formato piu' comune.
+
+    `lato_rete=None` toglie ogni riduzione. Costa tre volte tanto e peggiora
+    il rilevamento su materiale rumoroso o compresso -- il ridimensionamento
+    fa anche da filtro antirumore: e' una variante dichiarata, non un default.
+    """
+    if lato_rete is None:
+        return max(64.0, float(lato_lungo))
+    if lato_lungo >= 2 * lato_rete:
+        scala = float(lato_rete)
+    else:
+        scala = lato_lungo / 2.0
+    # Nessun `min` con `lato_lungo`: qui la scala e' gia' <= lato_lungo per
+    # costruzione in entrambi i rami (nel primo vale al piu' lato_lungo/2,
+    # nel secondo e' lato_lungo/2), e il min era codice morto -- 200 000
+    # coppie casuali, zero divergenze. Il solo modo di superare il lato del
+    # frame resta il pavimento a 64, che e' voluto.
+    return max(64.0, scala)
 
 
 class S3FDExtractor(object):
-    def __init__(self, place_model_on_cpu=False):
+    def __init__(self, place_model_on_cpu=False, lato_rete=640,
+                 lato_min=MotoriCatalog.LATO_MIN_PREDEFINITO,
+                 confidenza=0.5):
+        self.lato_rete = lato_rete
+        self.lato_min = lato_min
+        self.confidenza = confidenza
         nn.initialize()
 
         model_path = Path(__file__).parent / "S3FD.npy"
@@ -212,8 +249,7 @@ class S3FDExtractor(object):
         (h, w, ch) = input_image.shape
 
         d = max(w, h)
-        scale_to = 640 if d >= 1280 else d / 2
-        scale_to = max(64, scale_to)
+        scale_to = scala_di_ingresso(d, self.lato_rete)
 
         input_scale = d / scale_to
         input_image = cv2.resize (input_image, ( int(w/input_scale), int(h/input_scale) ), interpolation=cv2.INTER_LINEAR)
@@ -224,7 +260,7 @@ class S3FDExtractor(object):
         for ltrb in self.refine (olist):
             l,t,r,b = [ x*input_scale for x in ltrb]
             bt = b-t
-            if min(r-l,bt) < 40: #filtering faces < 40pix by any side
+            if min(r-l,bt) < self.lato_min: #filtering small faces by any side
                 continue
             b += bt*0.1 #enlarging bottom line a bit for 2DFAN-4, because default is not enough covering a chin
             detected_faces.append ( [int(x) for x in (l,t,r,b) ] )
@@ -272,7 +308,7 @@ class S3FDExtractor(object):
         bboxlist = bboxlist[self.refine_nms(bboxlist, 0.3), :]
         # np.int was removed in numpy 2 (it was only ever an alias of the
         # builtin, so this is identical in behaviour).
-        bboxlist = [ x[:-1].astype(int) for x in bboxlist if x[-1] >= 0.5]
+        bboxlist = [ x[:-1].astype(int) for x in bboxlist if x[-1] >= self.confidenza]
         return bboxlist
 
     def refine_nms(self, dets, thresh):

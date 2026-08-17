@@ -31,8 +31,8 @@ from gui.execution.jobs import JobManager, StepConflict, _model_class_from_step,
 from gui.forms import StepForm
 from gui.preferenze import ScalaTesto
 from gui.progetti import (
-    ArchivioProgetti, adesso, dimensione, identita_workspace, leggi_progetto, radice_progetti,
-    scrivi_progetto, serve_migrazione, slug, stesso_workspace,
+    ArchivioProgetti, dimensione, identita_workspace, leggi_progetto, radice_progetti,
+    ricorda_risposte, risposte_ricordate, serve_migrazione, slug, stesso_workspace,
 )
 from gui.rimozione import svuota
 from gui.saved_options import saved_options
@@ -56,6 +56,11 @@ _FAILED_TO_START = -1
 # ripristinerebbe in silenzio l'elenco dei diciassette passi al posto della
 # pagina, e nessun test se ne accorgerebbe finche' non guarda una lista vuota.
 STAGE_CURA_FACESET = FAMILY_STAGE["cura-faceset"]
+
+# Stessa cautela di STAGE_CURA_FACESET, stesso motivo: un refuso qui
+# ripristinerebbe in silenzio l'elenco dei sei passi di estrazione al posto
+# della pagina.
+STAGE_ESTRAZIONE = FAMILY_STAGE["estrazione"]
 
 # Kept as an alias: gui.theme.STATO_COLORE is the single source now that the
 # color itself lives in the style sheet as a QPushButton[stato=...] rule
@@ -348,11 +353,9 @@ class StepView(QWidget):
             # options after (_refresh_saved_values, below): when both have
             # something to say about a field, the truth is what the model
             # has on disk, not what a previous run of this same step typed.
-            progetto = leggi_progetto(self._workspace)
-            if progetto is not None:
-                ricordate = progetto.memoria.get("answers", {}).get(step.name)
-                if ricordate:
-                    self.form.set_remembered_values(ricordate)
+            ricordate = risposte_ricordate(self._workspace, step.name)
+            if ricordate:
+                self.form.set_remembered_values(ricordate)
             if step.needs_model_name:
                 self.form.set_model_names(saved_model_names(self._workspace / "model"))
                 self.form._model_combo.currentTextChanged.connect(self._refresh_saved_values)
@@ -456,6 +459,7 @@ class MainWindow(QMainWindow):
         self.console_dock.hide()
 
         self._pagina_faceset = None  # PaginaCuraFaceset, costruita al primo apri_pagina_faceset
+        self._pagina_estrazione = None  # PaginaEstrazione, costruita al primo apri_pagina_estrazione
         self._panels = {}          # Job -> TrainingPanel, alive with its tab closed
         self._consoles = {}        # Job -> QTextEdit, or None when the view is closed
         self._jobs_in_order = []   # jobs in the order they were started
@@ -557,6 +561,12 @@ class MainWindow(QMainWindow):
             # prima scheda di un contenitore vuoto).
             self.step_list.clear()
             self.apri_pagina_faceset()
+            return
+        if stage_name == STAGE_ESTRAZIONE:
+            # Stessa scelta di STAGE_CURA_FACESET: la fase E' la pagina, le
+            # sei voci del catalogo non compaiono piu' come lista.
+            self.step_list.clear()
+            self.apri_pagina_estrazione()
             return
         self.step_list.clear()
         for step in all_steps():
@@ -1111,6 +1121,11 @@ class MainWindow(QMainWindow):
         self.step_view.set_workspace(path)
         if self._pagina_faceset is not None:
             self._pagina_faceset.imposta_workspace(path)
+        if self._pagina_estrazione is not None:
+            # apri() e non imposta_workspace(): la pagina di estrazione
+            # segue (progetto, lato), non solo il progetto -- si riapre sul
+            # lato che stava gia' mostrando.
+            self._pagina_estrazione.apri(path, self._pagina_estrazione.lato())
         RecentWorkspaces().add(path)
         progetto = leggi_progetto(path)
         if progetto is not None:
@@ -1226,26 +1241,16 @@ class MainWindow(QMainWindow):
         self._esegui_protetta(lambda: self._ricorda_risposte(step, answers, form))
 
     def _ricorda_risposte(self, step, answers, form):
-        progetto = leggi_progetto(self.workspace)
-        if progetto is None:
-            return
-        # Fusa, non sostituita: `answers` e' solo cio' che QUESTO avvio ha
-        # toccato -- correttamente vuoto quando l'utente non ha cambiato
-        # nulla -- e un'assegnazione al posto di un aggiornamento
-        # cancellerebbe quanto un avvio precedente aveva gia' fatto
-        # ricordare, un campo alla volta, fino ad azzerare tutto nel giro di
-        # pochi avvii "senza tocchi". Il prezzo di questa scelta: un valore
-        # ricordato non si puo' piu' *dimenticare* da solo -- se l'utente
-        # vuole tornare al default del catalogo deve reimpostarlo a mano,
-        # perche' qui non esiste un modo per dire "scorda questo campo". E'
-        # il compromesso giusto: una memoria che si cancella da sola e'
-        # peggio di una che non dimentica.
-        progetto.memoria.setdefault("answers", {}).setdefault(step.name, {}).update(answers)
-        progetto.memoria["last_step"] = step.name
+        # La fusione e le sue conseguenze stanno in gui/progetti.py: la
+        # pagina di estrazione ricorda dalla stessa funzione, e due copie
+        # della stessa regola sono due regole appena una delle due cambia.
+        # `last_step`/`last_model_name` vivono accanto alle risposte nella
+        # stessa memoria, quindi passano di li' e il file si scrive una
+        # volta sola.
+        extra = {"last_step": step.name}
         if step.needs_model_name:
-            progetto.memoria["last_model_name"] = form.model_name()
-        progetto.usato = adesso()
-        scrivi_progetto(progetto)
+            extra["last_model_name"] = form.model_name()
+        ricorda_risposte(self.workspace, step.name, answers, extra)
 
     def console_of(self, job):
         """The open console view of `job`, or None when it is closed."""
@@ -1336,6 +1341,26 @@ class MainWindow(QMainWindow):
             self.central_tabs.tabBar().setTabButton(indice, QTabBar.RightSide, None)
         self.central_tabs.setCurrentIndex(indice)
         return self._pagina_faceset
+
+    # -- la pagina di estrazione ----------------------------------------
+
+    def apri_pagina_estrazione(self):
+        """Mostra la scheda della pagina di estrazione, costruendola la
+        prima volta. Stessa cautela di apri_pagina_faceset: `indexOf` prima
+        di `addTab` (voce 3.21), una sola pagina per finestra."""
+        if self._pagina_estrazione is None:
+            from gui.estrazione import avvio
+            from gui.estrazione.pagina import PaginaEstrazione
+            avvio.configura(self._python_exe, self._dfl_root)
+            self._pagina_estrazione = PaginaEstrazione(self._dfl_root.parent / "_e")
+            self._pagina_estrazione.imposta_job_manager(self.job_manager)
+            self._pagina_estrazione.apri(self.workspace, "src")
+        indice = self.central_tabs.indexOf(self._pagina_estrazione)
+        if indice < 0:
+            indice = self.central_tabs.addTab(self._pagina_estrazione, testi.TAB_ESTRAZIONE)
+            self.central_tabs.tabBar().setTabButton(indice, QTabBar.RightSide, None)
+        self.central_tabs.setCurrentIndex(indice)
+        return self._pagina_estrazione
 
     # -- the training tabs ---------------------------------------------------
 
@@ -1647,6 +1672,17 @@ class MainWindow(QMainWindow):
         real model takes longer than a minute -- so no deadline), the others
         are killed, and "Force stop" is always one click away.
         """
+        # Il servizio di estrazione manuale non e' un Job -- e' un QProcess
+        # avviato fuori dal job_manager (avvio.py/servizio.py) -- quindi
+        # `active_jobs()` sotto non lo vede affatto. Senza di lui la pagina puo'
+        # restare aperta in modalita' manuale, la finestra chiudersi, e il
+        # figlio sopravviverle -- un processo appeso resta un processo
+        # appeso anche se, a differenza del servizio di FacesetDetail,
+        # ExtractManual non carica alcun modello in VRAM (geometria pura).
+        # Idempotente e innocuo se richiamato piu' volte: closeEvent puo'
+        # rientrare mentre aspetta che i job finiscano (event.ignore() sotto).
+        if self._pagina_estrazione is not None:
+            self._pagina_estrazione.ferma_servizio()
         if not self.job_manager.active_jobs():
             for tail in list(self._tails):
                 tail.stop()

@@ -1,5 +1,4 @@
 ﻿import traceback
-import math
 import multiprocessing
 import operator
 import os
@@ -12,10 +11,9 @@ import cv2
 import numpy as np
 from numpy import linalg as npla
 
-import facelib
+from mainscripts import ExtractorLib, ExtractReport, MotoriCatalog
 from core import imagelib
-from core import mathlib
-from facelib import FaceType, LandmarksProcessor
+from facelib import FaceType, LandmarksProcessor, motori
 from core.interact import interact as io
 from core.joblib import Subprocessor
 from core.leras import nn
@@ -27,7 +25,7 @@ DEBUG = False
 
 class ExtractSubprocessor(Subprocessor):
     class Data(object):
-        def __init__(self, filepath=None, rects=None, landmarks = None, landmarks_accurate=True, manual=False, force_output_path=None, final_output_files = None):
+        def __init__(self, filepath=None, rects=None, landmarks = None, landmarks_accurate=True, manual=False, force_output_path=None, final_output_files = None, luminanza=0.0):
             self.filepath = filepath
             self.rects = rects or []
             self.rects_rotation = 0
@@ -37,6 +35,15 @@ class ExtractSubprocessor(Subprocessor):
             self.force_output_path = force_output_path
             self.final_output_files = final_output_files or []
             self.faces_detected = 0
+            self.luminanza = luminanza
+            #Gli indici dei rilevamenti che final_stage ha davvero scritto su
+            #disco. None finche' quello stadio non e' passato di qui: e' la
+            #differenza fra "non ne so niente" e "nessuno". Serve al rapporto
+            #per frame, che deve contare i volti SCRITTI e non i rilevamenti
+            #(ExtractorLib.voce_da_data) -- salva_volto ne scarta una parte, e
+            #`faces_detected`, il numero che la riga di comando stampa, conta
+            #gia' quelli scritti.
+            self.indici_salvati = None
 
     class Cli(Subprocessor.Cli):
 
@@ -70,12 +77,20 @@ class ExtractSubprocessor(Subprocessor):
             self.log_info (f"Running on {client_dict['device_name'] }")
 
             if self.type == 'all' or self.type == 'rects-s3fd' or 'landmarks' in self.type:
-                self.rects_extractor = facelib.S3FDExtractor(place_model_on_cpu=place_model_on_cpu)
+                self.rects_extractor = motori.costruisci_rilevatore(
+                    client_dict['rilevatore'], place_model_on_cpu=place_model_on_cpu)
+                # Parametro della corsa, non del motore: applicarlo qui evita
+                # una voce di catalogo per ogni valore possibile.
+                if client_dict.get('min_face_size') is not None:
+                    self.rects_extractor.lato_min = client_dict['min_face_size']
 
             if self.type == 'all' or 'landmarks' in self.type:
-                # for head type, extract "3D landmarks"
-                self.landmarks_extractor = facelib.FANExtractor(landmarks_3D=self.face_type >= FaceType.HEAD,
-                                                                place_model_on_cpu=place_model_on_cpu)
+                # per il face type 'head', costruisci_allineatore alza da
+                # solo a landmark 3D: e' il pavimento storico, non una scelta
+                # qui.
+                self.landmarks_extractor = motori.costruisci_allineatore(
+                    client_dict['allineatore'], self.face_type,
+                    place_model_on_cpu=place_model_on_cpu)
 
             self.cached_image = (None, None)
 
@@ -96,6 +111,11 @@ class ExtractSubprocessor(Subprocessor):
                 self.cached_image = ( filepath, image )
 
             h, w, c = image.shape
+
+            # Punto di strozzatura: l'immagine e' gia' decodificata e non lo
+            # sara' mai piu' senza pagare una seconda decodifica dell'intero
+            # video. Un float, quindi picklabile attraverso lo spawn.
+            data.luminanza = float(np.median(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)))
 
             if 'rects' in self.type or self.type == 'all':
                 data = ExtractSubprocessor.Cli.rects_stage (data=data,
@@ -205,6 +225,7 @@ class ExtractSubprocessor(Subprocessor):
                         final_output_path=None,
                         ):
             data.final_output_files = []
+            data.indici_salvati = []
             filepath = data.filepath
             rects = data.rects
             landmarks = data.landmarks
@@ -213,50 +234,28 @@ class ExtractSubprocessor(Subprocessor):
                 debug_image = image.copy()
 
             face_idx = 0
-            for rect, image_landmarks in zip( rects, landmarks ):
+            for indice_rilevamento, (rect, image_landmarks) in enumerate(zip( rects, landmarks )):
                 if image_landmarks is None:
                     continue
-
-                rect = np.array(rect)
-
-                if face_type == FaceType.MARK_ONLY:
-                    image_to_face_mat = None
-                    face_image = image
-                    face_image_landmarks = image_landmarks
-                else:
-                    image_to_face_mat = LandmarksProcessor.get_transform_mat (image_landmarks, image_size, face_type)
-
-                    face_image = cv2.warpAffine(image, image_to_face_mat, (image_size, image_size), cv2.INTER_LANCZOS4)
-                    face_image_landmarks = LandmarksProcessor.transform_points (image_landmarks, image_to_face_mat)
-
-                    landmarks_bbox = LandmarksProcessor.transform_points ( [ (0,0), (0,image_size-1), (image_size-1, image_size-1), (image_size-1,0) ], image_to_face_mat, True)
-
-                    rect_area      = mathlib.polygon_area(np.array(rect[[0,2,2,0]]).astype(np.float32), np.array(rect[[1,1,3,3]]).astype(np.float32))
-                    landmarks_area = mathlib.polygon_area(landmarks_bbox[:,0].astype(np.float32), landmarks_bbox[:,1].astype(np.float32) )
-
-                    if not data.manual and face_type <= FaceType.FULL_NO_ALIGN and landmarks_area > 4*rect_area: #get rid of faces which umeyama-landmark-area > 4*detector-rect-area
-                        continue
-
-                    if output_debug_path is not None:
-                        LandmarksProcessor.draw_rect_landmarks (debug_image, rect, image_landmarks, face_type, image_size, transparent_mask=True)
 
                 output_path = final_output_path
                 if data.force_output_path is not None:
                     output_path = data.force_output_path
 
-                output_filepath = output_path / f"{filepath.stem}_{face_idx}.jpg"
-                cv2_imwrite(output_filepath, face_image, [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality ] )
+                output_filepath = ExtractorLib.salva_volto(
+                    immagine=image, rect=rect, image_landmarks=image_landmarks,
+                    face_type=face_type, image_size=image_size,
+                    jpeg_quality=jpeg_quality,
+                    output_filepath=output_path / f"{filepath.stem}_{face_idx}.jpg",
+                    source_filename=filepath.name, manuale=data.manual)
+                if output_filepath is None:
+                    continue
 
-                dflimg = DFLJPG.load(output_filepath)
-                dflimg.set_face_type(FaceType.toString(face_type))
-                dflimg.set_landmarks(face_image_landmarks.tolist())
-                dflimg.set_source_filename(filepath.name)
-                dflimg.set_source_rect(rect)
-                dflimg.set_source_landmarks(image_landmarks.tolist())
-                dflimg.set_image_to_face_mat(image_to_face_mat)
-                dflimg.save()
+                if output_debug_path is not None and face_type != FaceType.MARK_ONLY:
+                    LandmarksProcessor.draw_rect_landmarks (debug_image, rect, image_landmarks, face_type, image_size, transparent_mask=True)
 
                 data.final_output_files.append (output_filepath)
+                data.indici_salvati.append (indice_rilevamento)
                 face_idx += 1
             data.faces_detected = face_idx
 
@@ -304,7 +303,7 @@ class ExtractSubprocessor(Subprocessor):
         elif type == 'final':
             return [ (i, 'CPU', 'CPU%d' % (i), 0 ) for i in (range(min(8, multiprocessing.cpu_count())) if not DEBUG else [0]) ]
 
-    def __init__(self, input_data, type, image_size=None, jpeg_quality=None, face_type=None, output_debug_path=None, manual_window_size=0, max_faces_from_image=0, final_output_path=None, device_config=None):
+    def __init__(self, input_data, type, image_size=None, jpeg_quality=None, face_type=None, output_debug_path=None, manual_window_size=0, max_faces_from_image=0, final_output_path=None, rilevatore=None, allineatore=None, min_face_size=None, device_config=None):
         if type == 'landmarks-manual':
             for x in input_data:
                 x.manual = True
@@ -319,6 +318,9 @@ class ExtractSubprocessor(Subprocessor):
         self.final_output_path = final_output_path
         self.manual_window_size = manual_window_size
         self.max_faces_from_image = max_faces_from_image
+        self.rilevatore    = rilevatore or MotoriCatalog.DEFAULT_RILEVATORE
+        self.allineatore   = allineatore or MotoriCatalog.DEFAULT_ALLINEATORE
+        self.min_face_size = min_face_size
         self.result = []
 
         self.devices = ExtractSubprocessor.get_devices_for_config(self.type, device_config)
@@ -369,6 +371,9 @@ class ExtractSubprocessor(Subprocessor):
                      'max_faces_from_image':self.max_faces_from_image,
                      'output_debug_path': self.output_debug_path,
                      'final_output_path': self.final_output_path,
+                     'rilevatore': self.rilevatore,
+                     'allineatore': self.allineatore,
+                     'min_face_size': self.min_face_size,
                      'stdin_fd': sys.stdin.fileno() }
 
 
@@ -535,27 +540,12 @@ class ExtractSubprocessor(Subprocessor):
                             break
 
                         if self.force_landmarks:
-                            pt2 = np.float32([new_x, new_y])
-                            pt1 = np.float32([self.x, self.y])
-
-                            pt_vec_len = npla.norm(pt2-pt1)
-                            pt_vec = pt2-pt1
-                            if pt_vec_len != 0:
-                                pt_vec /= pt_vec_len
-
-                            self.rect_size = pt_vec_len
-                            self.rect = ( int(self.x-self.rect_size),
-                                          int(self.y-self.rect_size),
-                                          int(self.x+self.rect_size),
-                                          int(self.y+self.rect_size) )
-
-                            if pt_vec_len > 0:
-                                lmrks = np.concatenate ( (np.zeros ((17,2), np.float32), LandmarksProcessor.landmarks_2D), axis=0 )
-                                lmrks -= lmrks[30:31,:]
-                                mat = cv2.getRotationMatrix2D( (0, 0), -np.arctan2( pt_vec[1], pt_vec[0] )*180/math.pi , pt_vec_len)
-                                mat[:, 2] += (self.x, self.y)
-                                self.landmarks = LandmarksProcessor.transform_points(lmrks, mat )
-
+                            self.rect, lmrks = ExtractorLib.landmarks_da_vettore(
+                                (self.x, self.y), (new_x, new_y))
+                            self.rect_size = npla.norm(
+                                np.float32([new_x, new_y]) - np.float32([self.x, self.y]))
+                            if lmrks is not None:
+                                self.landmarks = lmrks
 
                             self.redraw()
 
@@ -708,7 +698,24 @@ class DeletedFilesSearcherSubprocessor(Subprocessor):
     def get_result(self):
         return self.result
 
+def _scrivi_rapporto(report_dir, data, motore=None):
+    """Una voce per ogni Data che e' passato dallo stadio 'final': con
+    report_dir=None non si scrive nulla, ed e' cio' che tiene identico il
+    comportamento da riga di comando.
+
+    `motore` e' la coppia rilevatore+allineatore che ha prodotto queste
+    voci ("manual" per i due rami tracciati a mano); None -- il ripiego --
+    vuol dire sconosciuto."""
+    if report_dir is None:
+        return
+    with ExtractReport.Scrittore(report_dir) as scrittore:
+        for d in data:
+            scrittore.scrivi(ExtractorLib.voce_da_data(
+                d, getattr(d, 'luminanza', 0.0), motore=motore))
+
+
 def main(detector=None,
+         landmarker=None,
          input_path=None,
          output_path=None,
          output_debug=None,
@@ -721,6 +728,8 @@ def main(detector=None,
          jpeg_quality=None,
          cpu_only = False,
          force_gpu_idxs = None,
+         report_dir=None,
+         min_face_size=None,
          ):
 
     if not input_path.exists():
@@ -780,10 +789,36 @@ def main(detector=None,
         jpeg_quality = io.input_int(f"Jpeg quality", 90, valid_range=[1,100], help_message="Jpeg quality. The higher jpeg quality the larger the output file size.")
 
     if detector is None:
+        scelte = list(MotoriCatalog.RILEVATORI)
         io.log_info ("Choose detector type.")
-        io.log_info ("[0] S3FD")
-        io.log_info ("[1] manual")
-        detector = {0:'s3fd', 1:'manual'}[ io.input_int("", 0, [0,1]) ]
+        for m in scelte:
+            io.log_info (f"[{m.key}] {m.label}: {m.help}")
+        io.log_info ("[manual] manual")
+        # Testo non vuoto e distinto da quello dell'allineatore qui sotto:
+        # con "" (il prompt di prima) le due chiavi collidevano in
+        # prompt_key e nessuna risposta di DFL_ANSWERS_FILE poteva
+        # raggiungere l'una o l'altra. input_str, non input_int: le chiavi
+        # del catalogo GUI (gui/catalog/extraction.py) sono stringhe, non
+        # indici.
+        detector = io.input_str ("Detector", MotoriCatalog.DEFAULT_RILEVATORE,
+                                  list(MotoriCatalog.CHIAVI_RILEVATORI) + ['manual'])
+
+    if landmarker is None and detector != 'manual':
+        io.log_info ("Choose landmark model.")
+        for m in MotoriCatalog.ALLINEATORI:
+            io.log_info (f"[{m.key}] {m.label}: {m.help}")
+        landmarker = io.input_str ("Landmarker", MotoriCatalog.DEFAULT_ALLINEATORE,
+                                    list(MotoriCatalog.CHIAVI_ALLINEATORI))
+
+    if min_face_size is None and detector != 'manual':
+        # Il default e' quello del rilevatore, letto dalla stessa costante
+        # che S3FDExtractor usa nella propria firma: qui non se ne scrive un
+        # secondo. Senza questo prompt il parametro esisteva solo per chi
+        # digitava --min-face-size: il guadagno sui volti sotto i 40 px
+        # deve arrivare anche a chi sceglie dall'interfaccia.
+        min_face_size = io.input_int ("Minimum face size", MotoriCatalog.LATO_MIN_PREDEFINITO,
+                                       valid_range=[1,1024],
+                                       help_message="Detections whose shorter side is below this many pixels of the source frame are discarded. Lower it to keep small or distant faces the default throws away; it costs nothing in speed.")
 
 
     if output_debug is None:
@@ -813,10 +848,22 @@ def main(detector=None,
     if images_found != 0:
         if detector == 'manual':
             io.log_info ('Performing manual extract...')
-            data = ExtractSubprocessor ([ ExtractSubprocessor.Data(Path(filename)) for filename in input_image_paths ], 'landmarks-manual', image_size, jpeg_quality, face_type, output_debug_path if output_debug else None, manual_window_size=manual_window_size, device_config=device_config).run()
+            # Anche la passata a mano costruisce i due estrattori (il tipo
+            # contiene 'landmarks'): il rilevatore le serve da
+            # second_pass_extractor e l'allineatore mette i 68 punti dentro
+            # il rettangolo tracciato. Senza queste chiavi userebbe i motori
+            # di default mentre l'utente ne ha scelti altri -- qui
+            # `rilevatore` e' None per costruzione (detector == 'manual'),
+            # ma `landmarker` e `min_face_size` arrivano da --landmarker e
+            # --min-face-size e vanno inoltrati.
+            data = ExtractSubprocessor ([ ExtractSubprocessor.Data(Path(filename)) for filename in input_image_paths ], 'landmarks-manual', image_size, jpeg_quality, face_type, output_debug_path if output_debug else None, manual_window_size=manual_window_size,
+                                         allineatore=landmarker,
+                                         min_face_size=min_face_size,
+                                         device_config=device_config).run()
 
             io.log_info ('Performing 3rd pass...')
             data = ExtractSubprocessor (data, 'final', image_size, jpeg_quality, face_type, output_debug_path if output_debug else None, final_output_path=output_path, device_config=device_config).run()
+            _scrivi_rapporto(report_dir, data, motore="manual")
 
         else:
             io.log_info ('Extracting faces...')
@@ -828,7 +875,11 @@ def main(detector=None,
                                          output_debug_path if output_debug else None,
                                          max_faces_from_image=max_faces_from_image,
                                          final_output_path=output_path,
+                                         rilevatore=detector if detector != 'manual' else None,
+                                         allineatore=landmarker,
+                                         min_face_size=min_face_size,
                                          device_config=device_config).run()
+            _scrivi_rapporto(report_dir, data, motore=f"{detector}+{landmarker}")
 
         faces_detected += sum([d.faces_detected for d in data])
 
@@ -838,8 +889,21 @@ def main(detector=None,
             else:
                 fix_data = [ ExtractSubprocessor.Data(d.filepath) for d in data if d.faces_detected == 0 ]
                 io.log_info ('Performing manual fix for %d images...' % (len(fix_data)) )
-                fix_data = ExtractSubprocessor (fix_data, 'landmarks-manual', image_size, jpeg_quality, face_type, output_debug_path if output_debug else None, manual_window_size=manual_window_size, device_config=device_config).run()
+                # Le stesse tre chiavi della passata automatica qui sopra: i
+                # frame recuperati a
+                # mano finiscono nello STESSO aligned/ di quelli automatici,
+                # quindi devono passare per lo stesso allineatore. Con
+                # 3DFAN scelto nel dialogo, ometterle scriveva landmark
+                # 3DFAN nella prima passata e 2DFAN nella correzione --
+                # due convenzioni di inquadratura nella stessa cartella,
+                # invisibili fino al training.
+                fix_data = ExtractSubprocessor (fix_data, 'landmarks-manual', image_size, jpeg_quality, face_type, output_debug_path if output_debug else None, manual_window_size=manual_window_size,
+                                                rilevatore=detector if detector != 'manual' else None,
+                                                allineatore=landmarker,
+                                                min_face_size=min_face_size,
+                                                device_config=device_config).run()
                 fix_data = ExtractSubprocessor (fix_data, 'final', image_size, jpeg_quality, face_type, output_debug_path if output_debug else None, final_output_path=output_path, device_config=device_config).run()
+                _scrivi_rapporto(report_dir, fix_data, motore="manual")
                 faces_detected += sum([d.faces_detected for d in fix_data])
 
 

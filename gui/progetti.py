@@ -178,6 +178,59 @@ def scrivi_progetto(progetto):
     os.replace(temporaneo, destinazione)
 
 
+def risposte_ricordate(cartella, nome_passo):
+    """Le risposte che questo progetto ricorda per `nome_passo`, o `{}`.
+
+    Le chiavi su disco sono inglesi (`memory`), l'attributo del dataclass e'
+    italiano (`memoria`): chi cerca `memoria` dentro project.json non trova
+    niente. Vive qui e non nella finestra perche' i posti da cui si apre un
+    form sono due -- il menu principale e la pagina di estrazione -- e due
+    copie di questa lettura potrebbero ricordare da chiavi diverse.
+
+    `memoria["answers"]` e' scritto solo da `ricorda_risposte`, ma il file
+    puo' arrivare qui scritto a mano o da un processo ucciso a meta': se
+    "answers" non e' un dizionario (es. una stringa), chiamarci .get() sopra
+    solleva AttributeError invece di tornare {} -- un livello piu' sotto di
+    dove guardava il vecchio isinstance. Controllato qui, non solo sul
+    risultato finale.
+    """
+    progetto = leggi_progetto(cartella)
+    if progetto is None:
+        return {}
+    risposte_per_passo = progetto.memoria.get("answers")
+    if not isinstance(risposte_per_passo, dict):
+        return {}
+    ricordate = risposte_per_passo.get(nome_passo)
+    return ricordate if isinstance(ricordate, dict) else {}
+
+
+def ricorda_risposte(cartella, nome_passo, risposte, extra=None):
+    """Fonde `risposte` in cio' che il progetto ricorda per `nome_passo`.
+
+    Fusa e non sostituita: `risposte` e' solo cio' che QUESTO avvio ha
+    toccato -- correttamente vuoto quando l'utente non ha cambiato nulla --
+    e un'assegnazione cancellerebbe un campo alla volta quanto un avvio
+    precedente aveva fatto ricordare, fino ad azzerare tutto nel giro di
+    pochi avvii «senza tocchi». Il prezzo: un valore ricordato non si
+    dimentica piu' da solo, e per tornare al default del catalogo va
+    reimpostato a mano. E' il compromesso giusto -- una memoria che si
+    cancella da sola e' peggio di una che non dimentica.
+
+    `extra` finisce in `memoria` accanto alle risposte (il menu principale
+    ci mette `last_step` e `last_model_name`), cosi' la scrittura del file
+    resta una sola. Torna False se la cartella non e' un progetto.
+    """
+    progetto = leggi_progetto(cartella)
+    if progetto is None:
+        return False
+    progetto.memoria.setdefault("answers", {}).setdefault(nome_passo, {}).update(risposte)
+    if extra:
+        progetto.memoria.update(extra)
+    progetto.usato = adesso()
+    scrivi_progetto(progetto)
+    return True
+
+
 def _nome_esce_dalla_radice(nome):
     """Vero se `nome` non e' il nome di una sottocartella diretta della radice.
 

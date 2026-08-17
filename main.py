@@ -40,6 +40,8 @@ if __name__ == "__main__":
         osex.set_process_lowest_prio()
         from mainscripts import Extractor
         Extractor.main( detector                = arguments.detector,
+                        landmarker              = arguments.landmarker,
+                        min_face_size           = arguments.min_face_size,
                         input_path              = Path(arguments.input_dir),
                         output_path             = Path(arguments.output_dir),
                         output_debug            = arguments.output_debug,
@@ -52,10 +54,23 @@ if __name__ == "__main__":
                         jpeg_quality            = arguments.jpeg_quality,
                         cpu_only                = arguments.cpu_only,
                         force_gpu_idxs          = [ int(x) for x in arguments.force_gpu_idxs.split(',') ] if arguments.force_gpu_idxs is not None else None,
+                        report_dir              = Path(arguments.report_dir) if arguments.report_dir is not None else None,
                       )
 
+    # import qui e non in cima al file: nn.initialize_main_env() deve
+    # girare prima di ogni altra cosa, e MotoriCatalog e' dati puri quindi
+    # importarlo qui non costa nulla.
+    from mainscripts import MotoriCatalog
+
     p = subparsers.add_parser( "extract", help="Extract the faces from a pictures.")
-    p.add_argument('--detector', dest="detector", choices=['s3fd','manual'], default=None, help="Type of detector.")
+    p.add_argument('--detector', dest="detector",
+                   choices=MotoriCatalog.CHIAVI_RILEVATORI + ('manual',),
+                   default=None, help="Type of detector.")
+    p.add_argument('--landmarker', dest="landmarker",
+                   choices=MotoriCatalog.CHIAVI_ALLINEATORI,
+                   default=None, help="Landmark model. Asked interactively when omitted.")
+    p.add_argument('--min-face-size', type=int, dest="min_face_size", default=None,
+                   help=f"Discard detections whose shorter side is below this, in pixels of the source frame. Asked interactively when omitted, with {MotoriCatalog.LATO_MIN_PREDEFINITO} as the default.")
     p.add_argument('--input-dir', required=True, action=fixPathAction, dest="input_dir", help="Input directory. A directory containing the files you wish to process.")
     p.add_argument('--output-dir', required=True, action=fixPathAction, dest="output_dir", help="Output directory. This is where the extracted files will be stored.")
     p.add_argument('--output-debug', action="store_true", dest="output_debug", default=None, help="Writes debug images to <output-dir>_debug\\ directory.")
@@ -69,6 +84,12 @@ if __name__ == "__main__":
     p.add_argument('--manual-window-size', type=int, dest="manual_window_size", default=1368, help="Manual fix window size. Default: 1368.")
     p.add_argument('--cpu-only', action="store_true", dest="cpu_only", default=False, help="Extract on CPU..")
     p.add_argument('--force-gpu-idxs', dest="force_gpu_idxs", default=None, help="Force to choose GPU indexes separated by comma.")
+    # Assente per default, e con il default il comportamento non cambia di
+    # un byte (report_dir=None e' gia' il default di Extractor.main): il
+    # canale per cui gui/estrazione/pagina.py legge il rapporto per frame
+    # (frames.ndjson, mainscripts/ExtractReport.py) che l'estrazione scrive
+    # gia' mentre gira, ma che senza questo flag nessuno chiedeva mai.
+    p.add_argument('--report-dir', action=fixPathAction, dest="report_dir", default=None, help="Where the per-frame report (frames.ndjson) is written, for the GUI's extraction page. Nothing is written when omitted.")
 
     p.set_defaults (func=process_extract)
 
@@ -324,6 +345,31 @@ if __name__ == "__main__":
         from mainscripts import FacesetDetail
         FacesetDetail.main ( Path(arguments.workdir) )
     p.set_defaults(func=process_faceset_detail)
+
+
+    extracttool_parser = subparsers.add_parser( "extracttool", help="Extraction tools.").add_subparsers()
+
+    p = extracttool_parser.add_parser ("index", help="Rebuild the per-frame report for an already extracted folder.")
+    p.add_argument('--input-dir', required=True, action=fixPathAction, dest="input_dir", help="Input directory of frames.")
+    p.add_argument('--aligned-dir', required=True, action=fixPathAction, dest="aligned_dir", help="Directory of aligned faces already extracted.")
+    p.add_argument('--cache-dir', required=True, action=fixPathAction, dest="cache_dir", help="Where the per-frame report is written.")
+
+    def process_extract_index(arguments):
+        osex.set_process_lowest_prio()
+        from mainscripts import ExtractIndex
+        ExtractIndex.ricostruisci ( Path(arguments.input_dir),
+                                    Path(arguments.aligned_dir),
+                                    Path(arguments.cache_dir) )
+    p.set_defaults(func=process_extract_index)
+
+    p = extracttool_parser.add_parser ("manual", help="Serve one frame at a time to the graphical interface.")
+    p.add_argument('--workdir', required=True, action=fixPathAction, dest="workdir", help="Where the raster answers are written.")
+
+    def process_extract_manual(arguments):
+        osex.set_process_lowest_prio()
+        from mainscripts import ExtractManual
+        ExtractManual.main ( Path(arguments.workdir) )
+    p.set_defaults(func=process_extract_manual)
 
     def process_dev_test(arguments):
         osex.set_process_lowest_prio()

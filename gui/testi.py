@@ -17,6 +17,7 @@ from gui.workspace import STATE_BLOCKED, STATE_DONE, STATE_READY
 WINDOW_TITLE = "DeepFaceLab"
 TAB_STEPS = "Steps"
 TAB_FACESET = "Faceset curation"
+TAB_ESTRAZIONE = "Extraction"
 CONSOLE_DOCK = "Console"
 STAGE_TIP = "Show this stage's steps in the list on the left."
 
@@ -736,3 +737,41 @@ def faceset_one_job_at_a_time(nome_passo):
 
 FACESET_DETAIL_TITLE = "Face detail"
 FACESET_DETAIL_NO_DFL = "This file carries no DFL data: landmarks and mask are unavailable."
+
+
+# -- la pagina di estrazione -------------------------------------------------
+ESTRAZIONE_AVVIA = "Start"
+ESTRAZIONE_AVVIA_TIP = "Run the selected automatic operation as a job, with a dialog for its parameters."
+ESTRAZIONE_MANUALE = "Manual session"
+ESTRAZIONE_MANUALE_ESCI = "Exit manual session"
+ESTRAZIONE_MANUALE_TIP = ("Start (or stop) the native manual extractor: draw the "
+                          "face rectangle on the canvas above instead of the old "
+                          "cv2 window.")
+ESTRAZIONE_MANUALE_OCCUPA = "A manual session is running on this dataset. Exit it first."
+ESTRAZIONE_RIESTRAI = "Re-extract selection"
+ESTRAZIONE_RIESTRAI_TIP = ("Clear the debug image of the selected frames and "
+                           "re-run manual extraction for them only.")
+ESTRAZIONE_ANNULLA_RIESTRAI = "Undo"
+ESTRAZIONE_ANNULLA_RIESTRAI_TIP = "Put the debug images of the last re-extract selection back where they were."
+ESTRAZIONE_INDICIZZA = "Rebuild report"
+ESTRAZIONE_INDICIZZA_TIP = ("For a folder extracted before this page existed: rebuilds "
+                            "the per-frame report from the aligned faces already on "
+                            "disk, without re-running detection.")
+
+
+def estrazione_stato(totale_frame):
+    if totale_frame == 0:
+        return "No frames in this folder yet."
+    return "%d frame(s)." % totale_frame
+
+
+def estrazione_volto_salvato(nome_file):
+    return "Saved %s." % nome_file
+
+
+def estrazione_motore_tooltip(motore):
+    """Il motore che ha prodotto il frame, come tooltip della miniatura in
+    pellicola -- 'unknown' e non un motore dedotto quando il campo manca
+    (voci vecchie, o ricostruite da 'extracttool index', che non lo
+    portano)."""
+    return "Engine: %s" % (motore if motore else "unknown")
