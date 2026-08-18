@@ -1,8 +1,17 @@
 """La tela interattiva dell'estrazione manuale.
 
-Possiede il trascinamento: il vettore non attraversa nessun processo,
-quindi non c'e' latenza da nascondere. Il calcolo dei landmark e la
-scrittura stanno dall'altra parte, nel servizio (gui/estrazione/servizio.py).
+Il modello vero: un rettangolo che si POSIZIONA, si BLOCCA e si AFFINA.
+Da sbloccato insegue il mouse (`_ricentra`), un click sinistro lo blocca; da
+bloccato le frecce lo spostano di un pixel (`muovi`) e `+`/`-` lo
+ridimensionano tenendo il centro (`ridimensiona`) -- il blocco ferma il
+MOUSE, non il rettangolo, ed e' il passo prima dell'affinamento con le
+frecce. Il calcolo dei landmark e la scrittura stanno dall'altra parte, nel
+servizio (gui/estrazione/servizio.py).
+
+**Il vettore e' un RIPIEGO**, per il frame su cui il rilevatore non aggancia
+per niente: resta raggiungibile dal comando `vettore` (`V`), che era il
+click destro della finestra `cv2` che questa tela sostituisce. Non
+attraversa nessun processo, quindi non c'e' latenza da nascondere.
 
 **Due spazi di coordinate, e confonderli e' un difetto silenzioso.** Il
 frame arriva a risoluzione nativa (1920x1080 e' il caso normale) e la tela
@@ -31,6 +40,10 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 from gui import numeri
 
 RAGGIO_PUNTO = 2
+LATO_PREDEFINITO = 200     # il 100 di rect_size in Extractor.py e' un
+                           # SEMI-lato: qui il lato intero e' il doppio.
+LATO_MINIMO = 10
+FRAZIONE_RIDIMENSIONA = 0.05
 
 
 def _coppie_utilizzabili(punti):
@@ -53,18 +66,28 @@ def _coppie_utilizzabili(punti):
     return fuori
 
 
-def _rect_utilizzabile(rect):
-    """(l, t, r, b) in coordinate del frame, o None."""
+def _rects_utilizzabili(rect):
+    """Zero, uno o piu' rettangoli (l, t, r, b) in coordinate del frame.
+
+    Accetta una tupla sola -- come la passa la sessione manuale -- o una
+    lista di tuple, che e' cio' che il rapporto porta per un frame con piu'
+    volti. Un rettangolo illeggibile si salta senza portarsi via gli altri:
+    ne basta uno storto in una voce scritta a meta' da uno Stop.
+    """
     if not rect:
-        return None
-    try:
-        l, t, r, b = rect
-    except (TypeError, ValueError):
-        return None
-    for v in (l, t, r, b):
-        if not (numeri.numero_finito(v) and numeri.intero_qt_utilizzabile(v)):
-            return None
-    return float(l), float(t), float(r), float(b)
+        return []
+    candidati = rect if isinstance(rect, (list, tuple)) and rect and \
+        isinstance(rect[0], (list, tuple)) else [rect]
+    fuori = []
+    for uno in candidati:
+        try:
+            l, t, r, b = uno
+        except (TypeError, ValueError):
+            continue
+        if all(numeri.numero_finito(v) and numeri.intero_qt_utilizzabile(v)
+               for v in (l, t, r, b)):
+            fuori.append((float(l), float(t), float(r), float(b)))
+    return fuori
 
 
 def _punto_qt(x, y):
@@ -85,25 +108,166 @@ def _punto_qt(x, y):
 
 class Tela(QtWidgets.QWidget):
     vettore_tracciato = QtCore.pyqtSignal(object, object)
-    confermato = QtCore.pyqtSignal()
+    rettangolo_cambiato = QtCore.pyqtSignal(object)
+    blocco_cambiato = QtCore.pyqtSignal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFocusPolicy(QtCore.Qt.StrongFocus)
         self.setMouseTracking(True)
         self._pixmap = None
-        self._rect = None
+        self._rects = []
         self._punti = []
         self._centro = None
         self._punta = None
+        self._bloccato = False
+        self._modo_vettore = False
+        self._sessione_manuale = False
 
     def mostra(self, pixmap, rect, landmarks):
         """`rect` e `landmarks` sono in coordinate del FRAME, come li
-        produce il servizio: la scala la applica il disegno."""
+        produce il servizio: la scala la applica il disegno.
+
+        `rect` e' una tupla (l, t, r, b) sola -- come la manda la sessione
+        manuale -- o una lista di tuple, cio' che porta il rapporto per un
+        frame con piu' volti."""
         self._pixmap = pixmap
-        self._rect = _rect_utilizzabile(rect)
+        self._rects = _rects_utilizzabili(rect)
         self._punti = _coppie_utilizzabili(landmarks)
         self.update()
+
+    # -- il rettangolo della sessione manuale -------------------------------
+
+    def imposta_rettangolo(self, rect):
+        """Il setter di chi sta fuori: NON emette rettangolo_cambiato (vedi
+        il docstring del modulo, la nota sull'anello)."""
+        self._rects = _rects_utilizzabili(rect)
+        self.update()
+
+    def rettangolo(self):
+        return self._rects[0] if len(self._rects) == 1 else None
+
+    def imposta_landmarks(self, punti):
+        self._punti = _coppie_utilizzabili(punti)
+        self.update()
+
+    def blocca(self, acceso):
+        acceso = bool(acceso)
+        if acceso == self._bloccato:
+            return
+        self._bloccato = acceso
+        self.blocco_cambiato.emit(acceso)
+
+    def bloccato(self):
+        return self._bloccato
+
+    def imposta_modo_vettore(self, acceso):
+        self._modo_vettore = bool(acceso)
+        # Uscire dal modo vettore a meta' trascinamento non deve lasciare la
+        # linea appesa nel paintEvent -- ed entrarci con un centro stantio
+        # da una sessione precedente sarebbe lo stesso difetto al contrario.
+        self._centro = None
+        self._punta = None
+        self.update()
+
+    def modo_vettore(self):
+        return self._modo_vettore
+
+    def imposta_sessione_manuale(self, acceso):
+        """Fuori dalla sessione manuale (in revisione, o mentre il servizio
+        non e' avviato) la tela e' una superficie di sola lettura: senza
+        questo flag, il solo passaggio del mouse -- setMouseTracking(True)
+        consegna mouseMoveEvent senza nessun click -- ricentrerebbe o
+        creerebbe un rettangolo sopra gli N rettangoli di `mostra`, che la
+        revisione deve poter solo guardare."""
+        self._sessione_manuale = bool(acceso)
+
+    def sessione_manuale(self):
+        return self._sessione_manuale
+
+    def passo_ridimensiona(self):
+        """Proporzionale al lato, come il `diff` di Extractor.py: un passo
+        fisso e' inutilmente fine su un volto grande e troppo grosso su uno
+        piccolo."""
+        r = self.rettangolo()
+        if r is None:
+            return float(LATO_PREDEFINITO) * FRAZIONE_RIDIMENSIONA
+        return max(1.0, (r[2] - r[0]) * FRAZIONE_RIDIMENSIONA)
+
+    def muovi(self, dx, dy):
+        if not self._bloccato:
+            return
+        r = self.rettangolo()
+        if r is None:
+            return
+        self._applica(self._dentro_al_frame((r[0] + dx, r[1] + dy,
+                                             r[2] + dx, r[3] + dy)))
+
+    def ridimensiona(self, delta):
+        r = self.rettangolo()
+        if r is None:
+            return
+        l, t, rr, b = r
+        cx, cy = (l + rr) / 2.0, (t + b) / 2.0
+        semi_x = max(LATO_MINIMO / 2.0, (rr - l) / 2.0 + delta)
+        semi_y = max(LATO_MINIMO / 2.0, (b - t) / 2.0 + delta)
+        self._applica(self._dentro_al_frame(
+            (cx - semi_x, cy - semi_y, cx + semi_x, cy + semi_y)))
+
+    def _applica(self, rect):
+        """L'unico altro scrittore di _rects oltre a mostra/imposta_rettangolo
+        -- deve passare dallo stesso validatore, altrimenti l'invariante
+        «tutto cio' che sta in _rects ha passato gui/numeri.py» non vale piu'
+        e rettangolo() consegnerebbe al chiamante (il servizio, poi
+        salva_volto) un valore che imposta_rettangolo avrebbe rifiutato."""
+        rects = _rects_utilizzabili(rect)
+        if not rects:
+            return
+        self._rects = rects
+        self.update()
+        self.rettangolo_cambiato.emit(rects[0])
+
+    def _dentro_al_frame(self, rect):
+        """Trasla il rettangolo dentro i limiti del pixmap conservandone la
+        misura -- deformarlo contro il bordo darebbe un ritaglio con
+        proporzioni diverse da tutti gli altri della sessione. Senza pixmap
+        non si ritaglia: non si inventa un limite. Se il rettangolo e' piu'
+        grande del frame lo si lascia com'e' invece di schiacciarlo -- un
+        ritaglio deformato e' peggio di uno che sborda, che salva_volto
+        gestisce gia' da sempre."""
+        if self._pixmap is None or self._pixmap.isNull():
+            return rect
+        l, t, r, b = rect
+        larghezza, altezza = r - l, b - t
+        limite_l, limite_a = float(self._pixmap.width()), float(self._pixmap.height())
+        if larghezza <= limite_l:
+            if l < 0.0:
+                l, r = 0.0, larghezza
+            elif r > limite_l:
+                l, r = limite_l - larghezza, limite_l
+        if altezza <= limite_a:
+            if t < 0.0:
+                t, b = 0.0, altezza
+            elif b > limite_a:
+                t, b = limite_a - altezza, limite_a
+        return (l, t, r, b)
+
+    def _ricentra(self, x, y):
+        """Da sbloccato: il rettangolo insegue il mouse mantenendo la
+        LARGHEZZA corrente come lato, o LATO_PREDEFINITO se non c'e' ancora
+        nessun rettangolo -- il caso del frame su cui il rilevatore non
+        aggancia, senza il quale non ci sarebbe modo di cominciare.
+
+        Usa un solo lato per entrambi gli assi DI PROPOSITO: il rettangolo
+        manuale e' sempre un quadrato, come il ritaglio di Extractor.py.
+        Un rettangolo non quadrato (arrivato da imposta_rettangolo, o da
+        una risposta del servizio) diventa quadrato al primo movimento del
+        mouse -- non e' un difetto, e' la stessa forma che avrebbe avuto se
+        tracciato qui da capo."""
+        r = self.rettangolo()
+        lato = (r[2] - r[0]) if r is not None else float(LATO_PREDEFINITO)
+        semi = lato / 2.0
+        self._applica(self._dentro_al_frame((x - semi, y - semi, x + semi, y + semi)))
 
     # -- la scala ----------------------------------------------------------
 
@@ -156,17 +320,39 @@ class Tela(QtWidgets.QWidget):
     # -- il mouse ----------------------------------------------------------
 
     def mousePressEvent(self, evento):
-        if evento.button() == QtCore.Qt.LeftButton:
+        if evento.button() != QtCore.Qt.LeftButton:
+            return
+        if self._modo_vettore:
             self._centro = evento.pos()
             self._punta = evento.pos()
             self.update()
+        else:
+            # Fuori dalla sessione manuale (in revisione) la tela e' di sola
+            # lettura: non c'e' un rettangolo singolo da bloccare, e la
+            # tela non puo' dedurlo da _rects -- glielo dice la pagina.
+            if not self._sessione_manuale:
+                return
+            self.blocca(not self._bloccato)
 
     def mouseMoveEvent(self, evento):
-        if self._centro is not None:
-            self._punta = evento.pos()
-            self.update()
+        if self._modo_vettore:
+            if self._centro is not None:
+                self._punta = evento.pos()
+                self.update()
+            return
+        # setMouseTracking(True) consegna questo evento senza nessun click:
+        # in revisione (sessione manuale spenta) deve restare un no-op, o il
+        # solo passaggio del mouse cancellerebbe gli N rettangoli del
+        # rapporto (_ricentra sostituisce _rects con uno solo).
+        if not self._sessione_manuale:
+            return
+        if self._bloccato:
+            return
+        self._ricentra(*self._al_frame(evento.pos().x(), evento.pos().y()))
 
     def mouseReleaseEvent(self, evento):
+        if not self._modo_vettore:
+            return
         if evento.button() == QtCore.Qt.LeftButton and self._centro is not None:
             centro = self._al_frame(self._centro.x(), self._centro.y())
             punta = self._al_frame(evento.pos().x(), evento.pos().y())
@@ -175,11 +361,25 @@ class Tela(QtWidgets.QWidget):
             self.update()
             self.vettore_tracciato.emit(centro, punta)
 
-    def keyPressEvent(self, evento):
-        if evento.key() in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter):
-            self.confermato.emit()
-        else:
-            super().keyPressEvent(evento)
+    def wheelEvent(self, evento):
+        # M1 della revisione finale: fuori dalla sessione manuale (in
+        # revisione) la tela e' di sola lettura, come mousePressEvent e
+        # mouseMoveEvent gia' impongono -- ma wheelEvent non consultava
+        # `_sessione_manuale` e ridimensionava comunque il rettangolo del
+        # rapporto sotto il mouse. Nessun dato si perde (rettangolo() non
+        # e' definito con N rettangoli mostrati), ma la sovrapposizione
+        # disegnata smette di corrispondere al rapporto. M2 gemello: da'
+        # finalmente un chiamante a `sessione_manuale()`, che non ne aveva
+        # nessuno.
+        if not self.sessione_manuale():
+            return
+        # y() == 0 e' uno scroll ORIZZONTALE (trackpad, o una rotella
+        # inclinabile): senza questa uscita cadrebbe nel ramo negativo e
+        # rimpicciolirebbe invece di restare inerte.
+        if evento.angleDelta().y() == 0:
+            return
+        segno = 1.0 if evento.angleDelta().y() > 0 else -1.0
+        self.ridimensiona(segno * self.passo_ridimensiona())
 
     # -- il disegno --------------------------------------------------------
 
@@ -198,13 +398,13 @@ class Tela(QtWidgets.QWidget):
                 max(1, int(self._pixmap.width() * fattore)),
                 max(1, int(self._pixmap.height() * fattore)))
             pittore.drawPixmap(destinazione, self._pixmap)
-        if self._rect is not None:
-            l, t, r, b = self._rect
-            alto_sinistra = _punto_qt(*self._al_widget(l, t))
-            basso_destra = _punto_qt(*self._al_widget(r, b))
-            if alto_sinistra is not None and basso_destra is not None:
-                pittore.setPen(QtGui.QPen(QtGui.QColor(90, 200, 250), 2))
-                pittore.drawRect(QtCore.QRect(alto_sinistra, basso_destra))
+        if self._rects:
+            pittore.setPen(QtGui.QPen(QtGui.QColor(90, 200, 250), 2))
+            for l, t, r, b in self._rects:
+                alto_sinistra = _punto_qt(*self._al_widget(l, t))
+                basso_destra = _punto_qt(*self._al_widget(r, b))
+                if alto_sinistra is not None and basso_destra is not None:
+                    pittore.drawRect(QtCore.QRect(alto_sinistra, basso_destra))
         if self._punti:
             pittore.setPen(QtGui.QPen(QtGui.QColor(250, 220, 90), 1))
             for x, y in self._punti:

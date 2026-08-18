@@ -24,18 +24,33 @@ def costruisci_rilevatore(chiave, place_model_on_cpu=False):
                          **motore.parametri)
 
 
-def costruisci_allineatore(chiave, face_type, place_model_on_cpu=False):
-    """`face_type` puo' ALZARE la scelta da 2D a 3D, mai abbassarla.
+def landmarks_3D_per(chiave, face_type):
+    """Vero se questa coppia (chiave, face_type) risolve in landmark 3D.
 
-    E' il comportamento storico di Extractor -- 'head' ha sempre usato i
+    `face_type` puo' ALZARE la scelta da 2D a 3D, mai abbassarla. E' il
+    comportamento storico di Extractor -- 'head' ha sempre usato i
     landmark 3D -- conservato come pavimento invece che come regola: la
     scelta esplicita di fan-3d vale su ogni face type, ma nessuna scelta
     riporta 'head' a 2D.
+
+    Unico posto dove questa regola vive: `costruisci_allineatore` la legge
+    per il parametro vero passato a `FANExtractor`, e chi ha bisogno di
+    una CHIAVE di cache per lo stesso allineatore (senza costruirlo)
+    -- oggi `mainscripts/ExtractManual.py::_allineatore` -- la legge da
+    qui invece di riscrivere la formula. Due copie della stessa soglia
+    sono innocue finche' coincidono, ma il giorno che una cambia sola la
+    chiave smette di corrispondere al comportamento reale: il servizio
+    tornerebbe l'allineatore sbagliato in silenzio, senza errore ne'
+    log -- la peggiore classe di difetto che questo modulo possa avere.
     """
+    motore = MotoriCatalog.allineatore(chiave)
+    return bool(motore.parametri.get("landmarks_3D")) or face_type >= FaceType.HEAD
+
+
+def costruisci_allineatore(chiave, face_type, place_model_on_cpu=False):
     motore = MotoriCatalog.allineatore(chiave)
     if motore.classe != "FANExtractor":
         raise KeyError(f"allineatore sconosciuto: {motore.classe}")
     parametri = dict(motore.parametri)
-    parametri["landmarks_3D"] = bool(parametri.get("landmarks_3D")) \
-        or face_type >= FaceType.HEAD
+    parametri["landmarks_3D"] = landmarks_3D_per(chiave, face_type)
     return FANExtractor(place_model_on_cpu=place_model_on_cpu, **parametri)

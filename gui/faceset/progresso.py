@@ -50,6 +50,46 @@ class PilaProgresso(QWidget):
         self._layout.setContentsMargins(0, 0, 0, 0)
         self._barre = {}   # id -> [QProgressBar, desc, chiusa]
         self._ordine = []
+        self._avvio = None
+
+    def mostra_avvio(self, desc):
+        """Una barra che PULSA (minimo e massimo a zero, il modo
+        indeterminato di Qt) fra il click e la prima riga del figlio.
+
+        Serve perche' quell'intervallo non e' breve: il figlio importa torch
+        e carica il modello, e sono 5-10 s in cui l'unico segnale era un
+        bottone che si spegneva. Non e' una barra del protocollo: non ha id,
+        non entra in `_barre` e non compare in `barre()`, cosi' nessun test
+        del canale la conta per sbaglio.
+        """
+        if self._avvio is not None:
+            return
+        barra = QProgressBar()
+        barra.setMinimum(0)
+        barra.setMaximum(0)
+        barra.setFormat(testi.progress_bar_format(str(desc or "")))
+        self._layout.addWidget(barra)
+        self._avvio = barra
+
+    def avvio_visibile(self):
+        """M2 della revisione finale: fino a quel round questo predicato
+        non aveva ne' un chiamante di produzione ne' un docstring che lo
+        dichiarasse aiutante dei test (a differenza di
+        `TrasportoAsincrono.consegna_tutto`, che lo dice di se'). Ora ne
+        ha uno: `gui/estrazione/pagina.py::PaginaEstrazione._su_progresso`
+        lo legge PRIMA e DOPO `applica()` per accorgersi della transizione
+        dalla barra indeterminata alla prima barra vera (M5), senza
+        dipendere dalla geometria di un widget -- una trappola misurata
+        sotto la piattaforma offscreen. I test lo usano per la stessa
+        ragione."""
+        return self._avvio is not None
+
+    def _togli_avvio(self):
+        if self._avvio is None:
+            return
+        self._layout.removeWidget(self._avvio)
+        self._avvio.deleteLater()
+        self._avvio = None
 
     def applica(self, riga):
         if not isinstance(riga, dict):
@@ -63,6 +103,7 @@ class PilaProgresso(QWidget):
             self._chiudi(riga)
 
     def _apri(self, riga):
+        self._togli_avvio()
         ident = riga.get("id")
         if ident is None or ident in self._barre:
             return
@@ -115,6 +156,7 @@ class PilaProgresso(QWidget):
         return risultato
 
     def pulisci(self):
+        self._togli_avvio()
         for ident in self._ordine:
             barra = self._barre[ident][0]
             self._layout.removeWidget(barra)

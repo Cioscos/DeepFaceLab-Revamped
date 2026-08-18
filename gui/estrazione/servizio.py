@@ -28,17 +28,60 @@ def _punti_utilizzabili(punti):
     return fuori
 
 
+def _volti_utilizzabili(risposta):
+    """[(rect, landmarks), ...] dal campo "volti" di una risposta
+    "rileva", scartando ogni volto malformato invece di sollevare. La
+    versione sincrona (`rileva()`) e' stata rimossa: `_rileva` in
+    gui/estrazione/pagina.py passa sempre da
+    `rileva_quando_puoi`, e una funzione viva solo nei suoi test e' codice
+    dormiente -- questo filtro resta perche' `rileva_quando_puoi` lo usa
+    ancora."""
+    fuori = []
+    for volto in (risposta.get("volti") or []):
+        if not isinstance(volto, dict):
+            continue
+        r = volto.get("rect")
+        if not isinstance(r, list) or len(r) != 4:
+            continue
+        if not all(numeri.numero_finito(v) and numeri.intero_qt_utilizzabile(v)
+                   for v in r):
+            continue
+        lmrks = _punti_utilizzabili(volto.get("landmarks"))
+        if lmrks is None:
+            continue
+        fuori.append((r, lmrks))
+    return fuori
+
+
 class Servizio(object):
     def __init__(self, trasporto):
         self._trasporto = trasporto
-        self._prossimo_id = 0
+        # Il motivo dell'ultimo guasto, o None se l'ultima richiesta e'
+        # andata a buon fine. Serve a distinguere "nessun volto" (una
+        # risposta legittima con volti=[]) da un guasto vero (pesi
+        # mancanti, memoria esaurita): senza, i due casi tornano entrambi
+        # [] da `rileva` e un guasto sistemico sparirebbe dentro una
+        # sessione intera che sembra "nessun volto in ogni fotogramma" --
+        # proprio il caso peggiore, perche' "nessun volto" e' la normalita'
+        # di questa pagina (206 frame su 983 nel materiale dell'utente).
+        self.ultimo_errore = None
 
     def _invia(self, comando):
-        self._prossimo_id += 1
-        comando["id"] = self._prossimo_id
+        # M3 della revisione finale: un id proprio qui era vestigiale --
+        # TrasportoAsincrono.invia_ultimo fa una COPIA di `comando` e lo
+        # riscrive comunque col PROPRIO contatore prima di scriverlo sul
+        # canale (era gia' cosi' quando il trasporto passava da sincrono
+        # ad asincrono), quindi l'id assegnato qui non arrivava mai al
+        # figlio. Due contatori dove ne basta uno: quello vero e' del
+        # trasporto.
         risposta = self._trasporto.invia(comando)
-        if not isinstance(risposta, dict) or risposta.get("op") == "error":
+        if not isinstance(risposta, dict):
+            self.ultimo_errore = "risposta non valida dal servizio"
             return None
+        if risposta.get("op") == "error":
+            self.ultimo_errore = risposta.get("motivo")
+            return None
+        self.ultimo_errore = None
         return risposta
 
     def frame(self, path):
@@ -68,6 +111,42 @@ class Servizio(object):
         campi["op"] = "salva"
         risposta = self._invia(campi)
         return None if risposta is None else risposta.get("file")
+
+    def rileva_quando_puoi(self, path, rect, face_type, accurato, quando_pronto):
+        """I volti che il motore trova nel frame, o dentro `rect` se dato --
+        `rect=None` e' il rilevamento automatico all'apertura del frame (il
+        rilevatore cerca da solo), un `rect` esplicito e' il rettangolo che
+        l'utente sta muovendo: si salta il rilevatore e si passa
+        direttamente all'allineatore, che e' cio' che rende il gesto
+        fluido.
+
+        Non aspetta: passa da `invia_ultimo` del trasporto, non da `invia`
+        (bloccherebbe l'interfaccia a ogni pressione di freccia), e
+        consegna il risultato a `quando_pronto` quando (e se) arriva -- una
+        richiesta superata da una piu' recente non consegna mai niente
+        (TrasportoAsincrono, "l'ultimo vince").
+
+        La callback riceve sempre una lista, vuota sia per "nessun volto"
+        sia per un guasto (pesi mancanti, memoria esaurita): e' chiamata da
+        uno slot, e uno slot che solleva chiama qFatal come un paintEvent.
+        I due casi restano indistinguibili DA QUESTO VALORE DI RITORNO --
+        chi vuole saperlo legge `self.ultimo_errore` subito dopo essere
+        stato richiamato."""
+        comando = {"op": "rileva", "path": str(path),
+                  "rect": None if rect is None else [int(v) for v in rect],
+                  "face_type": str(face_type), "accurato": bool(accurato)}
+
+        def _su_risposta(risposta):
+            if not isinstance(risposta, dict) or risposta.get("op") == "error":
+                self.ultimo_errore = (risposta.get("motivo")
+                                      if isinstance(risposta, dict)
+                                      else "risposta non valida dal servizio")
+                quando_pronto([])
+                return
+            self.ultimo_errore = None
+            quando_pronto(_volti_utilizzabili(risposta))
+
+        self._trasporto.invia_ultimo(comando, _su_risposta)
 
     def ferma(self):
         self._trasporto.chiudi()

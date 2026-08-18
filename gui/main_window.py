@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 from PyQt5.QtCore import Qt, QUrl, QProcess, pyqtSignal
-from PyQt5.QtGui import QColor, QDesktopServices, QFontDatabase, QTextCursor
+from PyQt5.QtGui import QColor, QDesktopServices, QFontDatabase, QKeySequence, QTextCursor
 from PyQt5.QtWidgets import (
     QAction, QActionGroup, QApplication, QCheckBox, QDockWidget, QFileDialog, QFrame,
     QHBoxLayout, QInputDialog, QLabel, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
@@ -445,6 +445,7 @@ class MainWindow(QMainWindow):
         self.central_tabs = QTabWidget()
         self.central_tabs.setTabsClosable(True)
         self.central_tabs.tabCloseRequested.connect(self._on_central_tab_close_requested)
+        self.central_tabs.currentChanged.connect(self._su_scheda_cambiata)
         self.central_tabs.addTab(passi, testi.TAB_STEPS)
         # The "Steps" tab has no close button: it is the window itself.
         self.central_tabs.tabBar().setTabButton(0, QTabBar.RightSide, None)
@@ -692,6 +693,11 @@ class MainWindow(QMainWindow):
         self.toggle_console_action.triggered.connect(
             lambda: self.console_dock.setVisible(not self.console_dock.isVisible()))
         view_menu.addAction(self.toggle_console_action)
+        self.refresh_state_action = QAction(testi.MENU_REFRESH_STATE, self)
+        self.refresh_state_action.setShortcut(QKeySequence("F5"))
+        self.refresh_state_action.setToolTip(testi.MENU_REFRESH_STATE_TIP)
+        self.refresh_state_action.triggered.connect(self.rileggi_stato_dal_disco)
+        view_menu.addAction(self.refresh_state_action)
         self.running_jobs_menu = view_menu.addMenu(testi.MENU_RUNNING_JOBS)
         self._refresh_running_jobs_menu()
 
@@ -1181,6 +1187,26 @@ class MainWindow(QMainWindow):
         self.pipeline_bar.refresh()
         self._refresh_step_badges()
 
+    def rileggi_stato_dal_disco(self):
+        """Rilegge le cartelle del progetto e ridipinge fasi e badge.
+
+        Esiste perche' il ricalcolo NON e' continuo: costa due scansioni del
+        disco (vedi il commento in _on_any_job_finished_ora), quindi si paga
+        quando l'utente lo chiede. Il caso che lo rende necessario e' un
+        dataset cancellato fuori dall'app, che lascia un passo su "done" per
+        sempre. Passa da _esegui_protetta come ogni azione che tocca il
+        disco: uno slot Qt e' un vicolo cieco per un'eccezione.
+        """
+        self._esegui_protetta(self._rileggi_stato_ora)
+
+    def _rileggi_stato_ora(self):
+        self.pipeline_bar.refresh()
+        self._refresh_step_badges()
+        if self._pagina_estrazione is not None:
+            self._pagina_estrazione.apri(self.workspace, self._pagina_estrazione.lato())
+        if self._pagina_faceset is not None:
+            self._pagina_faceset.ricarica()
+
     def _launch_ebsynth(self):
         """Detached launch of the bundled EBSynth, mirroring the generated .bat step."""
         workdir = self._dfl_root.parent / "EbSynth"
@@ -1334,11 +1360,6 @@ class MainWindow(QMainWindow):
         indice = self.central_tabs.indexOf(self._pagina_faceset)
         if indice < 0:
             indice = self.central_tabs.addTab(self._pagina_faceset, testi.TAB_FACESET)
-            # Come "Steps": una scheda sola, sempre presente, che segue lo
-            # stato del progetto -- non un artefatto per job da poter
-            # scartare e ricostruire. Il bottone di chiusura non farebbe
-            # niente (non e' in self._panels), quindi non c'e'.
-            self.central_tabs.tabBar().setTabButton(indice, QTabBar.RightSide, None)
         self.central_tabs.setCurrentIndex(indice)
         return self._pagina_faceset
 
@@ -1358,9 +1379,28 @@ class MainWindow(QMainWindow):
         indice = self.central_tabs.indexOf(self._pagina_estrazione)
         if indice < 0:
             indice = self.central_tabs.addTab(self._pagina_estrazione, testi.TAB_ESTRAZIONE)
-            self.central_tabs.tabBar().setTabButton(indice, QTabBar.RightSide, None)
+            # I1/I2 della revisione finale: il gemello di
+            # `su_chiusura_scheda()` sotto -- rimette a "aperta" una pagina
+            # che era stata tolta dal QTabWidget (o la conferma tale alla
+            # prima costruzione), cosi' `_su_job_finito` puo' tornare a
+            # entrare da sola in sessione manuale su un job lanciato DOPO
+            # questa riapertura.
+            self._pagina_estrazione.su_apertura_scheda()
         self.central_tabs.setCurrentIndex(indice)
+        # Col focus sulla linguetta le scorciatoie della pagina non
+        # scattano (WidgetWithChildrenShortcut, misurato): darlo alla pagina
+        # e' cio' che le rende raggiungibili subito dopo il clic sulla scheda.
+        self._pagina_estrazione.setFocus()
         return self._pagina_estrazione
+
+    def _su_scheda_cambiata(self, indice):
+        """Stessa ragione del setFocus() sopra, per ogni altro modo di
+        arrivare a una scheda (click sulla linguetta, Ctrl+Tab, chiusura di
+        quella corrente): senza, le scorciatoie di ColonnaComandi restano
+        mute finche' qualcosa dentro la pagina non prende il focus da solo."""
+        widget = self.central_tabs.widget(indice)
+        if widget is not None:
+            widget.setFocus()
 
     # -- the training tabs ---------------------------------------------------
 
@@ -1434,6 +1474,33 @@ class MainWindow(QMainWindow):
         if index == 0:
             return      # "Steps" has no close button; a request by index is refused too
         widget = self.central_tabs.widget(index)
+        # Le due pagine non sono artefatti per job: restano vive nei loro
+        # attributi con la scheda chiusa, e riaprirle le rimostra invece di
+        # ricostruirle -- il progetto aperto, il lato scelto e il rapporto
+        # gia' letto sopravvivono. removeTab restituisce la proprieta' senza
+        # genitore, quindi si riparenta come fa close_panel -- setParent
+        # da solo la tiene viva e nascosta finche' non viene riaggiunta.
+        if widget is not None and widget in (self._pagina_faceset, self._pagina_estrazione):
+            # I1/I2 della revisione finale: removeTab()+setParent() qui
+            # sotto NON consegnano mai un closeEvent -- senza questa
+            # chiamata esplicita, PRIMA di toglierla dal QTabWidget, la
+            # pagina di estrazione restava viva a scheda chiusa: il
+            # PassoFittizio che la sua sessione manuale registra come
+            # occupante (chi_occupa()/try_start()) non veniva mai
+            # liberato, e un job che finiva DOPO la chiusura poteva
+            # entrare da solo in una sessione manuale che nessuno vedeva
+            # (S3FD+FAN caricati in VRAM per un'interfaccia invisibile).
+            # gui/faceset/pagina.py NON ha lo stesso buco e non riceve la
+            # stessa chiamata: il suo `_job_corrente` e' un Job VERO,
+            # tracciato da `job_manager.active_jobs()` -- chi_occupa() lo
+            # vede da li', non da un occupante che questa pagina deve
+            # registrare/liberare da sola -- e il suo `_su_job_finito` non
+            # entra mai da solo in nessuna modalita' nascosta.
+            if widget is self._pagina_estrazione:
+                widget.su_chiusura_scheda()
+            self.central_tabs.removeTab(index)
+            widget.setParent(self)
+            return
         for job, panel in self._panels.items():
             if panel is widget:
                 self.close_panel(job)
@@ -1677,8 +1744,12 @@ class MainWindow(QMainWindow):
         # `active_jobs()` sotto non lo vede affatto. Senza di lui la pagina puo'
         # restare aperta in modalita' manuale, la finestra chiudersi, e il
         # figlio sopravviverle -- un processo appeso resta un processo
-        # appeso anche se, a differenza del servizio di FacesetDetail,
-        # ExtractManual non carica alcun modello in VRAM (geometria pura).
+        # appeso, ed ExtractManual tiene S3FD e FAN vivi in VRAM
+        # esattamente come il servizio di FacesetDetail, con una differenza:
+        # questo ha anche un timeout d'inattivita'
+        # di cinque minuti come rete di sicurezza: chiudere qui subito
+        # resta comunque piu' pulito che aspettare la sua scadenza con la
+        # GPU occupata).
         # Idempotente e innocuo se richiamato piu' volte: closeEvent puo'
         # rientrare mentre aspetta che i job finiscano (event.ignore() sotto).
         if self._pagina_estrazione is not None:

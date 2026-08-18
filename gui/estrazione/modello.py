@@ -30,6 +30,36 @@ class ModelloFrame(QtCore.QAbstractListModel):
         self._ricalcola()
         self.endResetModel()
 
+    def aggiorna_voci(self, voci):
+        """Le voci arrivate mentre il job gira. Torna quante righe VISIBILI
+        ha toccato.
+
+        Nessun `beginResetModel`: un reset al secondo perderebbe selezione e
+        scorrimento. E l'insieme visibile NON si ricalcola -- una voce nuova
+        che entrerebbe nel filtro acceso resta fuori finche' l'utente non
+        tocca un filtro o il job non finisce. Il contatore del filtro sale
+        lo stesso (lo calcola la pagina da `_voci`, non da qui): si vede che
+        il lavoro procede senza che la lista si riordini sotto le mani.
+        """
+        per_nome = dict((v.get("nome"), v) for v in voci
+                        if isinstance(v, dict) and isinstance(v.get("nome"), str))
+        if not per_nome:
+            return 0
+        for i, (percorso, _voce) in enumerate(self._tutti):
+            nuova = per_nome.get(percorso.name)
+            if nuova is not None:
+                self._tutti[i] = (percorso, nuova)
+        toccate = 0
+        for riga, (percorso, _voce) in enumerate(self._visibili):
+            nuova = per_nome.get(percorso.name)
+            if nuova is None:
+                continue
+            self._visibili[riga] = (percorso, nuova)
+            indice = self.index(riga, 0)
+            self.dataChanged.emit(indice, indice)
+            toccate += 1
+        return toccate
+
     def applica_filtro(self, chiave):
         self.beginResetModel()
         self._filtro = chiave if chiave in _PREDICATI else "tutti"

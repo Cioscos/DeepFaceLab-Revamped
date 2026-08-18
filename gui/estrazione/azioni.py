@@ -44,9 +44,15 @@ OPERAZIONI = (
     Operazione("manuale", "Extract manually",
                "4) data_src faceset extract MANUAL",
                "5) data_dst faceset extract MANUAL"),
+    # Punta allo STESSO passo di "auto" invece di
+    # "+ manual fix" -- quel passo resta nel catalogo e resta lanciabile dal
+    # `.bat`, che apre davvero la finestra cv2, ma la GUI non lo usa piu':
+    # e' PaginaEstrazione._su_job_finito a entrare da sola nella sessione
+    # manuale nativa sui frame senza volto, a job finito, sostituendo la
+    # finestra esterna invece di aprirla.
     Operazione("auto-con-correzione", "Extract and fix the misses",
                None,
-               "5) data_dst faceset extract + manual fix"),
+               "5) data_dst faceset extract"),
     Operazione("riestrai-selezione", "Re-extract the selected frames",
                None,
                "5) data_dst faceset MANUAL RE-EXTRACT DELETED ALIGNED_DEBUG"),

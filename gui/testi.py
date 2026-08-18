@@ -44,6 +44,11 @@ TOGGLE_CONSOLE_TIP = "Show or hide the console dock."
 MISC_STEP_TIP = "Jump to this step in the Steps tab."
 RUNNING_JOB_TIP = "Switch to this running step."
 
+MENU_REFRESH_STATE = "Refresh state"
+MENU_REFRESH_STATE_TIP = ("Re-read the project folders from disk. Use it after "
+                          "changing files outside the app: step states are read "
+                          "when a job ends or the project changes, not continuously.")
+
 MENU_TEXT_SIZE = "Text size"
 TEXT_SIZE_LABELS = {"normal": "Normal", "large": "Large", "xlarge": "Extra large"}
 
@@ -769,9 +774,99 @@ def estrazione_volto_salvato(nome_file):
     return "Saved %s." % nome_file
 
 
+def estrazione_salvataggio_fallito(motivo):
+    """Senza un testo dedicato, un salvataggio
+    fallito (servizio riavviato, disco pieno, permessi) restava invisibile
+    -- `_su_confermato` avanzava comunque al frame successivo, e l'unico
+    posto che leggeva `Servizio.ultimo_errore` era il ramo `rileva`, mai
+    quello di `salva`."""
+    return "Save failed: %s" % motivo
+
+
+# Il ripiego quando _salva_corrente non
+# ha un `ultimo_errore` da mostrare -- "Save failed: None" e' un testo
+# peggiore di uno generico.
+ESTRAZIONE_MOTIVO_SALVATAGGIO_IGNOTO = "unknown reason"
+
+
+def estrazione_avvio_in_corso(nome_passo):
+    return "Starting %s…" % nome_passo
+
+
+def estrazione_job_in_corso(nome_passo):
+    """M5 della revisione finale: `estrazione_avvio_in_corso` resta vera
+    solo fra il click e la prima riga del figlio -- senza un testo
+    dedicato per DOPO, la riga di stato mente per tutta la durata del job
+    (quaranta minuti, su un'estrazione vera)."""
+    return "Running %s…" % nome_passo
+
+
+def estrazione_sessione_interrotta_dal_ricaricamento(totale_frame):
+    """M4 della revisione finale: F5 (e il cambio di progetto) chiudono
+    una sessione manuale aperta passando da `apri()` -> `ferma_servizio()`
+    senza chiedere -- resta cosi' apposta (un ricaricamento esplicito deve
+    poter uscire da ogni stato), ma l'utente merita di sapere perche'
+    l'interfaccia e' tornata alla revisione invece di scoprirlo da un
+    rettangolo sparito."""
+    return "Manual session closed by the reload. %s" % estrazione_stato(totale_frame)
+
+
+def estrazione_correzione_avviata(n_mancati):
+    """Senza questa riga, "Extract and
+    fix the misses" faceva cambiare interfaccia sotto le mani dell'utente
+    -- da estrazione automatica a sessione manuale -- senza dirlo, la
+    lamentela esatta da cui nasce questo ciclo. Consumata una volta sola da
+    `_aggiorna_stato_manuale` via `_nota_salvataggio`, come "Saved ..."."""
+    if n_mancati == 1:
+        return "Extraction done: 1 frame had no face. Fixing it here."
+    return "Extraction done: %d frames had no face. Fixing them here." % n_mancati
+
+
+def estrazione_frame_scelto(nome, n_volti):
+    if n_volti == 1:
+        return "%s · 1 face" % nome
+    return "%s · %d faces" % (nome, n_volti)
+
+
+ESTRAZIONE_NESSUN_VOLTO = "No face detected on this frame."
+ESTRAZIONE_VOLTO_TROVATO = "Face detected."
+
+
+def estrazione_servizio_guasto(motivo):
+    """Distingue un guasto vero (pesi mancanti, memoria esaurita) da
+    "nessun volto", che e' la normalita' di questa pagina -- senza questo
+    testo i due casi sembrerebbero identici (206 frame senza volti su 983
+    nel materiale dell'utente), e un guasto sistemico sparirebbe dentro una
+    sessione che sembra solo un video senza facce."""
+    return "Detection failed: %s" % motivo
+
+
+def estrazione_stato_manuale(nota_salvataggio, nome_frame, stato_rilevamento):
+    """La riga di stato della sessione manuale
+    (gui/estrazione/pagina.py::PaginaEstrazione._aggiorna_stato_manuale):
+    la nota di salvataggio, se c'e', precede il nome del fotogramma e lo
+    stato del rilevamento -- senza questa composizione un salvataggio
+    confermato spariva dallo schermo prima che l'utente potesse leggerlo,
+    cancellato dalla riscrittura dello sfogliamento successivo."""
+    pezzi = [p for p in (nota_salvataggio, nome_frame, stato_rilevamento) if p]
+    return " · ".join(pezzi)
+
+
 def estrazione_motore_tooltip(motore):
     """Il motore che ha prodotto il frame, come tooltip della miniatura in
     pellicola -- 'unknown' e non un motore dedotto quando il campo manca
     (voci vecchie, o ricostruite da 'extracttool index', che non lo
     portano)."""
     return "Engine: %s" % (motore if motore else "unknown")
+
+
+# -- la colonna dei comandi (gui/estrazione/comandi.py) ----------------------
+# `localization/localization.py::StringsDB['S_HOT_KEY']` esiste gia', ma e'
+# localizzata (en/ru/zh dal locale di sistema) mentre questo file dichiara in
+# testa di scrivere sempre in inglese, qualunque sia il sistema: usarla qui
+# romperebbe quell'invariante, quindi la parola resta una costante propria.
+HOT_KEY = "hot key"
+
+
+def estrazione_comando_tip(etichetta, tasto):
+    return "%s (%s: %s)" % (etichetta, HOT_KEY, tasto)
