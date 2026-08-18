@@ -40,6 +40,46 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 from gui import numeri
 
 RAGGIO_PUNTO = 2
+# Il pallino della mascella e' piu' grosso degli altri, come nel disegno
+# originale (`cv2.circle(..., 2)` per la mascella, `1` per tutto il resto).
+RAGGIO_MASCELLA = 2
+RAGGIO_LANDMARK = 1
+
+# La topologia dei 68 landmark, ricopiata da `landmarks_68_pt` e da
+# `draw_landmarks` in facelib/LandmarksProcessor.py. E' ricopiata e non
+# importata perche' `gui/` non importa mai `facelib`: il prezzo e' che le due
+# tabelle possono divergere, e il test che le confronta gruppo per gruppo e'
+# cio' che lo impedisce.
+#
+# Quattro spezzate APERTE e tre CHIUSE, esattamente come le due chiamate a
+# `cv2.polylines` dell'originale. Il naso e' l'unico caso speciale: e' aperto
+# ma l'ultimo segmento torna indietro al punto 30, la radice della canna
+# (nell'originale `np.concatenate((nose, [nose[-6]]))`), altrimenti la punta
+# resta appesa. Qui il ritorno e' un indice in piu' nella tabella invece che
+# un ramo nel codice.
+GRUPPI_68 = (
+    ("mascella",              tuple(range(0, 17)),          False),
+    ("sopracciglio-destro",   tuple(range(17, 22)),         False),
+    ("sopracciglio-sinistro", tuple(range(22, 27)),         False),
+    ("naso",                  tuple(range(27, 36)) + (30,), False),
+    ("occhio-destro",         tuple(range(36, 42)),         True),
+    ("occhio-sinistro",       tuple(range(42, 48)),         True),
+    ("bocca",                 tuple(range(48, 68)),         True),
+)
+
+
+def gruppi_landmark(punti):
+    """[(nome, punti_del_gruppo, chiusa), ...] in coordinate del FRAME.
+
+    Vuota per qualunque numero di punti diverso da 68: FAN puo' produrne 98,
+    e il rapporto per frame non porta landmark affatto. Collegare indici che
+    non significano quello disegnerebbe una faccia inventata -- meglio i soli
+    pallini, che restano veri qualunque sia il modello.
+    """
+    if len(punti) != 68:
+        return []
+    return [(nome, tuple(punti[i] for i in indici), chiusa)
+            for nome, indici, chiusa in GRUPPI_68]
 LATO_PREDEFINITO = 200     # il 100 di rect_size in Extractor.py e' un
                            # SEMI-lato: qui il lato intero e' il doppio.
 LATO_MINIMO = 10
@@ -383,6 +423,40 @@ class Tela(QtWidgets.QWidget):
 
     # -- il disegno --------------------------------------------------------
 
+    def _disegna_landmark(self, pittore):
+        """I landmark collegati, come li disegna DFL da sempre.
+
+        Un volto e' fatto di spezzate, non di una nuvola di puntini: senza i
+        collegamenti non si vede se la bocca e' chiusa o se un occhio e'
+        finito su una guancia, che e' proprio cio' che si guarda mentre si
+        corregge un fotogramma a mano.
+
+        Ogni segmento si salta se uno dei due estremi non e' utilizzabile
+        DOPO la scala, invece di saltare il gruppo intero: un fattore grande
+        puo' portare fuori scala un punto solo, e perdere l'intera mascella
+        per quello sarebbe peggio del buco. Qui si arriva da un paintEvent,
+        quindi non si solleva mai.
+        """
+        pittore.setPen(QtGui.QPen(QtGui.QColor(250, 220, 90), 1))
+        for _nome, punti, chiusa in gruppi_landmark(self._punti):
+            qpunti = [_punto_qt(*self._al_widget(x, y)) for x, y in punti]
+            coppie = list(zip(qpunti, qpunti[1:]))
+            if chiusa and len(qpunti) > 2:
+                coppie.append((qpunti[-1], qpunti[0]))
+            for uno, altro in coppie:
+                if uno is not None and altro is not None:
+                    pittore.drawLine(uno, altro)
+        # I pallini restano, e sono l'unica cosa disegnata quando i punti non
+        # sono 68 -- vedi gruppi_landmark, che li' torna vuota.
+        mascella = set(GRUPPI_68[0][1]) if len(self._punti) == 68 else set()
+        for indice, (x, y) in enumerate(self._punti):
+            punto = _punto_qt(*self._al_widget(x, y))
+            if punto is None:
+                continue
+            raggio = (RAGGIO_MASCELLA if indice in mascella
+                      else RAGGIO_LANDMARK if mascella else RAGGIO_PUNTO)
+            pittore.drawEllipse(punto, raggio, raggio)
+
     def paintEvent(self, _evento):
         pittore = QtGui.QPainter(self)
         pittore.fillRect(self.rect(), self.palette().window())
@@ -406,11 +480,7 @@ class Tela(QtWidgets.QWidget):
                 if alto_sinistra is not None and basso_destra is not None:
                     pittore.drawRect(QtCore.QRect(alto_sinistra, basso_destra))
         if self._punti:
-            pittore.setPen(QtGui.QPen(QtGui.QColor(250, 220, 90), 1))
-            for x, y in self._punti:
-                punto = _punto_qt(*self._al_widget(x, y))
-                if punto is not None:
-                    pittore.drawEllipse(punto, RAGGIO_PUNTO, RAGGIO_PUNTO)
+            self._disegna_landmark(pittore)
         if self._centro is not None and self._punta is not None:
             # Gia' in coordinate del widget: nascono dal mouse e muoiono al
             # rilascio, non passano mai dal frame.
