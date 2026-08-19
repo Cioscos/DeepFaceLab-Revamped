@@ -122,7 +122,13 @@ rem "--dest", "B"]).dest == Path("B").
 "%UV_INSTALL_DIR%\uv.exe" run --python 3.11 --no-project "%SETUP%\__main__.py" --dest "%ROOT%" %*
 if errorlevel 1 goto :fail
 
+rem Anche il successo si ferma: install.bat si lancia con un doppio clic,
+rem e senza pausa la finestra spariva portandosi via il riepilogo finale
+rem di step_verify -- proprio l'elenco che dice quali asset sono a terra.
+rem Il ramo :fail qui sotto la pausa ce l'aveva gia': il successo era il
+rem solo esito che l'utente non poteva leggere.
 endlocal
+pause
 exit /b 0
 
 :fail
