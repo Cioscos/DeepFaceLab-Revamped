@@ -21,3 +21,6 @@ Thumbs.db
 # darebbe due sorgenti di verita'.
 scripts/win/
 scripts/linux/
+
+# Zip di avvio costruito da zip_installer.py: rigenerabile, non versionato
+_zip/

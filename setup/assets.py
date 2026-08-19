@@ -53,29 +53,31 @@ DEFAULT_MANIFEST = Path(__file__).resolve().parent / "manifest.toml"
 
 
 def manifest_for(paths) -> Path:
-    """Il manifest che comanda: quello del clone sincronizzato, se c'e'.
+    """Il manifest che comanda: quello di `paths.repo`, se c'e'.
 
-    `DEFAULT_MANIFEST` sta accanto a QUESTO file, e questo file puo' essere
-    la copia esterna: install.bat/install.sh preferiscono il `setup/`
-    accanto a se' e ripiegano sul clone solo quando manca. Quella copia
-    esterna nessuno la aggiorna mai -- e' l'archivio che l'utente ha scaricato
-    una volta -- mentre `step_sync_repo` porta `_internal/DeepFaceLab`
-    all'ultimo commit a ogni corsa. Leggere il manifest da li' significa
-    installare un codice nuovo con l'elenco di asset vecchio: osservato su
-    un'installazione vera, dove il codice offriva due motori di estrazione
-    che il manifest non sapeva scaricare, e la sessione manuale moriva su
-    "Unable to load RetinaFaceR50.npy".
+    `DEFAULT_MANIFEST` sta accanto a QUESTO file, e questo file puo' non
+    essere quello che `step_codice` ha appena scaricato. Nessuno aggiorna
+    mai una copia di `setup/` che stia altrove, mentre `step_codice` porta
+    `_internal/DeepFaceLab` all'ultima pubblicazione a ogni corsa: leggere
+    il manifest da fuori significa installare un codice nuovo con l'elenco
+    di asset vecchio -- osservato su un'installazione vera, dove il codice
+    offriva due motori di estrazione che il manifest non sapeva scaricare, e
+    la sessione manuale moriva su "Unable to load RetinaFaceR50.npy".
 
-    Il ripiego su `DEFAULT_MANIFEST` non e' una cortesia: alla PRIMA corsa
-    il clone non esiste ancora -- lo crea `step_sync_repo`, che gira dopo
-    `step_preflight` -- ed e' proprio la corsa che deve scaricare tutto.
+    Oggi i due bootstrap non cercano piu' un `setup/` accanto a se': un
+    posto solo, `_internal/DeepFaceLab/setup`. Il ripiego su
+    `DEFAULT_MANIFEST` resta raggiungibile per due strade, ed e' necessario
+    in entrambe: alla PRIMA corsa `paths.repo` non esiste ancora -- lo crea
+    `step_codice`, che gira dopo `step_preflight` -- ed e' proprio la corsa
+    che deve scaricare tutto; e chi lancia `setup/__main__.py` a mano da una
+    copia qualsiasi non ha nessun'altra tabella da leggere.
 
-    Nessun controllo sul contenuto: se il clone ha un `setup/manifest.toml`
-    e' il suo, per definizione, e `load_manifest` lo valida come qualunque
-    altro.
+    Nessun controllo sul contenuto: se `paths.repo` ha un
+    `setup/manifest.toml` e' il suo, per definizione, e `load_manifest` lo
+    valida come qualunque altro.
     """
-    del_clone = paths.repo / "setup" / "manifest.toml"
-    return del_clone if del_clone.exists() else DEFAULT_MANIFEST
+    del_codice = paths.repo / "setup" / "manifest.toml"
+    return del_codice if del_codice.exists() else DEFAULT_MANIFEST
 
 
 @dataclass(frozen=True)
@@ -341,8 +343,8 @@ def asset_is_complete(asset: Asset, paths: InstallPaths) -> bool:
     una volta, `ensure_asset` stesso quando decide se davvero (ri)scaricare.
 
     Non guarda `paths.root / asset.dest`: per un asset come `facelib`,
-    quella destinazione e' dentro l'albero del repo clonato e contiene gia'
-    file `.py` tracciati da git a prescindere dal fatto che i pesi `.npy`
+    quella destinazione e' dentro l'albero del codice e contiene gia' i
+    file `.py` che l'archivio porta, a prescindere dal fatto che i pesi `.npy`
     siano mai stati scaricati -- "la cartella non e' vuota" direbbe sempre
     "presente", anche a zero byte di asset scaricati. Vale allo stesso modo
     per tutte le voci del manifest, non solo per facelib: nessuna qui sotto

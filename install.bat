@@ -1,8 +1,9 @@
 @echo off
-rem Bootstrap dell'installer DeepFaceLab: procura uv, individua o clona il
-rem repo, cede il controllo a setup/__main__.py. Batch puro:
-rem nessun prerequisito oltre a curl.exe/tar.exe (Windows 10 1803+, Windows
-rem 11), con ricaduta su powershell se curl manca.
+rem Bootstrap dell'installer DeepFaceLab: procura uv, trova il codice gia'
+rem presente in _internal\DeepFaceLab o lo scarica ed estrae da li', cede il
+rem controllo a setup\__main__.py. Batch puro: nessun
+rem prerequisito oltre a curl.exe/tar.exe (Windows 10 1803+, Windows 11),
+rem con ricaduta su powershell se curl manca.
 setlocal
 set "ROOT=%~dp0"
 set "ROOT=%ROOT:~0,-1%"
@@ -34,36 +35,53 @@ rem '<dest>\_internal\uv\uv'"). DFL_UV_BIN dice a setup\__main__.py dove uv sta
 rem davvero, senza che Python debba indovinarlo da --dest.
 set "DFL_UV_BIN=%UV_INSTALL_DIR%\uv.exe"
 
-set "REPO_URL=https://github.com/Cioscos/DeepFaceLab-Revamped.git"
+rem L'archivio del ramo pubblicato: due megabyte e mezzo, gli stessi
+rem curl/tar che servono gia' per uv, e nessun sistema di controllo di
+rem versione da installare prima. Lo stesso indirizzo sta in
+rem setup\codice.py, che comanda da qui in avanti: qui serve solo per la
+rem primissima volta, quando setup\ non esiste ancora e non c'e' nessun
+rem Python da eseguire.
+set "URL_CODICE=https://codeload.github.com/Cioscos/DeepFaceLab-Revamped/tar.gz/refs/heads/main"
 
-rem Passo 1: dove sta setup\__main__.py. Due posizioni, in quest'ordine:
-rem accanto a install.bat (dentro un clone del repo) e dentro
-rem _internal\DeepFaceLab (installazione gia' presente, si sta rilanciando
-rem per aggiornare). Se nessuna delle due, e' il primo avvio: si clona.
-set "SETUP="
-if exist "%ROOT%\setup\__main__.py" set "SETUP=%ROOT%\setup"
-if not defined SETUP if exist "%ROOT%\_internal\DeepFaceLab\setup\__main__.py" set "SETUP=%ROOT%\_internal\DeepFaceLab\setup"
-if defined SETUP goto :have_setup
-
-echo [install] setup non trovato accanto a install.bat ne' in _internal\DeepFaceLab: clono %REPO_URL%
-where git >nul 2>nul
-if errorlevel 1 (
-    echo [install] git non trovato nel PATH: installalo da https://git-scm.com/downloads e rilancia install.bat
-    goto :fail
-)
-if not exist "%ROOT%\_internal" mkdir "%ROOT%\_internal"
-git clone --depth 1 "%REPO_URL%" "%ROOT%\_internal\DeepFaceLab"
-if errorlevel 1 (
-    echo [install] git clone fallito.
-    goto :fail
-)
+rem Passo 1: il codice. Un posto solo dove cercarlo, _internal\DeepFaceLab,
+rem e se non c'e' lo si scarica. Cercarlo anche accanto a questo script --
+rem come faceva prima -- significava installare con una copia di setup\ che
+rem nessuno aggiorna mai, mentre il codice eseguito e' sempre quello di
+rem _internal.
 set "SETUP=%ROOT%\_internal\DeepFaceLab\setup"
-rem setup\repo.py::sync_repo fa lo stesso controllo dopo ogni clone/pull, ma
-rem solo una volta che Python gira -- qui non gira ancora, quindi va
-rem ripetuto qui. Senza, un clone sul branch sbagliato (o corrotto)
-rem fallirebbe dentro "uv run" con un errore che non nomina la causa vera.
+if exist "%SETUP%\__main__.py" goto :have_setup
+
+echo [install] prima installazione: scarico il codice da %URL_CODICE%
+if not exist "%ROOT%\_internal\DeepFaceLab" mkdir "%ROOT%\_internal\DeepFaceLab"
+if not exist "%ROOT%\_internal\_e" mkdir "%ROOT%\_internal\_e"
+set "ARCHIVIO=%ROOT%\_internal\_e\codice-primo-avvio.tar.gz"
+where curl >nul 2>nul
+if errorlevel 1 goto :codice_via_powershell
+
+curl --fail -L -o "%ARCHIVIO%" "%URL_CODICE%"
+if errorlevel 1 (
+    echo [install] download del codice con curl fallito.
+    goto :fail
+)
+goto :codice_estrai
+
+:codice_via_powershell
+echo [install] curl.exe non trovato (Windows anteriore al 1803?): ricado su powershell Invoke-WebRequest.
+powershell -Command "Invoke-WebRequest -Uri '%URL_CODICE%' -OutFile '%ARCHIVIO%'"
+if errorlevel 1 (
+    echo [install] download del codice con powershell fallito.
+    goto :fail
+)
+
+:codice_estrai
+tar -xf "%ARCHIVIO%" -C "%ROOT%\_internal\DeepFaceLab" --strip-components=1
+if errorlevel 1 (
+    echo [install] estrazione del codice fallita.
+    goto :fail
+)
+del "%ARCHIVIO%" >nul 2>nul
 if not exist "%SETUP%\__main__.py" (
-    echo [install] il clone in %ROOT%\_internal\DeepFaceLab non contiene setup\__main__.py: il branch di default di questo repository potrebbe non includere ancora l'installer, oppure il clone e' corrotto o parziale. Verifica quale branch contiene setup\, requirements\ e scripts\commands.toml, clonalo a mano con "git clone -b <branch> %REPO_URL%", e rilancia install.bat da dentro quel clone.
+    echo [install] l'archivio scaricato da %URL_CODICE% non contiene setup\__main__.py: e' incompleto, oppure il trasferimento si e' interrotto. Riprova; se il problema resta, scarica quell'indirizzo a mano e verifica cosa contiene.
     goto :fail
 )
 
@@ -80,7 +98,7 @@ set "UV_ZIP=%UV_INSTALL_DIR%\_download.zip"
 where curl >nul 2>nul
 if errorlevel 1 goto :uv_via_powershell
 
-curl -L -o "%UV_ZIP%" "https://github.com/astral-sh/uv/releases/download/0.12.1/uv-x86_64-pc-windows-msvc.zip"
+curl --fail -L -o "%UV_ZIP%" "https://github.com/astral-sh/uv/releases/download/0.12.1/uv-x86_64-pc-windows-msvc.zip"
 if errorlevel 1 (
     echo [install] download di uv con curl fallito.
     goto :fail

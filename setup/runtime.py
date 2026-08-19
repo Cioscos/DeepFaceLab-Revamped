@@ -1,9 +1,10 @@
 """L'ambiente Python: venv e dipendenze, entrambi via ``uv``.
 
 ``uv`` si invoca sempre tramite un ``runner`` iniettabile (stesso motivo di
-``setup/preflight.py`` e ``setup/repo.py``): i comandi che scaricano gigabyte
-da PyPI/pytorch.org non vanno eseguiti in un unit test, si cattura solo cio'
-che verrebbe lanciato.
+``setup/preflight.py`` per ``nvidia-smi`` e di ``setup/codice.py`` per il
+download del codice, che pero' inietta un ``opener`` invece di un
+``runner``): i comandi che scaricano gigabyte da PyPI/pytorch.org non vanno
+eseguiti in un unit test, si cattura solo cio' che verrebbe lanciato.
 
 ``install_requirements`` fa **due** chiamate separate a ``uv pip install``,
 mai una sola con entrambi i file (misura riportata nel commento in testa a

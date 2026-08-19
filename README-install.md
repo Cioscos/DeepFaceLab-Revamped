@@ -13,8 +13,6 @@ and the numbered scripts for your operating system.
   [If your driver is too old](#if-your-nvidia-driver-is-too-old) below.
 - **At least 15 GB free** on the target disk. This is checked before anything
   is downloaded.
-- **`git`** on the PATH, on both systems: the installer uses it to clone and
-  update the code.
 - Windows: **`curl.exe` / `tar.exe`**, included since Windows 10 1803 (if they
   are missing, the bootstrap falls back to `powershell -Command
   Invoke-WebRequest`). Linux: **`curl` / `tar`**, present on every common
@@ -26,34 +24,38 @@ the CUDA runtime bundled in the wheel.
 
 ## Installing
 
-```bat
-:: Windows (Command Prompt or PowerShell)
-git clone https://github.com/Cioscos/DeepFaceLab-Revamped.git DeepFaceLab
-cd DeepFaceLab
-install.bat
-```
+1. Download
+   [`DeepFaceLab-installer.zip`](https://github.com/Cioscos/DeepFaceLab-Revamped/releases/download/installer/DeepFaceLab-installer.zip).
+2. Extract it into an **empty** folder, wherever you want DeepFaceLab to live
+   (you need ~15 GB free: everything gets created in there).
+3. Windows: double-click `install.bat`. Linux: run `./install.sh` from a
+   terminal.
 
-```bash
-# Linux / WSL
-git clone https://github.com/Cioscos/DeepFaceLab-Revamped.git DeepFaceLab
-cd DeepFaceLab
-./install.sh
-```
+Windows will warn that the publisher can't be verified: `install.bat` is a
+plain text script and isn't signed. "More info" → "Run anyway".
 
-The installer asks exactly one question, unless a flag already answers it:
-whether to download `pretrain_faces` (1.8 GB, which speeds up the start of a
-new training run) now or later. Everything else it does on its own, and it
-finishes with a summary: where it installed, which torch build it chose (CUDA
-or CPU) and why, which assets are present, and the command to start with.
+You don't need `git`, you don't need Python, you don't need CUDA: the
+installer downloads the code itself, a standalone Python 3.11, torch with the
+CUDA runtime, the network weights and ffmpeg. It asks exactly one question,
+unless a flag already answers it: whether to download `pretrain_faces`
+(1.8 GB) now or later.
 
 ## Updating
 
 Re-running `install.bat` / `install.sh` **is** the update — there is no second
-script. Go to the folder you installed into (the one containing `install.bat`)
-and run it again. Every step is idempotent: it updates the code with `git pull
---ff-only` (and if you have local modifications in the clone, it tells you and
-leaves them alone), regenerates the scripts in `scripts/`, skips assets that
-are already downloaded and verified, and **never touches** `workspace/`.
+script. Every step is idempotent: it re-downloads the code archive (2.5 MB)
+and re-extracts it only if it changed, regenerates the scripts in `scripts/`,
+skips assets that are already downloaded and verified, and **never touches**
+`workspace/`.
+
+If `_internal/DeepFaceLab` is a `git` checkout, the installer leaves it alone
+and tells you so — and from then on **the code in there is no longer updated
+automatically**. That applies both to a checkout you put there on purpose and
+to the one left behind by the previous installation procedure, which cloned.
+To get automatic updates back: delete `_internal/DeepFaceLab` and run the
+installer again — it will download the code as an archive (2.5 MB). Nothing
+else has to be redone: Python, the virtual environment, the weights and
+`workspace/` stay where they are.
 
 ## Flags
 
@@ -79,7 +81,7 @@ are already downloaded and verified, and **never touches** `workspace/`.
 │  ├─ .venv/                       torch and dependencies
 │  ├─ _e/                          TMP, caches, install.log
 │  ├─ ffmpeg/, model_generic_xseg/, pretrain_faces/, EbSynth/
-│  └─ DeepFaceLab/                 the code, cloned or updated on every run
+│  └─ DeepFaceLab/                 the code, downloaded or re-extracted on every run
 └─ workspace/
    ├─ data_src/aligned/
    ├─ data_dst/aligned/
@@ -89,6 +91,22 @@ are already downloaded and verified, and **never touches** `workspace/`.
 `workspace/` is created empty and the installer never touches it again, on the
 first run or on any later one. Your extracted faces and your trained models
 live there.
+
+## If you installed the old way
+
+Anyone who installed by cloning the repository ends up with the code twice: at
+the top of the folder, and again in `_internal/DeepFaceLab`. Only the second
+copy runs. The first time you run the installer afterwards, it lists the
+extra files and asks whether to remove them; answer "no" once and it won't
+ask again. It only touches files that are identical to the copy that stays:
+`.git/` and anything you changed are left where they are.
+
+**The clean-up is offered even when `_internal/DeepFaceLab` is a `git`
+checkout** — which is exactly what the previous procedure left behind. The two
+are independent: the copy at the top goes either way, while the checkout in
+`_internal/DeepFaceLab` is **never touched**, and for as long as it stays a
+checkout the code in there no longer updates itself. To get automatic updates
+back, delete that folder and run the installer again, as above.
 
 ## Bringing a `workspace/` over from an old 7-Zip installation
 

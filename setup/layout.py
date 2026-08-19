@@ -1,13 +1,15 @@
 """La posa dell'installazione: script utente, scorciatoie, workspace/.
 
-Quattro funzioni, ciascuna idempotente per se stessa (rilanciare `install` e'
+Cinque funzioni, ciascuna idempotente per se stessa (rilanciare `install` e'
 l'aggiornamento):
 
+- `install_bootstrap` tiene allineato l'`install.bat`/`install.sh` della cartella
+  di installazione a quello del codice appena scaricato.
 - `place_scripts` rigenera i 55 .bat/.sh in `scripts/` da `commands.toml`,
   svuotando prima solo i file dell'estensione del sistema corrente (cosi' un
   passo tolto dal TOML sparisce davvero, invece di restare a meta' funzionante
   sul disco dell'utente).
-- `install_setenv` copia `setenv.bat`/`setenv.sh` dal repo clonato a
+- `install_setenv` copia `setenv.bat`/`setenv.sh` dal codice scaricato a
   `_internal/`, dove ogni script generato da `place_scripts` e ogni
   scorciatoia da `write_shortcuts` si aspetta di trovarlo (`gen_scripts.py`:
   `call "%~dp0..\\_internal\\setenv.bat"` / `source
@@ -33,6 +35,7 @@ l'aggiornamento):
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -72,24 +75,24 @@ def place_scripts(paths: InstallPaths, log) -> list[Path]:
     generato, non un posto dove depositare script propri.
 
     Eccezione: `setenv.bat`/`setenv.sh` non si toccano. Non sono territorio
-    generato ma file del repository (gen_scripts non li genera, commands.toml
-    non li nomina), e la procedura documentata installa dentro il clone del
-    repository stesso -- li' `paths.scripts_dir` E' la directory versionata
-    che li contiene, e cancellarli sporca il `git status` dell'utente con
-    ' D scripts/setenv.bat' senza spiegazione.
+    generato ma file del codice (gen_scripts non li genera, commands.toml
+    non li nomina). Chi ha installato dentro un albero gestito con git -- la
+    procedura precedente, o una scelta deliberata -- ha li' `paths.scripts_dir`
+    sulla directory versionata che li contiene, e cancellarli sporca il
+    `git status` dell'utente con ' D scripts/setenv.bat' senza spiegazione.
 
     La fonte e' sempre `paths.repo/scripts/commands.toml`, senza ricadute:
-    nel flusso wired (`setup/__main__.py`, `_STEPS`) `step_sync_repo` gira
-    sempre prima di `step_layout`, e `sync_repo`/`_check_installer_layout`
-    (setup/repo.py) garantiscono che questo file esista dopo ogni clone o
-    pull riuscito. Una ricaduta silenziosa su un'altra copia (es. quella
-    bundlata insieme a questo stesso `setup/`) genererebbe script da una
-    fonte diversa da quella appena clonata, senza dirlo -- esattamente il
-    modo in cui un utente si ritroverebbe script che non corrispondono al
-    codice che ha. Se il file manca, l'errore nomina il percorso esatto in
-    cui si e' cercato, cosi' la causa (un `sync_repo` mai girato, o girato
-    su un clone con modifiche locali che ha saltato il pull) e' ovvia subito
-    invece che tre passi dopo.
+    nel flusso wired (`setup/__main__.py`, `_STEPS`) `step_codice` gira
+    sempre prima di `step_layout`, e `sincronizza_codice` (setup/codice.py)
+    garantisce che questo file esista dopo ogni sincronizzazione riuscita.
+    Una ricaduta silenziosa su un'altra copia (es. quella bundlata insieme a
+    questo stesso `setup/`) genererebbe script da una fonte diversa da quella
+    appena scaricata, senza dirlo -- esattamente il modo in cui un utente si
+    ritroverebbe script che non corrispondono al codice che ha. Se il file
+    manca, l'errore nomina il percorso esatto in cui si e' cercato, cosi' la
+    causa (un `sincronizza_codice` mai girato, o girato su una cartella
+    gestita con git che quindi non tocca) e' ovvia subito invece che tre
+    passi dopo.
     """
     system = _system()
     suffix = ".bat" if system == "win" else ".sh"
@@ -102,11 +105,12 @@ def place_scripts(paths: InstallPaths, log) -> list[Path]:
     commands_toml = paths.repo / "scripts" / "commands.toml"
     if not commands_toml.is_file():
         raise RuntimeError(
-            f"commands.toml non trovato in {commands_toml}: step_sync_repo deve "
-            "clonare o aggiornare paths.repo prima che step_layout giri. "
-            "Verifica che 'install' abbia eseguito il passo 'repo' senza "
-            "errori, oppure che il clone non abbia modifiche locali che hanno "
-            "fatto saltare il pull (setup/repo.py::sync_repo)."
+            f"commands.toml non trovato in {commands_toml}: il passo 'codice' deve "
+            "portare paths.repo all'ultima pubblicazione prima che step_layout giri. "
+            "Verifica che 'install' abbia eseguito il passo 'codice' "
+            "senza errori, oppure che paths.repo non sia una cartella gestita con "
+            "git che il passo 'codice' ha lasciato intatta (setup/codice.py::"
+            "sincronizza_codice)."
         )
     commands = load_commands(commands_toml)
     written = generate(commands, paths.scripts_dir, system)
@@ -117,15 +121,15 @@ def place_scripts(paths: InstallPaths, log) -> list[Path]:
 
 
 def install_setenv(paths: InstallPaths, log) -> Path:
-    """Copia `scripts/setenv.bat` o `setenv.sh` dal repo clonato a
+    """Copia `scripts/setenv.bat` o `setenv.sh` dal codice scaricato a
     `_internal/`, del sistema corrente soltanto (stesso principio di
     `place_scripts`: un file dell'altro sistema accanto a quello buono non
     serve a nessuno).
 
     La fonte e' sempre `paths.repo/scripts/setenv.*`, mai un'altra copia
-    (stesso motivo di `place_scripts`, vedi il suo docstring): `step_sync_repo`
+    (stesso motivo di `place_scripts`, vedi il suo docstring): `step_codice`
     gira sempre prima di `step_layout` nel flusso wired, quindi il file esiste
-    dopo ogni clone o pull riusciti. Se manca, l'errore nomina il percorso
+    dopo ogni sincronizzazione riuscita. Se manca, l'errore nomina il percorso
     esatto invece di lasciare che ogni script generato fallisca dopo, con un
     "No such file or directory" che non dice perche'.
     """
@@ -134,9 +138,9 @@ def install_setenv(paths: InstallPaths, log) -> Path:
     src = paths.repo / "scripts" / name
     if not src.is_file():
         raise RuntimeError(
-            f"{src} non trovato: step_sync_repo deve clonare o aggiornare "
-            "paths.repo prima che step_layout giri. Verifica che "
-            "'install' abbia eseguito il passo 'repo' senza errori."
+            f"{src} non trovato: il passo 'codice' deve portare paths.repo "
+            "all'ultima pubblicazione prima che step_layout giri. "
+            "Verifica che 'install' abbia eseguito il passo 'codice' senza errori."
         )
     dest = paths.internal / name
     dest.write_bytes(src.read_bytes())
@@ -145,6 +149,67 @@ def install_setenv(paths: InstallPaths, log) -> Path:
 
     if log is not None:
         log.info("copiato %s in %s", name, dest)
+    return dest
+
+
+def install_bootstrap(paths: InstallPaths, log) -> Path | None:
+    """Tiene allineato l'`install.bat`/`install.sh` della cartella di
+    installazione a quello del codice appena scaricato.
+
+    Serve perche' quel file e' l'unica cosa che l'utente rilancia per
+    aggiornare: se resta indietro, resta indietro l'indirizzo da cui scarica.
+
+    La sostituzione passa da un temporaneo e da `os.replace`, mai da una
+    scrittura sul posto: il file in questione e' proprio quello che si sta
+    eseguendo, e sia cmd.exe sia bash leggono uno script un pezzo alla volta.
+    Con un rename il processo in corso continua a leggere il file di prima,
+    che e' la semantica giusta. Se il sistema non consente nemmeno il rename
+    (Windows, se il file e' aperto senza condivisione della cancellazione),
+    non e' un errore fatale: si dice dove sta la copia nuova e si prosegue --
+    il resto dell'installazione non dipende da questo file.
+
+    Il temporaneo, in quel caso, si cancella. Lasciarlo in root voleva dire
+    lasciarci per sempre un `install.bat.nuovo` che nessuno propone mai di
+    togliere (la bonifica guarda solo cio' che ha omonimo nel codice) e che
+    contraddice la promessa «in root ci sono solo queste cose». La copia da
+    cui ricopiare c'e' gia' ed e' quella buona: `paths.repo/install.bat`,
+    che e' proprio da dove questa funzione l'ha presa.
+    """
+    nome = "install.bat" if _system() == "win" else "install.sh"
+    src = paths.repo / nome
+    if not src.is_file():
+        raise RuntimeError(
+            f"{src} non trovato: il passo 'codice' deve aver portato il codice "
+            "in paths.repo prima che questo passo giri."
+        )
+
+    nuovo = src.read_bytes()
+    dest = paths.root / nome
+    if dest.is_file() and dest.read_bytes() == nuovo:
+        return None
+
+    temporaneo = dest.with_name(dest.name + ".nuovo")
+    temporaneo.write_bytes(nuovo)
+    if _system() != "win":
+        temporaneo.chmod(0o755)
+    try:
+        os.replace(temporaneo, dest)
+    except PermissionError:
+        # La pulizia del file temporaneo non può interrompere l'installazione.
+        try:
+            temporaneo.unlink(missing_ok=True)
+        except Exception:
+            pass
+        if log is not None:
+            log.warning(
+                "non ho potuto sostituire %s mentre e' in esecuzione: la "
+                "versione nuova e' in %s, copiala tu sopra la vecchia quando "
+                "vuoi.", dest, src,
+            )
+        return None
+
+    if log is not None:
+        log.info("aggiornato %s", dest)
     return dest
 
 

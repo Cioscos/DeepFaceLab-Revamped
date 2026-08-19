@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Bootstrap dell'installer DeepFaceLab: procura uv, individua o clona il
-# repo, cede il controllo a setup/__main__.py. Nessun
-# prerequisito oltre a curl/tar, gia' presenti su ogni distribuzione comune.
+# Bootstrap dell'installer DeepFaceLab: procura uv, trova il codice gia'
+# presente in _internal/DeepFaceLab o lo scarica ed estrae da li', cede il
+# controllo a setup/__main__.py. Nessun prerequisito oltre a
+# curl/tar, gia' presenti su ogni distribuzione comune.
 set -eu
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -33,8 +34,6 @@ export UV_MANAGED_PYTHON=1
 # davvero, senza che Python debba indovinarlo da --dest.
 export DFL_UV_BIN="$UV_INSTALL_DIR/uv"
 
-REPO_URL="https://github.com/Cioscos/DeepFaceLab-Revamped.git"
-
 # Passo 1: OS e architettura supportati, PRIMA di scaricare qualunque cosa.
 # uv, il CPython standalone e le wheel di PyTorch scaricate piu' avanti sono
 # tutte x86_64: su un'altra architettura (ARM64/aarch64 e' il caso reale --
@@ -57,33 +56,27 @@ case "$MACHINE" in
         ;;
 esac
 
-# Passo 2: dove sta setup/__main__.py. Due posizioni, in quest'ordine:
-# accanto a install.sh (dentro un clone del repo) e dentro
-# _internal/DeepFaceLab (installazione gia' presente, si sta rilanciando per
-# aggiornare). Se nessuna delle due, e' il primo avvio: si clona.
-SETUP=""
-if [ -f "$ROOT/setup/__main__.py" ]; then
-    SETUP="$ROOT/setup"
-elif [ -f "$ROOT/_internal/DeepFaceLab/setup/__main__.py" ]; then
-    SETUP="$ROOT/_internal/DeepFaceLab/setup"
-fi
+# L'archivio del ramo pubblicato: due megabyte e mezzo, gli stessi curl/tar
+# che servono gia' per uv, e nessun sistema di controllo di versione da
+# installare prima. Lo stesso indirizzo sta in setup/codice.py, che comanda
+# da qui in avanti: qui serve solo per la primissima volta, quando setup/
+# non esiste ancora e non c'e' nessun Python da eseguire.
+URL_CODICE="https://codeload.github.com/Cioscos/DeepFaceLab-Revamped/tar.gz/refs/heads/main"
 
-if [ -z "$SETUP" ]; then
-    echo "[install] setup non trovato accanto a install.sh ne' in _internal/DeepFaceLab: clono $REPO_URL"
-    if ! command -v git >/dev/null 2>&1; then
-        echo "[install] git non trovato nel PATH: installalo con il gestore pacchetti della tua distribuzione (es. 'sudo apt install git' su Debian/Ubuntu, 'sudo dnf install git' su Fedora) e rilancia install.sh"
-        exit 1
-    fi
-    mkdir -p "$ROOT/_internal"
-    git clone --depth 1 "$REPO_URL" "$ROOT/_internal/DeepFaceLab"
-    SETUP="$ROOT/_internal/DeepFaceLab/setup"
-    # setup/repo.py::sync_repo fa lo stesso controllo dopo ogni clone/pull,
-    # ma solo una volta che Python gira -- qui non gira ancora, quindi il
-    # controllo va ripetuto in bash. Senza, un clone sul branch sbagliato (o
-    # corrotto) fallirebbe dentro "uv run" con un errore che non nomina la
-    # causa vera.
+# Passo 2: il codice. Un posto solo dove cercarlo, _internal/DeepFaceLab, e
+# se non c'e' lo si scarica. Cercarlo anche accanto a questo script -- come
+# faceva prima -- significava installare con una copia di setup/ che nessuno
+# aggiorna mai, mentre il codice eseguito e' sempre quello di _internal.
+SETUP="$ROOT/_internal/DeepFaceLab/setup"
+if [ ! -f "$SETUP/__main__.py" ]; then
+    echo "[install] prima installazione: scarico il codice da $URL_CODICE"
+    mkdir -p "$ROOT/_internal/DeepFaceLab" "$ROOT/_internal/_e"
+    ARCHIVIO="$ROOT/_internal/_e/codice-primo-avvio.tar.gz"
+    curl -LsSf -o "$ARCHIVIO" "$URL_CODICE"
+    tar -xzf "$ARCHIVIO" -C "$ROOT/_internal/DeepFaceLab" --strip-components=1
+    rm -f "$ARCHIVIO"
     if [ ! -f "$SETUP/__main__.py" ]; then
-        echo "[install] il clone in $ROOT/_internal/DeepFaceLab non contiene setup/__main__.py: il branch di default di questo repository potrebbe non includere ancora l'installer, oppure il clone e' corrotto o parziale. Verifica quale branch contiene setup/, requirements/ e scripts/commands.toml, clonalo a mano con 'git clone -b <branch> $REPO_URL', e rilancia install.sh da dentro quel clone."
+        echo "[install] l'archivio scaricato da $URL_CODICE non contiene setup/__main__.py: e' incompleto, oppure il trasferimento si e' interrotto. Riprova; se il problema resta, scarica quell'indirizzo a mano e verifica cosa contiene."
         exit 1
     fi
 fi

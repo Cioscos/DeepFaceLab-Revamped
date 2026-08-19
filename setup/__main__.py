@@ -1,17 +1,19 @@
-"""CLI dell'installer: gli otto passi e la loro orchestrazione.
+"""CLI dell'installer: i nove passi e la loro orchestrazione.
 
 Ogni passo riceve InstallPaths, gli argomenti della CLI e il logger, e non sa
 nulla degli altri: e' questo modulo a deciderne l'ordine e a fermarsi al primo
 che fallisce. Ciascuno vive nel proprio modulo: step_preflight in
-setup/preflight.py, step_sync_repo/step_create_venv/step_install_requirements
-in setup/repo.py e setup/runtime.py, step_check_linux_gui_prereqs in
-setup/prerequisiti_linux.py, step_ensure_assets in setup/assets.py,
-step_layout in setup/layout.py. Fa eccezione step_verify, implementato qui
-direttamente: vedi il suo docstring. Chi aggiunge un passo tocca solo il corpo
-dei singoli step_*, non parse_args ne' main.
+setup/preflight.py, step_codice in setup/codice.py, step_bonifica_root in
+setup/bonifica.py, step_create_venv/step_install_requirements in
+setup/runtime.py, step_check_linux_gui_prereqs in setup/prerequisiti_linux.py,
+step_ensure_assets in setup/assets.py, step_layout in setup/layout.py. Fa
+eccezione step_verify, implementato qui direttamente: vedi il suo docstring.
+Chi aggiunge un passo tocca solo il corpo dei singoli step_*, non parse_args
+ne' main.
 
-Otto funzioni per sei compiti: i compiti sono sei, ma "runtime" copre tre
-funzioni separate (create_venv, install_requirements, gui_prereqs_linux).
+Nove funzioni per sei compiti: i compiti sono sei, ma "runtime" copre tre
+funzioni separate (create_venv, install_requirements, gui_prereqs_linux); a
+queste si aggiunge step_bonifica_root, che non corrisponde a nessuno dei sei.
 SPEC_TASKS sotto elenca i sei nomi e _STEPS deve coprirli tutti: e' cosi'
 che un passo sparito -- come "verify" e' sparito nella prima stesura di
 questo file -- si nota invece di passare inosservato.
@@ -37,8 +39,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from setup.assets import Asset, asset_is_complete, ensure_asset, load_manifest, manifest_for  # noqa: E402
+from setup.bonifica import step_bonifica_root  # noqa: E402
+from setup.codice import percorso_stato, sincronizza_codice  # noqa: E402
 from setup.commands import SHORTCUTS  # noqa: E402
-from setup.layout import create_workspace, install_setenv, place_scripts, write_shortcuts  # noqa: E402
+from setup.layout import create_workspace, install_bootstrap, install_setenv, place_scripts, write_shortcuts  # noqa: E402
 from setup.log import setup_logging  # noqa: E402
 from setup.paths import InstallPaths, resolve  # noqa: E402
 from setup.preflight import (  # noqa: E402
@@ -57,7 +61,6 @@ from setup.prerequisiti_linux import (  # noqa: E402
     librerie_mancanti,
     percorso_plugin_xcb,
 )
-from setup.repo import sync_repo  # noqa: E402
 from setup.runtime import create_venv, install_requirements  # noqa: E402
 
 
@@ -106,9 +109,9 @@ def step_preflight(paths: InstallPaths, args: argparse.Namespace, log) -> None:
         )
 
 
-def step_sync_repo(paths: InstallPaths, args: argparse.Namespace, log) -> None:
-    """Clona o aggiorna _internal/DeepFaceLab (setup/repo.py)."""
-    sync_repo(paths, log)
+def step_codice(paths: InstallPaths, args: argparse.Namespace, log) -> None:
+    """Porta _internal/DeepFaceLab all'ultima pubblicazione (setup/codice.py)."""
+    sincronizza_codice(paths, log)
 
 
 def step_create_venv(paths: InstallPaths, args: argparse.Namespace, log) -> None:
@@ -253,7 +256,7 @@ def step_ensure_assets(paths: InstallPaths, args: argparse.Namespace, log) -> No
     e verificato contro uno sha256 farlocco.
 
     L'elenco viene da `manifest_for(paths)`, non da `DEFAULT_MANIFEST`: il
-    manifest che comanda e' quello del clone appena sincronizzato -- `repo`
+    manifest che comanda e' quello appena sincronizzato -- `codice`
     e' il passo prima di `assets` in `_STEPS`, quindi qui e' gia' aggiornato
     -- e non quello della copia esterna, che nessuno aggiorna mai. Vedi
     `setup/assets.py::manifest_for` per il difetto che questo chiude.
@@ -277,10 +280,16 @@ def step_ensure_assets(paths: InstallPaths, args: argparse.Namespace, log) -> No
 def step_layout(paths: InstallPaths, args: argparse.Namespace, log) -> None:
     """Posa gli script utente, le scorciatoie e workspace/ (setup/layout.py).
 
+    install_bootstrap: tiene allineato l'install.bat/install.sh della cartella
+    di installazione a quello del codice appena scaricato -- il file che
+    l'utente rilancia per aggiornare. Va per primo perche' il sistema potrebbe
+    rifiutare la sostituzione se il file e' in esecuzione (non fatale, ma va
+    segnalato prima che gli altri pezzi procedano).
     install_setenv: senza, ogni script generato da place_scripts e
     ogni scorciatoia da write_shortcuts chiama un _internal/setenv.bat|sh che
     non esiste, e fallisce alla prima riga eseguibile.
     """
+    install_bootstrap(paths, log)
     install_setenv(paths, log)
     place_scripts(paths, log)
     write_shortcuts(paths, log)
@@ -293,8 +302,8 @@ def _asset_status_lines(paths: InstallPaths) -> list[str]:
     "Presente" e' deciso da `asset_is_complete` (setup/assets.py, stesso
     marcatore di estrazione che `_should_install_pretrain` usa per la
     domanda su pretrain_faces), non da "la cartella di destinazione non e'
-    vuota": per `facelib` quella cartella e' dentro l'albero del repo
-    clonato e contiene gia' sette file `.py` tracciati da git a prescindere
+    vuota": per `facelib` quella cartella e' dentro l'albero del codice e
+    contiene comunque i file `.py` che l'archivio porta, a prescindere
     dai pesi `.npy` -- un controllo sulla cartella direbbe sempre
     "presente", proprio sull'unico asset obbligatorio la cui assenza
     impedisce all'estrazione di funzionare del tutto. Nessun ricalcolo di
@@ -375,7 +384,7 @@ def step_verify(paths: InstallPaths, args: argparse.Namespace, log, runner=subpr
             f"(codice {main_help.returncode}): {main_help.stderr.strip()}\n"
             "Perche': l'ambiente Python appena costruito non riesce a "
             "importare l'applicazione. Cosa fare: controlla che i passi "
-            "'repo' e 'requirements' qui sopra siano andati a buon fine, poi "
+            "'codice' e 'requirements' qui sopra siano andati a buon fine, poi "
             "rilancia l'installer."
         )
 
@@ -393,20 +402,35 @@ def step_verify(paths: InstallPaths, args: argparse.Namespace, log, runner=subpr
     log.info("asset:")
     for line in _asset_status_lines(paths):
         log.info(line)
+    # Un clone mai estratto e' l'installazione fatta con la procedura
+    # precedente: il codice li' dentro non si aggiorna piu' da solo. Il passo
+    # 'codice' lo dice gia', ma dieci passi prima e in mezzo a tutto il
+    # resto; qui e' nel riepilogo che l'utente legge davvero.
+    if (paths.repo / ".git").exists() and not percorso_stato(paths).is_file():
+        log.info("")
+        log.info(
+            "attenzione: %s e' un clone git lasciato dalla procedura di "
+            "installazione precedente. Non viene toccato, ma quel codice non "
+            "si aggiorna piu' da solo: per tornare agli aggiornamenti "
+            "automatici cancella quella cartella e rilancia l'installazione.",
+            paths.repo,
+        )
     log.info("")
     log.info("Per cominciare: %s", paths.root / shortcut)
 
 
-# I sei compiti dell'installer. _STEPS sotto ha OTTO voci perche' "runtime"
-# e' diviso in tre funzioni, ma deve coprire esattamente questi sei nomi,
-# ciascuno almeno una volta.
-SPEC_TASKS = ("preflight", "repo", "runtime", "assets", "layout", "verify")
+# I sei compiti dell'installer. _STEPS sotto ha NOVE voci perche' "runtime"
+# e' diviso in tre funzioni e "bonifica" e' una voce aggiuntiva per rimuovere
+# la copia inerte, ma deve coprire esattamente questi sei nomi, ciascuno
+# almeno una volta: e' quello che un test verifica.
+SPEC_TASKS = ("preflight", "codice", "runtime", "assets", "layout", "verify")
 
 # Ordine di esecuzione: ogni voce e' (nome per il log e per --dry-run,
 # compito a cui corrisponde, funzione).
 _STEPS = (
     ("preflight", "preflight", step_preflight),
-    ("repo", "repo", step_sync_repo),
+    ("codice", "codice", step_codice),
+    ("bonifica", "layout", step_bonifica_root),
     ("venv", "runtime", step_create_venv),
     ("requirements", "runtime", step_install_requirements),
     ("gui_prereqs_linux", "runtime", step_check_linux_gui_prereqs),

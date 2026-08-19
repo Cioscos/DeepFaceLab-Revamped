@@ -68,16 +68,15 @@ work; `--force-gpu-idxs` selects which GPU to use.
   Linux) for CUDA training. Without one, the installer falls back to the CPU
   build of torch — everything still works, training is just much slower.
 - At least 15 GB of free disk space.
-- `git`, `curl` and `tar` on the PATH. Nothing else: Python, torch and the CUDA
-  runtime are all provisioned for you.
+- `curl` and `tar` on the PATH. Nothing else: Python, torch and the CUDA
+  runtime are all provisioned for you. `git` is not required.
 
 ## Install
 
-```bash
-git clone https://github.com/Cioscos/DeepFaceLab-Revamped.git DeepFaceLab
-cd DeepFaceLab
-./install.sh          # Windows: install.bat
-```
+1. Download
+   [`DeepFaceLab-installer.zip`](https://github.com/Cioscos/DeepFaceLab-Revamped/releases/download/installer/DeepFaceLab-installer.zip)
+   and extract it into an empty folder.
+2. Windows: double-click `install.bat`. Linux: `./install.sh` from a terminal.
 
 Re-running the same script is how you update. See
 [README-install.md](README-install.md) for flags, the resulting folder layout,
