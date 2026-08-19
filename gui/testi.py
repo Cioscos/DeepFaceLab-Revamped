@@ -856,6 +856,28 @@ def estrazione_servizio_guasto(motivo):
     return "Detection failed: %s" % motivo
 
 
+# Quante righe di stderr mostrare nel tooltip del guasto (righe piu' in
+# fondo all'anello, le piu' vicine all'errore): un traceback Python tipico
+# finisce in poche righe -- l'ultima e' il messaggio dell'eccezione -- e le
+# 200 dell'anello intero (TrasportoAsincrono._MAX_RIGHE_STDERR) sarebbero
+# un riquadro illeggibile quanto nessun tooltip affatto.
+_RIGHE_TOOLTIP_STDERR = 20
+
+
+def estrazione_servizio_guasto_tooltip(righe_stderr):
+    """Il dettaglio del guasto sotto al puntatore della stessa etichetta di
+    stato che gia' mostra `estrazione_servizio_guasto` in breve -- niente
+    finestra nuova: la console di MainWindow e' indicizzata per Job e il
+    servizio di estrazione non e' un Job.
+
+    Vuoto se non c'e' niente da mostrare, cosi' il tooltip sparisce invece
+    di restare un riquadro bianco."""
+    if not righe_stderr:
+        return ""
+    ultime = list(righe_stderr)[-_RIGHE_TOOLTIP_STDERR:]
+    return "Child process traceback:\n" + "\n".join(ultime)
+
+
 def estrazione_stato_manuale(nota_salvataggio, nome_frame, stato_rilevamento):
     """La riga di stato della sessione manuale
     (gui/estrazione/pagina.py::PaginaEstrazione._aggiorna_stato_manuale):
@@ -865,6 +887,20 @@ def estrazione_stato_manuale(nota_salvataggio, nome_frame, stato_rilevamento):
     cancellato dalla riscrittura dello sfogliamento successivo."""
     pezzi = [p for p in (nota_salvataggio, nome_frame, stato_rilevamento) if p]
     return " · ".join(pezzi)
+
+
+def estrazione_pesi_mancanti_tip(motore):
+    """Perche' una voce della tendina rilevatore/allineatore e' disabilitata:
+    almeno uno dei file di pesi di questo motore
+    (mainscripts.MotoriCatalog.Motore.pesi, una tupla -- "fan-2d" ne porta
+    due perche' il face type puo' alzarlo a 3DFAN.npy anche se scelto
+    "2DFAN") non e' sotto facelib/ su questa installazione -- una release
+    vecchia, o un download mai fatto. Concatenato all'aiuto normale del
+    motore, non lo sostituisce: l'utente deve leggere sia cosa fa il
+    motore sia perche' non puo' sceglierlo ora."""
+    elenco = ", ".join("facelib/%s" % nome for nome in motore.pesi)
+    return "%s\n\nUnavailable: weights not found (%s). Update or reinstall to download them." % (
+        motore.help, elenco)
 
 
 def estrazione_motore_tooltip(motore):

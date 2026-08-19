@@ -52,6 +52,32 @@ MAX_PART_BYTES = 700 * 1024 * 1024
 DEFAULT_MANIFEST = Path(__file__).resolve().parent / "manifest.toml"
 
 
+def manifest_for(paths) -> Path:
+    """Il manifest che comanda: quello del clone sincronizzato, se c'e'.
+
+    `DEFAULT_MANIFEST` sta accanto a QUESTO file, e questo file puo' essere
+    la copia esterna: install.bat/install.sh preferiscono il `setup/`
+    accanto a se' e ripiegano sul clone solo quando manca. Quella copia
+    esterna nessuno la aggiorna mai -- e' l'archivio che l'utente ha scaricato
+    una volta -- mentre `step_sync_repo` porta `_internal/DeepFaceLab`
+    all'ultimo commit a ogni corsa. Leggere il manifest da li' significa
+    installare un codice nuovo con l'elenco di asset vecchio: osservato su
+    un'installazione vera, dove il codice offriva due motori di estrazione
+    che il manifest non sapeva scaricare, e la sessione manuale moriva su
+    "Unable to load RetinaFaceR50.npy".
+
+    Il ripiego su `DEFAULT_MANIFEST` non e' una cortesia: alla PRIMA corsa
+    il clone non esiste ancora -- lo crea `step_sync_repo`, che gira dopo
+    `step_preflight` -- ed e' proprio la corsa che deve scaricare tutto.
+
+    Nessun controllo sul contenuto: se il clone ha un `setup/manifest.toml`
+    e' il suo, per definizione, e `load_manifest` lo valida come qualunque
+    altro.
+    """
+    del_clone = paths.repo / "setup" / "manifest.toml"
+    return del_clone if del_clone.exists() else DEFAULT_MANIFEST
+
+
 @dataclass(frozen=True)
 class AssetPart:
     """Un archivio scaricabile singolarmente: una parte di un asset."""

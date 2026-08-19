@@ -65,6 +65,30 @@ class Servizio(object):
         # proprio il caso peggiore, perche' "nessun volto" e' la normalita'
         # di questa pagina (206 frame su 983 nel materiale dell'utente).
         self.ultimo_errore = None
+        # Le ultime righe di stderr del figlio catturate AL MOMENTO del
+        # guasto che ha valorizzato `ultimo_errore` -- non un puntatore
+        # all'anello vivo del trasporto (quello non si svuota mai da solo,
+        # `TrasportoAsincrono._MAX_RIGHE_STDERR`), altrimenti una richiesta
+        # riuscita dopo un guasto lascerebbe il tooltip appiccicato a un
+        # traceback vecchio. Si azzera insieme a `ultimo_errore`.
+        self.ultimo_stderr = []
+
+    def _stderr_del_trasporto(self):
+        """Le righe di stderr del trasporto, o [] se il trasporto non le
+        espone. Chiamata dai due percorsi di guasto qui sotto, entrambi
+        raggiungibili da uno slot Qt (`rileva_quando_puoi` sempre,
+        `landmark`/`frame`/`salva` quando l'utente sta correggendo a mano):
+        un'eccezione in uno slot chiama qFatal e si porta via il processo
+        con dentro ogni training aperto, quindi questo non deve MAI
+        sollevare -- un trasporto finto nei test (o un canale futuro) che
+        non implementi `stderr_recente` deve degradare a lista vuota."""
+        ottieni = getattr(self._trasporto, "stderr_recente", None)
+        if ottieni is None:
+            return []
+        try:
+            return list(ottieni())
+        except AttributeError:
+            return []
 
     def _invia(self, comando):
         # M3 della revisione finale: un id proprio qui era vestigiale --
@@ -77,11 +101,14 @@ class Servizio(object):
         risposta = self._trasporto.invia(comando)
         if not isinstance(risposta, dict):
             self.ultimo_errore = "risposta non valida dal servizio"
+            self.ultimo_stderr = self._stderr_del_trasporto()
             return None
         if risposta.get("op") == "error":
             self.ultimo_errore = risposta.get("motivo")
+            self.ultimo_stderr = self._stderr_del_trasporto()
             return None
         self.ultimo_errore = None
+        self.ultimo_stderr = []
         return risposta
 
     def frame(self, path):
@@ -151,9 +178,11 @@ class Servizio(object):
                 self.ultimo_errore = (risposta.get("motivo")
                                       if isinstance(risposta, dict)
                                       else "risposta non valida dal servizio")
+                self.ultimo_stderr = self._stderr_del_trasporto()
                 quando_pronto([])
                 return
             self.ultimo_errore = None
+            self.ultimo_stderr = []
             quando_pronto(_volti_utilizzabili(risposta))
 
         self._trasporto.invia_ultimo(comando, _su_risposta)

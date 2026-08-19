@@ -22,3 +22,12 @@ def comando_servizio(workdir):
         raise RuntimeError("il servizio di estrazione non e' stato configurato")
     return _python, [str(_dfl_root / "main.py"), "extracttool", "manual",
                      "--workdir", str(workdir)]
+
+
+def dfl_root():
+    """La radice del repository su cui gira il figlio, o None se
+    `configura` non e' ancora stata chiamata. E' l'albero in cui il figlio
+    cerchera' i pesi -- gui/estrazione/pagina.py la legge per sapere quali
+    motori del catalogo trovano davvero il loro file sotto facelib/, senza
+    ricalcolare o duplicare il percorso."""
+    return _dfl_root

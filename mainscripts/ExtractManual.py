@@ -190,10 +190,17 @@ def _libera_tranne(chiave_rilevatore, voce_allineatore):
 
 
 def _motori(face_type, chiave_rilevatore=None, chiave_allineatore=None,
-            tieni_in_memoria=True):
+            tieni_in_memoria=True, serve_rilevatore=True):
     """(rilevatore, allineatore) per questo face type e queste chiavi,
     costruiti alla prima richiesta che li tocca -- vedi _rilevatore e
     _allineatore per il perche' sono due cache separate e non una.
+
+    `serve_rilevatore=False` torna `None` al posto del rilevatore e non lo
+    costruisce affatto: e' la richiesta che porta gia' il rettangolo e non
+    chiede il secondo passaggio, dove il rilevatore non verrebbe mai usato.
+    Costruirlo lo stesso significava che un motore non disponibile (pesi
+    assenti, VRAM esaurita) toglieva all'utente anche i landmark che
+    l'allineatore gli avrebbe dato da solo.
 
     Chiavi assenti = i default del registro: un comando `rileva` che non
     nomina i motori si comporta come prima di questa funzione.
@@ -221,7 +228,7 @@ def _motori(face_type, chiave_rilevatore=None, chiave_allineatore=None,
     tipo = FaceType.fromString(face_type)
     # Prima si costruisce, poi si libera: liberare per primo butterebbe via
     # un motore che la riga dopo potrebbe rimettere in piedi da capo.
-    rilevatore = _rilevatore(chiave_rilevatore)
+    rilevatore = _rilevatore(chiave_rilevatore) if serve_rilevatore else None
     allineatore = _allineatore(chiave_allineatore, tipo)
     if not tieni_in_memoria:
         _libera_tranne(chiave_rilevatore,
@@ -279,12 +286,15 @@ def _op_rileva(comando):
       ha mai avuto, e la ragione per cui la sessione manuale finiva sempre
       nel ripiego a template.
     - `rect` dato: e' il rettangolo che l'utente sta muovendo, e il
-      rilevatore si salta. Cercare da capo a ogni pressione di freccia
-      butterebbe via proprio il rettangolo che sta scegliendo.
+      rilevatore si salta -- non lo si chiama E non lo si costruisce.
+      Cercare da capo a ogni pressione di freccia butterebbe via proprio
+      il rettangolo che sta scegliendo.
 
     `accurato` passa il RILEVATORE all'allineatore come secondo passaggio,
     esattamente come `landmarks_accurate` in Extractor.py: e' il tasto `a`
-    della finestra `cv2`, piu' preciso e piu' lento.
+    della finestra `cv2`, piu' preciso e piu' lento. E' anche la ragione
+    per cui "salta il rilevatore" non si puo' scrivere come "mai col
+    rect": col secondo passaggio acceso quel motore serve davvero.
 
     Nessun volto NON e' un errore: 206 frame su 983 senza volto e' il caso
     normale di questa pagina.
@@ -301,12 +311,19 @@ def _op_rileva(comando):
     # sconosciuta invece solleva (MotoriCatalog.rilevatore) e `rispondi` la
     # trasforma in una risposta "error", perche' un ripiego silenzioso sul
     # default produrrebbe un faceset misto senza dirlo.
+    # `rect` e `accurato` si leggono PRIMA dei motori: sono cio' che decide
+    # se il rilevatore serve a questa richiesta. Costruirlo comunque -- come
+    # faceva la prima versione, che pure prometteva qui sopra di saltarlo --
+    # fa dipendere il rettangolo tracciato a mano da un motore che quella
+    # richiesta non tocca mai.
+    rect = comando.get("rect")
+    accurato = bool(comando.get("accurato"))
     rilevatore, allineatore = _motori(face_type,
                                       comando.get("rilevatore"),
                                       comando.get("allineatore"),
-                                      _tieni_in_memoria(comando))
+                                      _tieni_in_memoria(comando),
+                                      serve_rilevatore=rect is None or accurato)
 
-    rect = comando.get("rect")
     if rect is None:
         rects = [tuple(int(v) for v in r) for r in rilevatore.extract(immagine, is_bgr=True)]
     else:
@@ -314,7 +331,7 @@ def _op_rileva(comando):
     if not rects:
         return {"op": "rileva", "id": comando.get("id"), "volti": []}
 
-    secondo = rilevatore if comando.get("accurato") else None
+    secondo = rilevatore if accurato else None
     landmarks = allineatore.extract(immagine, rects, secondo, is_bgr=True)
     volti = []
     for r, lmrks in zip(rects, landmarks):

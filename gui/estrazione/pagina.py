@@ -18,6 +18,7 @@ from PyQt5.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QHBoxLayout,
                              QWidget)
 
 from gui import testi
+from gui.estrazione import avvio as avvio_mod
 from gui.estrazione import azioni as azioni_mod
 from gui.estrazione import indice as indice_mod
 from gui.estrazione import servizio as servizio_mod
@@ -91,6 +92,13 @@ CHIAVE_MEMORIA_RILEVATORE = "manual-detector"
 CHIAVE_MEMORIA_ALLINEATORE = "manual-landmarker"
 CHIAVE_MEMORIA_TIENI = "manual-keep-models-in-memory"
 
+# Il nome dell'attributo letto con getattr(...) da _su_volti -- non un
+# testo a schermo, ma tests_gui/test_testi_soltanto_da_un_posto.py non
+# distingue una stringa-chiave da un letterale visibile per sola
+# ispezione dell'AST; promuoverla a costante di modulo la fa uscire dalla
+# rete, la stessa uscita gia' usata da gui/faceset/pagina.py::CHIAVE_SORT.
+_ATTRIBUTO_ULTIMO_STDERR = "ultimo_stderr"
+
 
 def _radice_e_predefinita():
     """<pacchetto>/_internal/_e, calcolata dalla posizione di questo file
@@ -100,15 +108,46 @@ def _radice_e_predefinita():
     return Path(__file__).resolve().parent.parent.parent.parent / "_e"
 
 
-def _selettore_motori(motori, chiave_predefinita, aiuto):
+def _pesi_mancanti(dfl_root, motori):
+    """Le chiavi, fra `motori`, i cui pesi non sono sotto facelib/ in
+    questa installazione. `dfl_root` puo' essere None -- la pagina
+    costruita senza passare da avvio.configura(), come la maggior parte
+    dei test -- e in quel caso non sappiamo se i pesi ci sono: meglio non
+    disabilitare una scelta valida che disabilitarne una per un dato che
+    manca. Un `OSError` (permessi, percorso strano) e' trattato allo
+    stesso modo, per la stessa ragione: fallire chiuso qui spegnerebbe la
+    tendina invece di limitarsi a non saperlo.
+
+    Chiamata una sola volta, alla costruzione della pagina -- non e' un
+    controllo da ripetere a ogni ridisegno della barra."""
+    if dfl_root is None:
+        return frozenset()
+    try:
+        cartella = Path(dfl_root) / "facelib"
+        return frozenset(m.key for m in motori
+                         if not all((cartella / nome).exists() for nome in m.pesi))
+    except OSError:
+        return frozenset()
+
+
+def _selettore_motori(motori, chiave_predefinita, aiuto, mancanti=frozenset()):
     """Una tendina sul registro: mostra la `label`, porta la `key`, e
     l'aiuto per voce e' il `help` del registro come nei form del catalogo
-    (gui/forms.py::_build_choice). Nessuna stringa scritta qui."""
+    (gui/forms.py::_build_choice). Nessuna stringa scritta qui.
+
+    Una voce in `mancanti` resta nella tendina -- sparire senza spiegazione
+    sarebbe peggio -- ma disabilitata, con un aiuto che dice perche'
+    (`testi.estrazione_pesi_mancanti_tip`)."""
     selettore = QComboBox()
     selettore.setToolTip(aiuto)
+    modello = selettore.model()
     for i, motore in enumerate(motori):
         selettore.addItem(motore.label, motore.key)
-        selettore.setItemData(i, motore.help, Qt.ToolTipRole)
+        if motore.key in mancanti:
+            selettore.setItemData(i, testi.estrazione_pesi_mancanti_tip(motore), Qt.ToolTipRole)
+            modello.item(i).setEnabled(False)
+        else:
+            selettore.setItemData(i, motore.help, Qt.ToolTipRole)
     indice = selettore.findData(chiave_predefinita)
     selettore.setCurrentIndex(indice if indice >= 0 else 0)
     return selettore
@@ -268,14 +307,23 @@ class PaginaEstrazione(QWidget):
         # vengono da MotoriCatalog, che ne e' la sorgente unica -- qui non
         # si riscrive nessuna voce. La tendina mostra la `label` e porta la
         # `key`, come i campi del catalogo (gui/catalog/extraction.py).
+        # Letto una sola volta, qui alla costruzione: e' un accesso al
+        # filesystem, non un dato da ricontrollare a ogni ridisegno della
+        # barra. `avvio_mod.dfl_root()` e' la stessa radice da cui
+        # `TrasportoAsincrono` lancia il figlio -- l'albero in cui il
+        # figlio cerchera' davvero i pesi, non un'approssimazione.
+        self._pesi_mancanti_rilevatori = _pesi_mancanti(avvio_mod.dfl_root(), MotoriCatalog.RILEVATORI)
+        self._pesi_mancanti_allineatori = _pesi_mancanti(avvio_mod.dfl_root(), MotoriCatalog.ALLINEATORI)
         self.etichetta_rilevatore = QLabel(testi.ESTRAZIONE_RILEVATORE)
         self.selettore_rilevatore = _selettore_motori(MotoriCatalog.RILEVATORI,
                                                       MotoriCatalog.DEFAULT_RILEVATORE,
-                                                      testi.ESTRAZIONE_RILEVATORE_TIP)
+                                                      testi.ESTRAZIONE_RILEVATORE_TIP,
+                                                      self._pesi_mancanti_rilevatori)
         self.etichetta_allineatore = QLabel(testi.ESTRAZIONE_ALLINEATORE)
         self.selettore_allineatore = _selettore_motori(MotoriCatalog.ALLINEATORI,
                                                        MotoriCatalog.DEFAULT_ALLINEATORE,
-                                                       testi.ESTRAZIONE_ALLINEATORE_TIP)
+                                                       testi.ESTRAZIONE_ALLINEATORE_TIP,
+                                                       self._pesi_mancanti_allineatori)
         self.spunta_memoria = QCheckBox(testi.ESTRAZIONE_MEMORIA)
         self.spunta_memoria.setToolTip(testi.ESTRAZIONE_MEMORIA_TIP)
         self.spunta_memoria.setChecked(True)
@@ -1295,12 +1343,22 @@ class PaginaEstrazione(QWidget):
             ricordate = risposte_ricordate(self._progetto, nome_passo)
         except Exception:
             ricordate = {}
-        self._rilevatore = _chiave_valida(ricordate.get(CHIAVE_MEMORIA_RILEVATORE),
-                                          MotoriCatalog.CHIAVI_RILEVATORI,
-                                          MotoriCatalog.DEFAULT_RILEVATORE)
-        self._allineatore = _chiave_valida(ricordate.get(CHIAVE_MEMORIA_ALLINEATORE),
-                                           MotoriCatalog.CHIAVI_ALLINEATORI,
-                                           MotoriCatalog.DEFAULT_ALLINEATORE)
+        # Un motore ricordato i cui pesi mancano ricade sul default,
+        # esattamente come una chiave sconosciuta: "non selezionabile"
+        # vale anche quando la selezione arriverebbe dalla memoria del
+        # progetto, non solo dal click sulla tendina -- altrimenti la
+        # sessione entrerebbe gia' con un motore che poi fallisce a
+        # caricarsi, la stessa sorpresa che questo lavoro deve togliere.
+        self._rilevatore = _chiave_valida(
+            ricordate.get(CHIAVE_MEMORIA_RILEVATORE),
+            tuple(k for k in MotoriCatalog.CHIAVI_RILEVATORI
+                 if k not in self._pesi_mancanti_rilevatori),
+            MotoriCatalog.DEFAULT_RILEVATORE)
+        self._allineatore = _chiave_valida(
+            ricordate.get(CHIAVE_MEMORIA_ALLINEATORE),
+            tuple(k for k in MotoriCatalog.CHIAVI_ALLINEATORI
+                 if k not in self._pesi_mancanti_allineatori),
+            MotoriCatalog.DEFAULT_ALLINEATORE)
         self._tieni_in_memoria = _spunta_ricordata(ricordate.get(CHIAVE_MEMORIA_TIENI))
         self._mostra_motori()
 
@@ -1326,6 +1384,17 @@ class PaginaEstrazione(QWidget):
             self._aggiorna_stato_manuale(
                 testi.estrazione_servizio_guasto(errore) if errore
                 else testi.ESTRAZIONE_NESSUN_VOLTO)
+            # Il traceback vero va nel tooltip della stessa etichetta, non
+            # in una superficie nuova. `getattr` con ripiego, in una riga a
+            # parte: un servizio finto piu' vecchio di questo lavoro (nei
+            # test, e chiunque implementi il protocollo altrove) puo' non
+            # avere `ultimo_stderr` affatto, e questo e' chiamato da uno
+            # slot Qt -- un'eccezione li' chiama qFatal e si porta via il
+            # processo con dentro ogni training aperto.
+            righe_stderr = getattr(self.servizio, _ATTRIBUTO_ULTIMO_STDERR, [])
+            self.etichetta_stato.setToolTip(
+                testi.estrazione_servizio_guasto_tooltip(righe_stderr)
+                if errore else "")
             self._rigenera_comandi()
             return
         rect, landmarks = volti[0]
@@ -1340,6 +1409,7 @@ class PaginaEstrazione(QWidget):
             self.tela.imposta_rettangolo(self._rect_corrente)
             self.tela.blocca(True)
         self._aggiorna_stato_manuale(testi.ESTRAZIONE_VOLTO_TROVATO)
+        self.etichetta_stato.setToolTip("")  # ripulisce un guasto precedente
         self._rigenera_comandi()
 
     def _aggiorna_stato_manuale(self, stato_rilevamento=None):

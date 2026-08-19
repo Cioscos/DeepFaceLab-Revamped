@@ -36,7 +36,7 @@ from pathlib import Path
 # prima di aggiungere questa riga.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from setup.assets import Asset, DEFAULT_MANIFEST, asset_is_complete, ensure_asset, load_manifest  # noqa: E402
+from setup.assets import Asset, asset_is_complete, ensure_asset, load_manifest, manifest_for  # noqa: E402
 from setup.commands import SHORTCUTS  # noqa: E402
 from setup.layout import create_workspace, install_setenv, place_scripts, write_shortcuts  # noqa: E402
 from setup.log import setup_logging  # noqa: E402
@@ -251,8 +251,14 @@ def step_ensure_assets(paths: InstallPaths, args: argparse.Namespace, log) -> No
     release caricata), ogni ensure_asset qui sotto fallisce all'apertura
     dell'URL: un errore di rete esplicito e immediato, non un file scaricato
     e verificato contro uno sha256 farlocco.
+
+    L'elenco viene da `manifest_for(paths)`, non da `DEFAULT_MANIFEST`: il
+    manifest che comanda e' quello del clone appena sincronizzato -- `repo`
+    e' il passo prima di `assets` in `_STEPS`, quindi qui e' gia' aggiornato
+    -- e non quello della copia esterna, che nessuno aggiorna mai. Vedi
+    `setup/assets.py::manifest_for` per il difetto che questo chiude.
     """
-    for asset in load_manifest(DEFAULT_MANIFEST):
+    for asset in load_manifest(manifest_for(paths)):
         if not asset.required:
             if asset.name == "pretrain_faces":
                 if not _should_install_pretrain(asset, paths, args, log):
@@ -296,7 +302,7 @@ def _asset_status_lines(paths: InstallPaths) -> list[str]:
     controllo di integrita'.
     """
     lines = []
-    for asset in load_manifest(DEFAULT_MANIFEST):
+    for asset in load_manifest(manifest_for(paths)):
         dest_dir = paths.root / asset.dest
         present = asset_is_complete(asset, paths)
         lines.append(f"  - {asset.name}: {'presente' if present else 'assente'} ({dest_dir})")

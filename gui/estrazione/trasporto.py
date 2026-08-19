@@ -44,7 +44,22 @@ bloccante (readyReadStandardOutput), non con un ciclo di
 waitForReadyRead, perche' e' proprio l'attesa bloccante che questo
 modulo esiste per togliere di mezzo. Il collegamento a `finished` e
 `errorOccurred` segue lo stesso precedente di gui/execution/jobs.py.
+
+Lo STDERR del figlio si legge anche lui (`readyReadStandardError`), ma
+resta un canale separato per davvero: `SeparateChannels`, mai
+`MergedChannels`. `rispondi` (mainscripts/ExtractManual.py) gira sotto
+`contextlib.redirect_stdout(sys.stderr)` proprio per tenere il protocollo
+a righe JSON su stdout pulito da qualunque traceback -- unificare i
+canali qui vorrebbe dire rompere quella cautela dall'altro capo. Le
+ultime righe si accumulano in un anello di `_MAX_RIGHE_STDERR` righe
+(`TrasportoAsincrono.stderr_recente()`), non in una lista che cresce: il
+servizio gira per ore, e prima di questo modulo lo stderr del figlio non
+lo leggeva nessuno -- il traceback vero di un fallimento (`rispondi`
+cattura ogni eccezione e risponde solo `{"op": "error", "motivo":
+str(e)}`) finiva buttato via dal sistema operativo appena il processo
+terminava.
 """
+import collections
 import json
 import time
 from pathlib import Path
@@ -59,6 +74,13 @@ from gui.estrazione import servizio as servizio_mod
 # chiamante come Servizio.rileva_quando_puoi non ha bisogno di sapere che
 # questa risposta non e' mai passata dal processo.
 _RISPOSTA_GUASTO = {"op": "error", "motivo": "il servizio di estrazione si e' interrotto"}
+
+# Quante righe di stderr tenere in memoria. Un traceback Python tipico
+# (compresa una catena di eccezioni concatenate con "During handling of
+# the above exception") sta comodamente sotto un centinaio di righe; 200
+# lascia margine senza far crescere la memoria di un servizio che gira
+# per ore -- un anello, non una lista che si accumula.
+_MAX_RIGHE_STDERR = 200
 
 
 class _CanaleProcesso:
@@ -83,12 +105,21 @@ class _CanaleProcesso:
     gui/execution/jobs.py: un crash emette il primo, un processo che non
     parte mai (eseguibile assente) puo' non emettere il secondo -- vedi
     JobRun._on_error_occurred li' per lo stesso ragionamento.
+
+    Lo stderr si legge allo stesso modo (`readyReadStandardError`,
+    accumulo per riga completa) ma finisce in un anello separato
+    (`_stderr`), mai nel buffer del protocollo: non e' `_ricevitore` a
+    consegnarlo, e non passa da `_su_riga`. L'anello sopravvive a
+    `_su_morte`/`_su_errore` -- quei due azzerano solo `self._processo`,
+    apposta: e' proprio nel momento del crash che le righe servono.
     """
 
     def __init__(self, workdir):
         self.workdir = workdir
         self._processo = None
         self._buffer = b""
+        self._buffer_stderr = b""
+        self._stderr = collections.deque(maxlen=_MAX_RIGHE_STDERR)
         self._ricevitore = None
         self._gestore_guasto = None
 
@@ -97,6 +128,10 @@ class _CanaleProcesso:
 
     def collega_guasto(self, gestore):
         self._gestore_guasto = gestore
+
+    def righe_stderr(self):
+        """Le ultime righe di stderr del figlio, piu' vecchia per prima."""
+        return list(self._stderr)
 
     def scrivi(self, comando):
         from PyQt5.QtCore import QProcess
@@ -112,9 +147,21 @@ class _CanaleProcesso:
     def _avvia(self):
         from PyQt5.QtCore import QProcess
         programma, argomenti = avvio_mod.comando_servizio(self.workdir)
+        # Azzera ENTRAMBI i buffer di ricomposizione (stdout e stderr):
+        # un figlio precedente puo' essere morto a meta' riga, senza '\n'
+        # finale, lasciando un frammento. Senza questo azzeramento il
+        # primo output del processo nuovo si concatenerebbe al residuo
+        # del vecchio -- su stdout la riga fusa fallisce json.loads in
+        # _su_riga, che inghiotte l'eccezione e ritorna None: la risposta
+        # si perde in silenzio. Difetto preesistente per `_buffer`,
+        # stessa causa e stessa correzione per `_buffer_stderr` (aggiunto
+        # insieme all'anello dello stderr, non introdotto qui).
+        self._buffer = b""
+        self._buffer_stderr = b""
         self._processo = QProcess()
         self._processo.setProcessChannelMode(QProcess.SeparateChannels)
         self._processo.readyReadStandardOutput.connect(self._su_dati_pronti)
+        self._processo.readyReadStandardError.connect(self._su_stderr_pronto)
         self._processo.finished.connect(self._su_morte)
         self._processo.errorOccurred.connect(self._su_errore)
         self._processo.start(programma, argomenti)
@@ -126,6 +173,12 @@ class _CanaleProcesso:
             grezza, self._buffer = self._buffer.split(b"\n", 1)
             if self._ricevitore is not None:
                 self._ricevitore(grezza.decode("utf-8", "replace"))
+
+    def _su_stderr_pronto(self):
+        self._buffer_stderr += bytes(self._processo.readAllStandardError())
+        while b"\n" in self._buffer_stderr:
+            grezza, self._buffer_stderr = self._buffer_stderr.split(b"\n", 1)
+            self._stderr.append(grezza.decode("utf-8", "replace"))
 
     def _su_morte(self, _codice, _stato):
         self._processo = None
@@ -210,6 +263,15 @@ class TrasportoAsincrono:
             id_in_volo, _valida, callback_in_volo = self._in_volo
             self._in_volo = (id_in_volo, False, callback_in_volo)
             self._in_attesa = (comando, quando_pronto)
+
+    def stderr_recente(self):
+        """Le ultime righe di stderr del figlio, per la diagnosi -- mai
+        per il protocollo, che resta esclusivamente su stdout. Delega al
+        canale: e' li' che l'anello vive, perche' sopravviva a un canale
+        che si azzera e si riavvia (`_CanaleProcesso.scrivi`) mentre
+        `TrasportoAsincrono` stesso resta lo stesso oggetto per tutta la
+        sessione."""
+        return self._canale.righe_stderr()
 
     def consegna_tutto(self):
         """Aiutante dei test: pompa il canale finche' ha risposte pronte.

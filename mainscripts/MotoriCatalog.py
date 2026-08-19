@@ -29,6 +29,15 @@ Motore = namedtuple("Motore", [
     "help",        # una frase, con il costo dove c'e' un costo
     "classe",      # nome della classe in facelib, risolto dalla fabbrica
     "parametri",   # kwargs aggiuntivi del costruttore, {} per il default
+    "pesi",        # tupla dei file .npy sotto facelib/ che il motore puo'
+                   # caricare -- di norma uno solo, ma "fan-2d" ne porta
+                   # due: il face type e' un pavimento, non una regola
+                   # (facelib/motori.py::landmarks_3D_per alza
+                   # landmarks_3D a True per 'head' e oltre anche quando
+                   # e' stato scelto "fan-2d"), quindi FANExtractor puo'
+                   # caricare 3DFAN.npy pur essendo stato selezionato
+                   # "2DFAN". Un motore e' selezionabile solo se TUTTI i
+                   # file della sua tupla sono sul disco.
 ])
 
 RILEVATORI = (
@@ -40,6 +49,7 @@ RILEVATORI = (
              "which also filters out sensor noise and compression artifacts.",
         classe="S3FDExtractor",
         parametri={},
+        pesi=("S3FD.npy",),
     ),
     Motore(
         key="s3fd-alta-risoluzione",
@@ -49,6 +59,7 @@ RILEVATORI = (
              "Only worth it for small faces in clean material.",
         classe="S3FDExtractor",
         parametri={"lato_rete": None},
+        pesi=("S3FD.npy",),
     ),
     Motore(
         key="retinaface-r50",
@@ -58,6 +69,7 @@ RILEVATORI = (
              "replace it: the two are offered side by side.",
         classe="RetinaFaceExtractor",
         parametri={},
+        pesi=("RetinaFaceR50.npy",),
     ),
 )
 
@@ -69,6 +81,7 @@ ALLINEATORI = (
              "when the face type is 'head', as it has always been.",
         classe="FANExtractor",
         parametri={"landmarks_3D": False},
+        pesi=("2DFAN.npy", "3DFAN.npy"),
     ),
     Motore(
         key="fan-3d",
@@ -78,6 +91,7 @@ ALLINEATORI = (
              "2DFAN does not hold.",
         classe="FANExtractor",
         parametri={"landmarks_3D": True},
+        pesi=("3DFAN.npy",),
     ),
     Motore(
         key="pipnet-68",
@@ -87,6 +101,7 @@ ALLINEATORI = (
              "2DFAN does.",
         classe="PipNetExtractor",
         parametri={},
+        pesi=("PIPNet68.npy",),
     ),
 )
 
