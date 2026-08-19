@@ -50,6 +50,15 @@ RILEVATORI = (
         classe="S3FDExtractor",
         parametri={"lato_rete": None},
     ),
+    Motore(
+        key="retinaface-r50",
+        label="RetinaFace-R50",
+        help="Finds profile faces and extreme poses that S3FD misses "
+             "entirely. Slower than S3FD on easy footage, and it does not "
+             "replace it: the two are offered side by side.",
+        classe="RetinaFaceExtractor",
+        parametri={},
+    ),
 )
 
 ALLINEATORI = (
@@ -69,6 +78,15 @@ ALLINEATORI = (
              "2DFAN does not hold.",
         classe="FANExtractor",
         parametri={"landmarks_3D": True},
+    ),
+    Motore(
+        key="pipnet-68",
+        label="PIPNet",
+        help="Faster than 2DFAN and steadier on extreme yaw, with the same "
+             "68 ibug points. It does not run the second refinement pass "
+             "2DFAN does.",
+        classe="PipNetExtractor",
+        parametri={},
     ),
 )
 

@@ -5,9 +5,9 @@ required = true
 kind = "archive"
 
   [[asset.parts]]
-  url = "https://github.com/Cioscos/DeepFaceLab-Revamped/releases/download/0.0.1/facelib.tar.gz"
-  sha256 = "42dfc0974a1e85f48350a9e47f651d456a4e2ca458e845cdee230b4feb3e4280"
-  size = 251431695
+  url = "https://github.com/Cioscos/DeepFaceLab-Revamped/releases/download/0.0.2/facelib.tar.gz"
+  sha256 = "b6d774fbbd1a926d87f9e22069c64d0d799c4cba86edc54c2f72410543fef688"
+  size = 397479632
 
 [[asset]]
 name = "ffmpeg"

@@ -109,9 +109,30 @@ def _win_invocation(cmd: Command, inv: Invocation, passthrough: bool) -> list[st
     return [head + sep + "^"] + [ln + " ^" for ln in body[:-1]] + [body[-1]]
 
 
+# Un solo comando fra i 55 e' il ramo distruttivo di questo script: la
+# guardia va scritta una volta, qui, e le due gemelle (bat/sh) sotto la
+# ripetono nella sintassi del proprio shell.
+_ROOT_WITH_PROJECTS_GUARD_BAT = (
+    'if "%DFL_WORKSPACE_IS_ROOT%"=="1" if "%DFL_HAS_PROJECTS%"=="1" ('
+    ' echo No project selected, and this package has projects.'
+    ' & echo Open the GUI and select or create a project first.'
+    ' & pause & exit /b 1 )'
+)
+
+
 def _win_clear_workspace() -> list[str]:
-    """Le dodici righe di mkdir/rmdir dell'ancora per '1) clear workspace'."""
-    lines = ['mkdir "%WORKSPACE%" 2>nul']
+    """Le righe di mkdir/rmdir dell'ancora per '1) clear workspace', con la
+    guardia che le precede tutte.
+
+    setenv.bat ha gia' risolto i tre livelli di WORKSPACE quando questo
+    script parte, quindi la condizione la sa lui: qui si legge, non si
+    ricalcola. Con progetti presenti e nessuno attivo, cancellare nella
+    radice non e' mai cio' che l'utente intende -- e finora lo faceva in
+    silenzio, ricreando per giunta le tre cartelle sfuse. Senza progetti
+    restiamo nell'uso legacy puro, dove il comportamento storico e'
+    legittimo e resta intatto.
+    """
+    lines = [_ROOT_WITH_PROJECTS_GUARD_BAT, 'mkdir "%WORKSPACE%" 2>nul']
     for sub in ("data_src", "data_dst"):
         lines.append(f'rmdir "%WORKSPACE%\\{sub}" /s /q 2>nul')
         lines.append(f'mkdir "%WORKSPACE%\\{sub}" 2>nul')
@@ -231,8 +252,16 @@ def _sh_invocation(inv: Invocation, passthrough: bool) -> list[str]:
 
 
 def _sh_clear_workspace() -> list[str]:
-    """Le stesse cancellazioni/ricreazioni di '1) clear workspace', in bash."""
-    lines = ['mkdir -p "$WORKSPACE"']
+    """Le stesse cancellazioni/ricreazioni di '1) clear workspace', in bash,
+    con la stessa guardia. Vedi _win_clear_workspace per il perche'."""
+    lines = [
+        'if [ "$DFL_WORKSPACE_IS_ROOT" = "1" ] && [ "$DFL_HAS_PROJECTS" = "1" ]; then',
+        '    echo "No project selected, and this package has projects."',
+        '    echo "Open the GUI and select or create a project first."',
+        '    exit 1',
+        'fi',
+        'mkdir -p "$WORKSPACE"',
+    ]
     for sub in ("data_src", "data_dst"):
         lines.append(f'rm -rf "$WORKSPACE/{sub}"')
         lines.append(f'mkdir -p "$WORKSPACE/{sub}"')

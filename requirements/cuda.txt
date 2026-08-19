@@ -1,7 +1,11 @@
 # torch per la build CUDA (torchvision NON sta qui: nessun file di
-# produzione, di test o di tools lo importa -- verificato con
-# `grep -rn "torchvision" --include="*.py" .`, nessun risultato. E' una wheel
-# CUDA da centinaia di MB per zero consumatori).
+# produzione lo importa -- verificato con
+# `grep -rn "torchvision" --include="*.py" .`: l'unico posto che lo importa e'
+# uno script di sviluppo che si lancia a mano per produrre i tensori di
+# riferimento con cui si verifica il porting delle reti. Non lo importa
+# nessun modulo di produzione, non lo importa la suite, e non entra in
+# nessun file di questa cartella. E' una wheel CUDA da centinaia di MB per
+# zero consumatori di produzione).
 # Versione e indice letti da fonti primarie il 2026-08-02/03 (UTC), non
 # trascritti a memoria:
 #   - `curl -s https://pypi.org/pypi/torch/json | python3 -c

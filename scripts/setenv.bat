@@ -58,6 +58,14 @@ rem dall'interfaccia grafica, la radice. Il terzo caso e' il comportamento che
 rem questo file ha sempre avuto: un'installazione senza progetti non si accorge
 rem di niente, output compreso.
 SET DFL_PROJECTS_ROOT=%INTERNAL%\..\workspace
+rem Quante sottocartelle della radice sono un progetto: e' il fatto che
+rem distingue "uso legacy puro" (nessun progetto, i dati sfusi nella radice
+rem sono legittimi) da "l'utente ha progetti ma non ne ha scelto uno", dove
+rem operare sulla radice non e' mai cio' che intende.
+SET DFL_HAS_PROJECTS=0
+for /d %%D in ("%DFL_PROJECTS_ROOT%\*") do (
+    if exist "%%D\project.json" set DFL_HAS_PROJECTS=1
+)
 SET DFL_PROGETTO=
 SET DFL_CANDIDATO=
 if defined DFL_PROJECT (
@@ -92,9 +100,12 @@ if defined DFL_PROGETTO (
 )
 if defined DFL_PROGETTO (
     SET WORKSPACE=%DFL_PROJECTS_ROOT%\%DFL_PROGETTO%
+    SET DFL_WORKSPACE_IS_ROOT=0
     echo Project: %DFL_PROGETTO%
 ) else (
     SET WORKSPACE=%DFL_PROJECTS_ROOT%
+    SET DFL_WORKSPACE_IS_ROOT=1
+    echo No project selected: working in the projects root.
 )
 SET DFL_ROOT=%INTERNAL%\DeepFaceLab
 rem Errorlevel pulito prima di tornare al chiamante. Il solo cammino che deve

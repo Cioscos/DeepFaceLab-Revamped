@@ -25,7 +25,7 @@ l'aggiornamento):
   utente che aggiorna non deve ritrovarsele in root a fianco della GUI. La
   rimozione e' prudente -- vedi `LEGACY_SHORTCUTS` e il docstring della
   funzione.
-- `create_workspace` crea la struttura di `workspace/` con `mkdir(parents=True,
+- `create_workspace` crea la radice vuota di `workspace/` con `mkdir(parents=True,
   exist_ok=True)` e nient'altro: nessun `rmdir`, nessuna scrittura di file.
   E' l'unica funzione di questo file che tocca `workspace/`, ed e' scritta
   per non toccare mai cio' che gia' c'e' -- ci stanno i volti estratti e i
@@ -53,10 +53,6 @@ LEGACY_SHORTCUTS = (
     "6) train SAEHD",
     "7) merge SAEHD",
 )
-
-# La struttura vuota di workspace/: niente video di esempio (non si
-# distribuiscono piu').
-WORKSPACE_TREE = ("data_src/aligned", "data_dst/aligned", "model")
 
 
 def _system() -> str:
@@ -214,9 +210,21 @@ def write_shortcuts(paths: InstallPaths, log) -> list[Path]:
 
 
 def create_workspace(paths: InstallPaths, log) -> None:
-    """Crea la struttura di workspace/, senza mai toccare cio' che c'e' gia'."""
-    for rel in WORKSPACE_TREE:
-        (paths.workspace / rel).mkdir(parents=True, exist_ok=True)
+    """Crea la RADICE DEI PROGETTI, vuota, senza mai toccare cio' che c'e' gia'.
+
+    Non crea data_src/data_dst/model: dal ciclo dei progetti multipli quelle
+    tre vivono DENTRO un progetto, accanto al suo project.json, e crearle qui
+    fabbrica tre cartelle che non sono un progetto -- invisibili alla GUI, che
+    elenca solo chi ha un project.json. Peggio: rendono vera la prima
+    condizione di gui/progetti.py::serve_migrazione, che percio' propone di
+    migrare un workspace vuoto appena creato dall'installer, e dopo una
+    migrazione vera le fa ricomparire per non andarsene piu'.
+
+    Chi ha installato prima dei progetti ha i suoi dati sfusi qui: mkdir con
+    exist_ok non li tocca, e devono restare dove la migrazione della GUI se li
+    aspetta.
+    """
+    paths.workspace.mkdir(parents=True, exist_ok=True)
 
     if log is not None:
-        log.info("workspace pronto in %s", paths.workspace)
+        log.info("radice dei progetti pronta in %s", paths.workspace)

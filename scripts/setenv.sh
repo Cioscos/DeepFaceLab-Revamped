@@ -25,6 +25,18 @@ export PATH="$INTERNAL/.venv/bin:$FFMPEG_PATH:$PATH"
 # di niente, output compreso.
 DFL_PROJECTS_ROOT="$(cd "$INTERNAL/.." && pwd)/workspace"
 export DFL_PROJECTS_ROOT
+# Quante sottocartelle della radice sono un progetto: e' il fatto che
+# distingue "uso legacy puro" (nessun progetto, i dati sfusi nella radice
+# sono legittimi) da "l'utente ha progetti ma non ne ha scelto uno", dove
+# operare sulla radice non e' mai cio' che intende. Lo calcola qui perche'
+# qui i tre livelli sono gia' stati risolti: rifarlo in ogni script
+# generato sarebbe la stessa verita' scritta in cinquantacinque posti.
+DFL_HAS_PROJECTS=0
+for _dfl_p in "$DFL_PROJECTS_ROOT"/*/project.json; do
+    [ -f "$_dfl_p" ] && { DFL_HAS_PROJECTS=1; break; }
+done
+unset _dfl_p
+export DFL_HAS_PROJECTS
 _dfl_progetto=""
 if [ -n "${DFL_PROJECT:-}" ]; then
     if [ -d "$DFL_PROJECTS_ROOT/$DFL_PROJECT" ]; then
@@ -47,9 +59,12 @@ elif [ -f "$DFL_PROJECTS_ROOT/.progetto-attivo" ]; then
 fi
 if [ -n "$_dfl_progetto" ]; then
     export WORKSPACE="$DFL_PROJECTS_ROOT/$_dfl_progetto"
+    export DFL_WORKSPACE_IS_ROOT=0
     echo "Project: $_dfl_progetto"
 else
     export WORKSPACE="$DFL_PROJECTS_ROOT"
+    export DFL_WORKSPACE_IS_ROOT=1
+    echo "No project selected: working in the projects root."
 fi
 unset _dfl_progetto
 export DFL_ROOT="$INTERNAL/DeepFaceLab"

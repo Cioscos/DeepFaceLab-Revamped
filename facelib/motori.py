@@ -14,14 +14,21 @@ from mainscripts import MotoriCatalog
 from .FaceType import FaceType
 from .FANExtractor import FANExtractor
 from .S3FDExtractor import S3FDExtractor
+from .RetinaFaceExtractor import RetinaFaceExtractor
+from .PipNetExtractor import PipNetExtractor
+
+_RILEVATORI = {
+    "S3FDExtractor": lambda **kw: S3FDExtractor(**kw),
+    "RetinaFaceExtractor": lambda **kw: RetinaFaceExtractor(**kw),
+}
 
 
 def costruisci_rilevatore(chiave, place_model_on_cpu=False):
     motore = MotoriCatalog.rilevatore(chiave)
-    if motore.classe != "S3FDExtractor":
+    costruttore = _RILEVATORI.get(motore.classe)
+    if costruttore is None:
         raise KeyError(f"rilevatore sconosciuto: {motore.classe}")
-    return S3FDExtractor(place_model_on_cpu=place_model_on_cpu,
-                         **motore.parametri)
+    return costruttore(place_model_on_cpu=place_model_on_cpu, **motore.parametri)
 
 
 def landmarks_3D_per(chiave, face_type):
@@ -47,10 +54,24 @@ def landmarks_3D_per(chiave, face_type):
     return bool(motore.parametri.get("landmarks_3D")) or face_type >= FaceType.HEAD
 
 
+_ALLINEATORI = {
+    # Solo FANExtractor conosce landmarks_3D: e' la regola del pavimento di
+    # landmarks_3D_per, che vale unicamente per lui. PipNetExtractor non ha
+    # una variante 3D, quindi non deve nemmeno vedere il parametro.
+    "FANExtractor": lambda face_type, chiave, **kw: FANExtractor(
+        landmarks_3D=landmarks_3D_per(chiave, face_type), **kw),
+    "PipNetExtractor": lambda face_type, chiave, **kw: PipNetExtractor(**kw),
+}
+
+
 def costruisci_allineatore(chiave, face_type, place_model_on_cpu=False):
     motore = MotoriCatalog.allineatore(chiave)
-    if motore.classe != "FANExtractor":
+    costruttore = _ALLINEATORI.get(motore.classe)
+    if costruttore is None:
         raise KeyError(f"allineatore sconosciuto: {motore.classe}")
-    parametri = dict(motore.parametri)
-    parametri["landmarks_3D"] = landmarks_3D_per(chiave, face_type)
-    return FANExtractor(place_model_on_cpu=place_model_on_cpu, **parametri)
+    # `motore.parametri` non attraversa questo confine: per FANExtractor
+    # l'unico parametro che porta (landmarks_3D) e' gia' ricalcolato da
+    # landmarks_3D_per dentro la lambda, che rilegge la stessa chiave dal
+    # catalogo; PipNetExtractor non ha parametri extra oggi. Rigirarlo qui
+    # come **kw darebbe a FANExtractor due valori per landmarks_3D.
+    return costruttore(face_type, chiave, place_model_on_cpu=place_model_on_cpu)
