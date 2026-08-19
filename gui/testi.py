@@ -753,6 +753,21 @@ ESTRAZIONE_MANUALE_TIP = ("Start (or stop) the native manual extractor: draw the
                           "face rectangle on the canvas above instead of the old "
                           "cv2 window.")
 ESTRAZIONE_MANUALE_OCCUPA = "A manual session is running on this dataset. Exit it first."
+# I tre controlli dei motori, visibili solo durante la sessione manuale.
+# Le voci delle tendine e i loro aiuti NON stanno qui: sono `label` e `help`
+# di mainscripts/MotoriCatalog.py, che ne e' la sorgente unica.
+ESTRAZIONE_RILEVATORE = "Detector:"
+ESTRAZIONE_RILEVATORE_TIP = "Which model finds the face in the frame. Changing it detects this frame again."
+ESTRAZIONE_ALLINEATORE = "Landmarks:"
+ESTRAZIONE_ALLINEATORE_TIP = ("Which model places the 68 landmarks on the face found. "
+                              "Changing it re-runs it on the rectangle you are on.")
+ESTRAZIONE_MEMORIA = "Keep models in memory"
+ESTRAZIONE_MEMORIA_TIP = ("Keep every model used in this session alive in VRAM, so "
+                          "switching back and forth is instant. Unchecked, only the "
+                          "two current ones stay and the others are freed right away. "
+                          "It lowers what is held between switches, not the peak: "
+                          "while a switch happens the old model is still loaded when "
+                          "the new one is built.")
 ESTRAZIONE_RIESTRAI = "Re-extract selection"
 ESTRAZIONE_RIESTRAI_TIP = ("Clear the debug image of the selected frames and "
                            "re-run manual extraction for them only.")

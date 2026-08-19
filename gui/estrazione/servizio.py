@@ -112,7 +112,8 @@ class Servizio(object):
         risposta = self._invia(campi)
         return None if risposta is None else risposta.get("file")
 
-    def rileva_quando_puoi(self, path, rect, face_type, accurato, quando_pronto):
+    def rileva_quando_puoi(self, path, rect, face_type, accurato, quando_pronto,
+                           rilevatore=None, allineatore=None, tieni_in_memoria=True):
         """I volti che il motore trova nel frame, o dentro `rect` se dato --
         `rect=None` e' il rilevamento automatico all'apertura del frame (il
         rilevatore cerca da solo), un `rect` esplicito e' il rettangolo che
@@ -131,10 +132,19 @@ class Servizio(object):
         uno slot, e uno slot che solleva chiama qFatal come un paintEvent.
         I due casi restano indistinguibili DA QUESTO VALORE DI RITORNO --
         chi vuole saperlo legge `self.ultimo_errore` subito dopo essere
-        stato richiamato."""
+        stato richiamato.
+
+        `rilevatore`/`allineatore` sono le CHIAVI del registro
+        (mainscripts/MotoriCatalog.py), non le etichette che la tendina
+        mostra, e viaggiano sullo stesso comando di `face_type`: nessun
+        canale nuovo. `None` = il default del registro, risolto dal figlio.
+        `tieni_in_memoria=False` e' la spunta tolta nella barra: il figlio
+        lascia vivi solo i due correnti e libera gli altri subito."""
         comando = {"op": "rileva", "path": str(path),
                   "rect": None if rect is None else [int(v) for v in rect],
-                  "face_type": str(face_type), "accurato": bool(accurato)}
+                  "face_type": str(face_type), "accurato": bool(accurato),
+                  "rilevatore": rilevatore, "allineatore": allineatore,
+                  "tieni_in_memoria": bool(tieni_in_memoria)}
 
         def _su_risposta(risposta):
             if not isinstance(risposta, dict) or risposta.get("op") == "error":
@@ -145,6 +155,31 @@ class Servizio(object):
                 return
             self.ultimo_errore = None
             quando_pronto(_volti_utilizzabili(risposta))
+
+        self._trasporto.invia_ultimo(comando, _su_risposta)
+
+    def libera_altri(self, rilevatore, allineatore, face_type):
+        """Chiede al figlio di lasciar andare ogni motore che non sia
+        questa coppia. Non aspetta e non torna niente.
+
+        E' l'operazione che rende vera la promessa della spunta ("the
+        others are freed right away"): la politica viaggia anche sul
+        comando `rileva`, ma `rileva` vuole un fotogramma corrente, e senza
+        -- pellicola filtrata a vuoto, appena entrati in sessione -- non
+        partiva niente e la VRAM restava occupata in silenzio. Qui non c'e'
+        nessun fotogramma da nominare.
+
+        La risposta si ignora, ma la callback deve esserci lo stesso e non
+        deve poter sollevare: e' chiamata da uno slot Qt, e uno slot che
+        solleva chiama qFatal e si porta via il processo con dentro ogni
+        training aperto. `_su_risposta` qui non fa niente per costruzione:
+        e' il modo piu' corto di garantirlo.
+        """
+        comando = {"op": "libera", "rilevatore": rilevatore,
+                   "allineatore": allineatore, "face_type": str(face_type)}
+
+        def _su_risposta(_risposta):
+            return None
 
         self._trasporto.invia_ultimo(comando, _su_risposta)
 

@@ -11,10 +11,11 @@ sei filtri del rapporto e la `Pellicola`.
 import tempfile
 from pathlib import Path
 
-from PyQt5.QtCore import QTimer
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QPixmap
-from PyQt5.QtWidgets import (QButtonGroup, QComboBox, QHBoxLayout, QLabel,
-                             QMessageBox, QPushButton, QVBoxLayout, QWidget)
+from PyQt5.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QHBoxLayout,
+                             QLabel, QMessageBox, QPushButton, QVBoxLayout,
+                             QWidget)
 
 from gui import testi
 from gui.estrazione import azioni as azioni_mod
@@ -36,6 +37,7 @@ from gui.faceset.dialogo import DialogoOperazione
 from gui.faceset.indice import elenca as elenca_cartella
 from gui.faceset.progresso import PilaProgresso
 from gui.progetti import identita_workspace, ricorda_risposte, risposte_ricordate
+from mainscripts import MotoriCatalog
 
 ESTENSIONI = (".png", ".jpg", ".jpeg")
 
@@ -77,6 +79,18 @@ _OPERAZIONI_JOB = (CHIAVE_AUTO, CHIAVE_AUTO_CORREZIONE)
 # solo per riuso del form. La tabella traduce fra le due.
 _FACE_TYPE_LUNGO = {"f": "full_face", "wf": "whole_face", "head": "head"}
 
+# Le chiavi con cui il progetto ricorda le tre scelte della sessione
+# manuale. Deliberatamente NON "detector"/"landmarker": quelle sono le
+# chiavi dei campi del form dei passi automatici, e il form ricorda le
+# ETICHETTE (gui/forms.py::set_remembered_values) mentre qui si ricordano
+# le CHIAVI del registro. I passi MANUAL oggi non hanno quei campi -- se
+# un ciclo futuro glieli aggiungesse, due significati diversi finirebbero
+# nella stessa voce di project.json, e il dialogo precaricherebbe una
+# tendina con una stringa che non e' una sua voce.
+CHIAVE_MEMORIA_RILEVATORE = "manual-detector"
+CHIAVE_MEMORIA_ALLINEATORE = "manual-landmarker"
+CHIAVE_MEMORIA_TIENI = "manual-keep-models-in-memory"
+
 
 def _radice_e_predefinita():
     """<pacchetto>/_internal/_e, calcolata dalla posizione di questo file
@@ -84,6 +98,45 @@ def _radice_e_predefinita():
     (`self._dfl_root.parent / "_e"`), qui ricavato per chi costruisce la
     pagina senza passare radice_e (i test)."""
     return Path(__file__).resolve().parent.parent.parent.parent / "_e"
+
+
+def _selettore_motori(motori, chiave_predefinita, aiuto):
+    """Una tendina sul registro: mostra la `label`, porta la `key`, e
+    l'aiuto per voce e' il `help` del registro come nei form del catalogo
+    (gui/forms.py::_build_choice). Nessuna stringa scritta qui."""
+    selettore = QComboBox()
+    selettore.setToolTip(aiuto)
+    for i, motore in enumerate(motori):
+        selettore.addItem(motore.label, motore.key)
+        selettore.setItemData(i, motore.help, Qt.ToolTipRole)
+    indice = selettore.findData(chiave_predefinita)
+    selettore.setCurrentIndex(indice if indice >= 0 else 0)
+    return selettore
+
+
+def _chiave_valida(valore, chiavi, predefinita):
+    """La chiave di un motore, o il default: un project.json scritto a mano
+    -- o un motore tolto dal registro -- non deve sollevare dentro
+    l'ingresso in sessione."""
+    return valore if valore in chiavi else predefinita
+
+
+# Cosa conta come "no" in un project.json scritto a mano. `bool()` da solo
+# non basta: `bool("false")` e' True, quindi una spunta scritta come
+# stringa verrebbe letta come messa -- e la scelta di liberare la VRAM
+# sarebbe l'unica che si perde in silenzio, cioe' quella che l'utente ha
+# preso per far posto a un training.
+_SPUNTA_FALSA = ("false", "0", "no", "off", "")
+
+
+def _spunta_ricordata(valore):
+    """Il valore ricordato della spunta, normalizzato. Assente = messa, il
+    comportamento di sempre."""
+    if valore is None:
+        return True
+    if isinstance(valore, str):
+        return valore.strip().lower() not in _SPUNTA_FALSA
+    return bool(valore)
 
 
 def _valori_con_default(passo, risposte):
@@ -115,6 +168,21 @@ class PaginaEstrazione(QWidget):
         self._landmarks_correnti = None
         self._parametri_manuale = {}
         self._accurato = True
+        # I motori della sessione manuale: le CHIAVI del registro, mai le
+        # etichette. Come `_accurato`, si azzerano ai default in due punti
+        # (qui e in `ferma_servizio`) -- all'ingresso in sessione e' il
+        # progetto a rimetterle, se le ricorda.
+        self._rilevatore = MotoriCatalog.DEFAULT_RILEVATORE
+        self._allineatore = MotoriCatalog.DEFAULT_ALLINEATORE
+        self._tieni_in_memoria = True
+        # L'avviso di "project.json non scrivibile" e' gia' stato dato in
+        # questa sessione: vedi `_ricorda_motori`.
+        self._avvisato_memoria_non_scritta = False
+        # Il nome del passo con cui questa sessione e' entrata: e' la
+        # chiave con cui il progetto ricorda le tre scelte, e si prende da
+        # `_entra_modalita_manuale` invece di ricalcolarlo (passo_per puo'
+        # sollevare KeyError, e uno slot non e' il posto dove scoprirlo).
+        self._passo_manuale = None
         # La nota "Saved ...": _salva_corrente la
         # scrive qui invece che direttamente in etichetta_stato, perche' fra
         # il salvataggio e il prossimo ridisegno c'e' sempre uno sfogliamento
@@ -196,6 +264,24 @@ class PaginaEstrazione(QWidget):
         self.bottone_annulla_riestrai.setToolTip(testi.ESTRAZIONE_ANNULLA_RIESTRAI_TIP)
         self.bottone_indice = QPushButton(testi.ESTRAZIONE_INDICIZZA)
         self.bottone_indice.setToolTip(testi.ESTRAZIONE_INDICIZZA_TIP)
+        # I tre controlli dei motori: elenco, ordine, etichette e aiuti
+        # vengono da MotoriCatalog, che ne e' la sorgente unica -- qui non
+        # si riscrive nessuna voce. La tendina mostra la `label` e porta la
+        # `key`, come i campi del catalogo (gui/catalog/extraction.py).
+        self.etichetta_rilevatore = QLabel(testi.ESTRAZIONE_RILEVATORE)
+        self.selettore_rilevatore = _selettore_motori(MotoriCatalog.RILEVATORI,
+                                                      MotoriCatalog.DEFAULT_RILEVATORE,
+                                                      testi.ESTRAZIONE_RILEVATORE_TIP)
+        self.etichetta_allineatore = QLabel(testi.ESTRAZIONE_ALLINEATORE)
+        self.selettore_allineatore = _selettore_motori(MotoriCatalog.ALLINEATORI,
+                                                       MotoriCatalog.DEFAULT_ALLINEATORE,
+                                                       testi.ESTRAZIONE_ALLINEATORE_TIP)
+        self.spunta_memoria = QCheckBox(testi.ESTRAZIONE_MEMORIA)
+        self.spunta_memoria.setToolTip(testi.ESTRAZIONE_MEMORIA_TIP)
+        self.spunta_memoria.setChecked(True)
+        self._controlli_motori = (self.etichetta_rilevatore, self.selettore_rilevatore,
+                                  self.etichetta_allineatore, self.selettore_allineatore,
+                                  self.spunta_memoria)
         self.etichetta_stato = QLabel("")
         self.etichetta_stato.setProperty("ruolo", "minore")
 
@@ -220,8 +306,29 @@ class PaginaEstrazione(QWidget):
         barra.addStretch(1)
         barra.addWidget(self.etichetta_stato)
 
+        # I tre controlli dei motori su una riga PROPRIA, sotto la barra, e
+        # non dentro: misurato, in sessione manuale allargavano la barra da
+        # 951 a 1651 px alla scala normale e da 1171 a 2058 alla xlarge --
+        # piu' di un monitor 1920 -- e un QHBoxLayout non va a capo, schiaccia:
+        # a 1280 px "Keep models in memory" era tagliato a meta' e con lui
+        # "Manual session", "Re-extract selection" e "Rebuild report".
+        #
+        # Un WIDGET contenitore, non il solo layout: un widget nascosto esce
+        # del tutto dal layout genitore, mentre una riga di soli widget
+        # nascosti resta una voce del QVBoxLayout e si porta dietro la
+        # propria spaziatura. Fuori dalla sessione la pagina non cambia di
+        # un pixel, che e' la condizione per aggiungere una riga.
+        self.riga_motori = QWidget()
+        barra_motori = QHBoxLayout(self.riga_motori)
+        barra_motori.setContentsMargins(0, 0, 0, 0)
+        for w in self._controlli_motori:
+            barra_motori.addWidget(w)
+        barra_motori.addStretch(1)
+        self.riga_motori.setVisible(False)
+
         radice = QVBoxLayout(self)
         radice.addLayout(barra)
+        radice.addWidget(self.riga_motori)
         radice.addWidget(self.pila)
         centro = QHBoxLayout()
         centro.addWidget(self.tela, 1)
@@ -237,6 +344,12 @@ class PaginaEstrazione(QWidget):
         self.bottone_riestrai.clicked.connect(lambda: self.riestrai_selezione())
         self.bottone_annulla_riestrai.clicked.connect(lambda: self.annulla_riestrazione())
         self.bottone_indice.clicked.connect(lambda: self.aggiorna_indice())
+        # currentIndexChanged e non activated: `_applica_motori_ricordati`
+        # scrive i selettori da codice a bordo sessione, e li' i segnali
+        # sono bloccati apposta -- vedi la sua nota.
+        self.selettore_rilevatore.currentIndexChanged.connect(self._su_rilevatore_scelto)
+        self.selettore_allineatore.currentIndexChanged.connect(self._su_allineatore_scelto)
+        self.spunta_memoria.toggled.connect(self._su_memoria_scelta)
         for chiave, bottone in self._bottoni_filtro.items():
             bottone.clicked.connect(lambda _c=False, chiave=chiave: self._su_filtro(chiave))
         self.pellicola.frame_scelto.connect(self._su_frame_scelto)
@@ -822,6 +935,11 @@ class PaginaEstrazione(QWidget):
                 self.bottone_manuale.setChecked(False)
                 return
         self._parametri_manuale = _valori_con_default(passo, risposte)
+        # Prima del servizio e del primo `_prossimo_frame`: la prima
+        # richiesta della sessione deve gia' portare i motori ricordati,
+        # non i default seguiti da una seconda richiesta che li corregge.
+        self._passo_manuale = passo.name
+        self._applica_motori_ricordati(passo.name)
         if servizio is not None:
             self.servizio = servizio
         else:
@@ -909,6 +1027,15 @@ class PaginaEstrazione(QWidget):
         self._rect_corrente = None
         self._landmarks_correnti = None
         self._accurato = True
+        self._rilevatore = MotoriCatalog.DEFAULT_RILEVATORE
+        self._allineatore = MotoriCatalog.DEFAULT_ALLINEATORE
+        self._tieni_in_memoria = True
+        # "Una volta per sessione" e' la sessione MANUALE, come ogni altro
+        # stato di questo blocco: chi rientra dopo aver dato i permessi
+        # alla cartella deve poter essere avvisato di nuovo se non basta.
+        self._avvisato_memoria_non_scritta = False
+        self._passo_manuale = None
+        self._mostra_motori()
         self._nota_salvataggio = None
         if self.bottone_manuale.isChecked():
             self.bottone_manuale.setChecked(False)
@@ -1074,9 +1201,120 @@ class PaginaEstrazione(QWidget):
         frame = self._frame_corrente
         self.servizio.rileva_quando_puoi(
             frame, rect,
-            _FACE_TYPE_LUNGO.get(self._parametri_manuale.get("face-type"), "whole_face"),
+            self._face_type_corrente(),
             self._accurato,
-            lambda volti, f=frame, r=rect: self._su_volti(f, r, volti))
+            lambda volti, f=frame, r=rect: self._su_volti(f, r, volti),
+            rilevatore=self._rilevatore, allineatore=self._allineatore,
+            tieni_in_memoria=self._tieni_in_memoria)
+
+    def _face_type_corrente(self):
+        """Il face type della sessione nella forma lunga del protocollo.
+        Uno solo, letto da `rileva` e da `libera`: la voce di cache
+        dell'allineatore dipende da questo valore, e due letture diverse
+        farebbero liberare al figlio una voce che non e' quella corrente."""
+        return _FACE_TYPE_LUNGO.get(self._parametri_manuale.get("face-type"),
+                                    "whole_face")
+
+    def _su_rilevatore_scelto(self, _indice):
+        """Cambiare rilevatore ricomincia dal rilevamento AUTOMATICO
+        (rect=None): e' il rilevatore a decidere il rettangolo, e tenere
+        quello del motore precedente nasconderebbe proprio cio' che si sta
+        provando a vedere."""
+        self._rilevatore = _chiave_valida(self.selettore_rilevatore.currentData(),
+                                          MotoriCatalog.CHIAVI_RILEVATORI,
+                                          MotoriCatalog.DEFAULT_RILEVATORE)
+        self._ricorda_motori()
+        self._rileva(None)
+
+    def _su_allineatore_scelto(self, _indice):
+        """L'allineatore non sceglie il rettangolo: si resta su quello
+        corrente e si guardano i landmark nuovi sullo stesso volto -- che
+        e' il confronto per cui questi controlli esistono."""
+        self._allineatore = _chiave_valida(self.selettore_allineatore.currentData(),
+                                           MotoriCatalog.CHIAVI_ALLINEATORI,
+                                           MotoriCatalog.DEFAULT_ALLINEATORE)
+        self._ricorda_motori()
+        self._rileva(self.tela.rettangolo())
+
+    def _su_memoria_scelta(self, acceso):
+        """Togliere la spunta libera SUBITO i motori non correnti, non alla
+        prossima scelta.
+
+        Passa dall'operazione `libera`, non da un `rileva`: la politica
+        viaggia anche sul comando `rileva`, ma `_rileva` esce subito senza
+        `_frame_corrente` (una pellicola filtrata a vuoto, l'istante prima
+        del primo fotogramma) e li' non partiva NIENTE -- proprio nello
+        stato in cui uno toglie la spunta per fare posto a un training, con
+        il testo della spunta che promette "right away". `libera` non ha
+        bisogno di nessun fotogramma e non ridisegna niente sotto le mani
+        dell'utente, quindi non serve nemmeno ri-rilevare.
+
+        Rimetterla non ha niente da mandare: nessun motore da liberare, e
+        la politica nuova arriva col prossimo `rileva`."""
+        self._tieni_in_memoria = bool(acceso)
+        self._ricorda_motori()
+        if self.servizio is None or self._tieni_in_memoria:
+            return
+        self.servizio.libera_altri(self._rilevatore, self._allineatore,
+                                   self._face_type_corrente())
+
+    def _ricorda_motori(self):
+        """Le tre scelte nella memoria del progetto, che le FONDE con le
+        altre risposte invece di sostituirle (gui/progetti.py). Protetta
+        come ogni scrittura di project.json fatta da uno slot: PyQt5
+        trasforma un'eccezione qui in qFatal e si porta via il processo con
+        dentro ogni altro lavoro aperto."""
+        if self._progetto is None or self._passo_manuale is None:
+            return
+        try:
+            ricorda_risposte(self._progetto, self._passo_manuale, {
+                CHIAVE_MEMORIA_RILEVATORE: self._rilevatore,
+                CHIAVE_MEMORIA_ALLINEATORE: self._allineatore,
+                CHIAVE_MEMORIA_TIENI: self._tieni_in_memoria})
+        except Exception as errore:
+            # UNA volta per sessione. Questo slot parte a ogni cambio di
+            # tendina e a ogni click sulla spunta: con la cartella del
+            # progetto in sola lettura, un dialogo modale per gesto rende
+            # i controlli inutilizzabili proprio mentre l'utente li sta
+            # usando. Il guasto e' lo stesso a ogni tentativo -- dirlo la
+            # seconda volta non aggiunge niente e toglie la pagina.
+            if self._avvisato_memoria_non_scritta:
+                return
+            self._avvisato_memoria_non_scritta = True
+            QMessageBox.warning(self, testi.TITLE_PROJECT_ACTION_FAILED,
+                                testi.msg_project_action_failed(str(errore)))
+
+    def _applica_motori_ricordati(self, nome_passo):
+        """Le tre scelte che il progetto ricorda, dentro lo stato e dentro
+        i controlli -- a segnali BLOCCATI: siamo prima del primo
+        `_prossimo_frame`, quindi uno slot che partisse da qui chiamerebbe
+        `_rileva` senza frame corrente (innocuo) e soprattutto
+        riscriverebbe la memoria del progetto durante la sua stessa
+        lettura."""
+        try:
+            ricordate = risposte_ricordate(self._progetto, nome_passo)
+        except Exception:
+            ricordate = {}
+        self._rilevatore = _chiave_valida(ricordate.get(CHIAVE_MEMORIA_RILEVATORE),
+                                          MotoriCatalog.CHIAVI_RILEVATORI,
+                                          MotoriCatalog.DEFAULT_RILEVATORE)
+        self._allineatore = _chiave_valida(ricordate.get(CHIAVE_MEMORIA_ALLINEATORE),
+                                           MotoriCatalog.CHIAVI_ALLINEATORI,
+                                           MotoriCatalog.DEFAULT_ALLINEATORE)
+        self._tieni_in_memoria = _spunta_ricordata(ricordate.get(CHIAVE_MEMORIA_TIENI))
+        self._mostra_motori()
+
+    def _mostra_motori(self):
+        """Lo stato dentro i tre controlli, a segnali bloccati (vedi
+        `_applica_motori_ricordati`)."""
+        for controllo, valore in ((self.selettore_rilevatore, self._rilevatore),
+                                  (self.selettore_allineatore, self._allineatore)):
+            controllo.blockSignals(True)
+            controllo.setCurrentIndex(max(controllo.findData(valore), 0))
+            controllo.blockSignals(False)
+        self.spunta_memoria.blockSignals(True)
+        self.spunta_memoria.setChecked(self._tieni_in_memoria)
+        self.spunta_memoria.blockSignals(False)
 
     def _su_volti(self, frame, rect_chiesto, volti):
         if self.servizio is None or frame != self._frame_corrente:
@@ -1375,6 +1613,13 @@ class PaginaEstrazione(QWidget):
         self.bottone_manuale.setEnabled(pronto and libera)
         self.bottone_manuale.setText(
             testi.ESTRAZIONE_MANUALE_ESCI if manuale_attiva else testi.ESTRAZIONE_MANUALE)
+        # I tre controlli dei motori riguardano SOLO la sessione manuale:
+        # fuori non hanno niente su cui agire (i passi automatici hanno i
+        # propri selettori nel form del dialogo), e lasciarli visibili
+        # allargherebbe la barra per niente.
+        self.riga_motori.setVisible(manuale_attiva)
+        for controllo in self._controlli_motori:
+            controllo.setEnabled(manuale_attiva)
         self.bottone_riestrai.setEnabled(pronto and libera and not manuale_attiva
                                          and self._lato == "dst"
                                          and self._gestore is not None)
