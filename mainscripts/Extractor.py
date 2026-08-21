@@ -863,7 +863,7 @@ def main(detector=None,
 
             io.log_info ('Performing 3rd pass...')
             data = ExtractSubprocessor (data, 'final', image_size, jpeg_quality, face_type, output_debug_path if output_debug else None, final_output_path=output_path, device_config=device_config).run()
-            _scrivi_rapporto(report_dir, data, motore="manual")
+            _scrivi_rapporto(report_dir, data, motore=ExtractReport.MOTORE_MANUALE)
 
         else:
             io.log_info ('Extracting faces...')
@@ -903,7 +903,7 @@ def main(detector=None,
                                                 min_face_size=min_face_size,
                                                 device_config=device_config).run()
                 fix_data = ExtractSubprocessor (fix_data, 'final', image_size, jpeg_quality, face_type, output_debug_path if output_debug else None, final_output_path=output_path, device_config=device_config).run()
-                _scrivi_rapporto(report_dir, fix_data, motore="manual")
+                _scrivi_rapporto(report_dir, fix_data, motore=ExtractReport.MOTORE_MANUALE)
                 faces_detected += sum([d.faces_detected for d in fix_data])
 
 

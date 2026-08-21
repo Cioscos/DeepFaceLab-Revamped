@@ -84,6 +84,18 @@ class PilaProgresso(QWidget):
         ragione."""
         return self._avvio is not None
 
+    def togli_avvio(self):
+        """Il gemello pubblico di `_togli_avvio`, per chi la barra pulsante
+        deve spegnerla a mano.
+
+        `_apri` la spegne da sola alla prima riga `open` del canale di
+        avanzamento, e per un job batch basta. La sessione manuale della
+        pagina di estrazione pero' non ha nessun canale: parla col figlio a
+        richiesta/risposta (gui/estrazione/trasporto.py), quindi nessun
+        `open` arrivera' mai, e chi riceve la prima risposta deve poterla
+        togliere. Chiamarla due volte non e' un errore."""
+        self._togli_avvio()
+
     def _togli_avvio(self):
         if self._avvio is None:
             return

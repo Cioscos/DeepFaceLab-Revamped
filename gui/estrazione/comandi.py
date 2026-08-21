@@ -115,11 +115,20 @@ class ColonnaComandi(QWidget):
 
     def _costruisci(self, comando):
         # Il testo porta il tasto: e' la spiegazione fissa, non un tooltip.
-        bottone = QPushButton("%s\t%s" % (comando.etichetta, comando.tasto))
+        # Fra parentesi quadre e non dopo una tabulazione, che in un
+        # QPushButton non si vede.
+        bottone = QPushButton(testi.estrazione_comando_etichetta(comando.etichetta,
+                                                                 comando.tasto))
         bottone.setProperty("tasto", comando.tasto)
         # NoFocus: un bottone che prende il focus al click lo toglie alla
         # tela, e il gesto dopo (una freccia) andrebbe altrove. Misurato.
         bottone.setFocusPolicy(Qt.NoFocus)
+        # Il tooltip della QAction qui sotto non raggiunge il bottone: un
+        # QPushButton non ha setDefaultAction, e clicked.connect non
+        # trasporta niente. Sul bottone va il SOLO tasto -- chi ci passa
+        # sopra cerca quello, non una ripetizione dell'etichetta che ha gia'
+        # sotto gli occhi. Non e' un letterale: e' un dato di COMANDI.
+        bottone.setToolTip(comando.tasto)
         azione = QAction(comando.etichetta, self)
         azione.setShortcut(QKeySequence(comando.tasto))
         azione.setShortcutContext(Qt.WidgetWithChildrenShortcut)

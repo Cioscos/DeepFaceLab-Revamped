@@ -7,6 +7,7 @@ role by role, so the duplication cannot drift.
 """
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor, QPalette
+from PyQt5.QtWidgets import QComboBox, QStyledItemDelegate
 
 from gui.workspace import STATE_BLOCKED, STATE_DONE, STATE_READY
 
@@ -164,6 +165,18 @@ QComboBox QAbstractItemView {
     border: 1px solid %(bordo)s;
     selection-background-color: %(accento)s;
 }
+/* Le voci disegnate dal delegato di theme.tendina() non ereditano il
+   `padding` della regola QComboBox qui sopra: senza questa riga l'altezza di
+   una riga del popup scende, mentre una QComboBox nuda -- che il foglio non
+   riesce a stilizzare -- resta piena. Misurato due volte offscreen su venti
+   voci, in condizioni tipografiche diverse e non registrate, con la stessa
+   differenza di 8 px per riga (il padding 4px x 2): 26->18 px per riga,
+   popup 522->362 px (2026-08-21, col delegato); 29->21 px, popup 580->420
+   (misura precedente, stessa data). Non e' una preferenza: e' il ripristino
+   della densita' che il popup ha quando lo disegna lo stile nativo. */
+QComboBox QAbstractItemView::item {
+    padding: 4px 6px;
+}
 QCheckBox::indicator {
     width: 18px;
     height: 18px;
@@ -311,3 +324,44 @@ def apply_dark_theme(app, scala=1.0):
     app.setStyle("Fusion")
     app.setPalette(dark_palette())
     app.setStyleSheet(stylesheet(scala))
+
+
+def tendina(parent=None):
+    """Una QComboBox il cui popup si illumina al passaggio del mouse.
+
+    Misurato il 2026-08-21 su questa palette, muovendo il mouse sulla terza
+    voce e leggendo il pixel sotto il cursore: con la regola
+    `QComboBox { background: ... }` di questo stesso foglio il popup resta
+    #191919 -- il fondo -- benche' currentIndex e il modello di selezione
+    seguano il mouse. E' un difetto di PITTURA, non di logica: stilizzare
+    il controllo chiuso porta la tendina sul motore del foglio e il popup
+    interno smette di disegnare l'evidenziazione. Aggiungere
+    `::item:hover` non la riaccende e in piu' fa saltare la selezione alla
+    riga 0.
+
+    Rimedi che accendono il pixel ce ne sono due, e **non sono
+    equivalenti**. Sostituire la vista interna (`setView(QListView())`) lo
+    accende ma **spegne il segnale `highlighted`**: con una vista propria la
+    QComboBox non lo emette piu', ne' col mouse ne' con le frecce (misurato:
+    `[]` contro `[0, 2]` di una tendina nuda, a parita' di gesto). Quel
+    segnale e' l'unico motore dell'aiuto per voce di
+    gui/fascia_aiuto.py::osserva -- la spiegazione del valore che si sta
+    scegliendo, in ogni campo a scelta di ogni dialogo della shell: barattarla
+    per un colore vorrebbe dire pagare un difetto con uno piu' grande.
+
+    Il delegato tiene tutti e due. `QStyledItemDelegate` e' il rimedio
+    classico al popup che ignora il foglio di stile: la vista resta quella
+    della QComboBox -- quindi `highlighted` continua a partire -- ma le voci
+    le disegna il motore del foglio, che l'hover lo dipinge (#378add sotto il
+    cursore, contro #191919 senza). I tooltip per voce (`Qt.ToolTipRole`, che
+    il selettore dei motori dell'estrazione usa per dire quali pesi mancano)
+    sopravvivono a entrambe le strade.
+
+    Sta qui e non in gui/forms.py perche' il rimedio appartiene alla regola
+    che causa il difetto, che e' in questo file; e perche' ogni tendina
+    della shell deve passare di qui, non solo quelle dei form -- lo impone
+    una guardia in tests_gui/test_theme.py.
+    """
+    combo = QComboBox(parent)
+    combo.setItemDelegate(QStyledItemDelegate(combo))
+    return combo

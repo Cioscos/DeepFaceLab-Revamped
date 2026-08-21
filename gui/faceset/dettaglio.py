@@ -15,10 +15,11 @@ from pathlib import Path
 
 from PyQt5.QtCore import QObject, QPoint, QPointF, QRect, Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QImage, QPainter, QPixmap, QPolygonF
-from PyQt5.QtWidgets import (QCheckBox, QComboBox, QHBoxLayout, QLabel,
+from PyQt5.QtWidgets import (QCheckBox, QHBoxLayout, QLabel,
                              QVBoxLayout, QWidget)
 
 from gui import testi
+from gui import theme
 from gui.faceset.griglia import MASCHERA_OFF, MODI_MASCHERA
 from gui.numeri import intero_qt_utilizzabile
 
@@ -237,7 +238,7 @@ class FinestraDettaglio(QWidget):
         self.spunta_landmark = QCheckBox(testi.FACESET_LANDMARKS)
         self.spunta_landmark.setToolTip(testi.FACESET_LANDMARKS_TIP)
         self.spunta_landmark.toggled.connect(self.mostra_landmark)
-        self.selettore_maschera = QComboBox()
+        self.selettore_maschera = theme.tendina()
         for chiave, etichetta in MODI_MASCHERA:
             self.selettore_maschera.addItem(etichetta, chiave)
         self.selettore_maschera.currentIndexChanged.connect(self._su_modo_maschera)

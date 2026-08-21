@@ -9,11 +9,12 @@ from pathlib import Path
 
 from PyQt5.QtCore import QUrl, Qt
 from PyQt5.QtGui import QDesktopServices, QKeySequence
-from PyQt5.QtWidgets import (QApplication, QComboBox, QHBoxLayout, QLabel, QMenu,
+from PyQt5.QtWidgets import (QApplication, QHBoxLayout, QLabel, QMenu,
                              QMessageBox, QPushButton, QShortcut, QSlider,
                              QToolButton, QVBoxLayout, QWidget)
 
 from gui import testi
+from gui import theme
 from gui.catalog import step_by_name
 from gui.execution.jobs import StepConflict
 from gui.faceset import azioni as azioni_mod
@@ -96,9 +97,11 @@ class PaginaCuraFaceset(QWidget):
         self.heatmap = WidgetHeatmap(impostazioni)
         self.pila = PilaProgresso()
         self.etichetta_stato = QLabel("")
-        self.selettore_cartella = QComboBox()
+        self.selettore_cartella = theme.tendina()
         self.bottone_src = QPushButton(testi.FACESET_SRC)
+        self.bottone_src.setCheckable(True)
         self.bottone_dst = QPushButton(testi.FACESET_DST)
+        self.bottone_dst.setCheckable(True)
         self.cursore_zoom = QSlider(Qt.Horizontal)
         self.cursore_zoom.setRange(0, len(LATI) - 1)
         self.cursore_zoom.setValue(LATI.index(self.griglia.lato()))
@@ -114,7 +117,7 @@ class PaginaCuraFaceset(QWidget):
         # solo su una riga dice ancora meno di quando stava in mezzo agli
         # altri.
         self.cursore_zoom.setToolTip(testi.FACESET_SIZE_TIP)
-        self.selettore_maschera = QComboBox()
+        self.selettore_maschera = theme.tendina()
         for chiave, etichetta in MODI_MASCHERA:
             self.selettore_maschera.addItem(etichetta, chiave)
         self.bottone_apri_cartella = QPushButton(testi.FACESET_OPEN_FOLDER)
@@ -146,7 +149,7 @@ class PaginaCuraFaceset(QWidget):
         self.bottone_collassa.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.bottone_collassa.setArrowType(Qt.DownArrow)
         self.bottone_collassa.setProperty("ruolo", "sezione")
-        self.selettore_bin = QComboBox()
+        self.selettore_bin = theme.tendina()
         self.selettore_bin.setToolTip(testi.HEATMAP_BINS_TIP)
         for n in BIN_AMMESSI:
             self.selettore_bin.addItem(testi.heatmap_bins_label(n), n)
@@ -245,6 +248,7 @@ class PaginaCuraFaceset(QWidget):
 
     def imposta_dataset(self, dataset):
         self._dataset = dataset
+        self._aggiorna_dataset_bottoni()
         cartelle = self.cartelle()
         self.selettore_cartella.clear()
         for c in cartelle:
@@ -256,6 +260,7 @@ class PaginaCuraFaceset(QWidget):
             # stato e barra restano con i dati del dataset precedente --
             # cioe' mentono su cio' che la griglia, ormai vuota, mostra.
             self._cartella = None
+            self._ultima_mossa = None
             self._abbinati = {}
             self._indice = indice_mod.Indice([])
             self._stato = indice_mod.STATO_ASSENTE
@@ -265,6 +270,14 @@ class PaginaCuraFaceset(QWidget):
             self._aggiorna_fascia_heatmap()
             self.etichetta_stato.setText(testi.faceset_index_state(self._stato, 0))
             self._rigenera_comandi()
+
+    def _aggiorna_dataset_bottoni(self):
+        """Lo stesso mestiere di PaginaEstrazione._aggiorna_lato_bottoni.
+        Chiamato anche quando il dataset NON cambia: il bottone si e' gia'
+        scommutato da solo al click, e senza questa chiamata la barra
+        resterebbe senza nessun lato acceso."""
+        self.bottone_src.setChecked(self._dataset == "src")
+        self.bottone_dst.setChecked(self._dataset == "dst")
 
     def cartelle(self):
         if self._workspace is None:
@@ -281,6 +294,14 @@ class PaginaCuraFaceset(QWidget):
 
     def imposta_cartella(self, cartella):
         self._cartella = Path(cartella)
+        # Il cestino appartiene alla CARTELLA, non alla pagina: i percorsi
+        # della Mossa sono assoluti, quindi un Undo premuto dopo un cambio
+        # riporterebbe davvero un file dell'altra cartella -- fuori dallo
+        # schermo che si sta guardando. Nessun dato si perde (cestino.annulla
+        # salta se l'origine esiste gia'), ma il bottone mentirebbe su cosa
+        # sta per annullare. Stessa riga, e stessa ragione, di
+        # PaginaEstrazione.apri con `_ultima_mossa_debug`.
+        self._ultima_mossa = None
         self._sincronizza_selettore()
         # La cache della decodifica e' indicizzata per percorso: le voci
         # della cartella di prima non saranno mai piu' richieste, e senza
@@ -568,6 +589,14 @@ class PaginaCuraFaceset(QWidget):
             self._nome_job_corrente = passo.name
             job.progress.connect(self._su_progresso)
             job.finished.connect(self._su_job_finito)
+            # Il figlio parte con spawn e paga l'import a freddo di torch
+            # (mainscripts/Sorter.py lo importa a livello di modulo;
+            # FacesetIndex passa da facelib, che tira dentro S3FD e FAN),
+            # e per l'index anche la costruzione del pool: sono secondi in
+            # cui l'unico segnale era un bottone che si spegneva. La spegne
+            # da sola PilaProgresso._apri alla prima riga `open`, quindi
+            # qui non c'e' niente da disfare.
+            self.pila.mostra_avvio(passo.name)
         self._rigenera_comandi()
         return job
 

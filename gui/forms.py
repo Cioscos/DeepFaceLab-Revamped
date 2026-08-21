@@ -37,11 +37,12 @@ what the user actually changed. Every combo entry also carries its
 """
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
-    QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QHBoxLayout,
+    QCheckBox, QDoubleSpinBox, QFileDialog, QFormLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QSpinBox, QWidget,
 )
 
 from gui import testi
+from gui import theme
 from gui.catalog.model import FIELD_BOOL, FIELD_CHOICE, FIELD_FLOAT, FIELD_INT, FIELD_PATH, FIELD_TEXT
 from gui.fascia_aiuto import FasciaAiuto, osserva
 
@@ -134,7 +135,7 @@ def _build_number(field, is_float):
 
 
 def _build_choice(field):
-    combo = QComboBox()
+    combo = theme.tendina()
     blank = field.default is None
     if blank:
         combo.addItem("")
@@ -285,7 +286,7 @@ class StepForm(QWidget):
 
         self._model_combo = None
         if step.needs_model_name:
-            self._model_combo = QComboBox()
+            self._model_combo = theme.tendina()
             self._model_combo.setEditable(True)
             self._layout.addRow(testi.MODEL_NAME, self._model_combo)
 

@@ -130,6 +130,26 @@ def _rects_utilizzabili(rect):
     return fuori
 
 
+def _dimensione_utilizzabile(dimensione, pixmap):
+    """(larghezza, altezza) dello spazio in cui vivono rettangoli e
+    landmark, o None se non c'e' un pixmap.
+
+    Regge qualunque cosa arrivi da fuori e non solleva mai: da qui si passa
+    dentro un paintEvent, e un'eccezione che ne risale chiama qFatal.
+    """
+    if pixmap is None or pixmap.isNull():
+        return None
+    if dimensione is not None:
+        try:
+            larghezza, altezza = dimensione
+        except (TypeError, ValueError):
+            larghezza, altezza = None, None
+        if numeri.numero_finito(larghezza) and numeri.numero_finito(altezza) \
+                and larghezza > 0 and altezza > 0:
+            return float(larghezza), float(altezza)
+    return float(pixmap.width()), float(pixmap.height())
+
+
 def _punto_qt(x, y):
     """QPoint, non QPointF: drawEllipse su un QPointF resta in virgola
     mobile e un 1e300 ci passa dentro senza sollevare -- la guardia
@@ -156,6 +176,7 @@ class Tela(QtWidgets.QWidget):
         self.setFocusPolicy(QtCore.Qt.StrongFocus)
         self.setMouseTracking(True)
         self._pixmap = None
+        self._dim_frame = None
         self._rects = []
         self._punti = []
         self._centro = None
@@ -163,17 +184,38 @@ class Tela(QtWidgets.QWidget):
         self._bloccato = False
         self._modo_vettore = False
         self._sessione_manuale = False
+        self._messaggio = ""
 
-    def mostra(self, pixmap, rect, landmarks):
+    def mostra(self, pixmap, rect, landmarks, dimensione_frame=None):
         """`rect` e `landmarks` sono in coordinate del FRAME, come li
         produce il servizio: la scala la applica il disegno.
 
         `rect` e' una tupla (l, t, r, b) sola -- come la manda la sessione
         manuale -- o una lista di tuple, cio' che porta il rapporto per un
-        frame con piu' volti."""
+        frame con piu' volti.
+
+        `dimensione_frame` e' (larghezza, altezza) di QUELLO spazio. None
+        vuol dire «il pixmap E' il frame», che e' il caso della sessione
+        manuale: il figlio scrive il raster a risoluzione nativa. La
+        revisione invece mostra un'anteprima ridotta a LATO_ANTEPRIMA
+        mentre il rapporto porta coordinate del frame intero, e finche' la
+        scala si ricavava dal solo pixmap il rettangolo usciva spostato e
+        ingrandito di 1,875x su un 1920x1080 (misurato il 2026-08-21).
+        """
         self._pixmap = pixmap
+        self._dim_frame = _dimensione_utilizzabile(dimensione_frame, pixmap)
         self._rects = _rects_utilizzabili(rect)
         self._punti = _coppie_utilizzabili(landmarks)
+        self.update()
+
+    def imposta_messaggio(self, testo):
+        """Il testo dipinto al centro quando non c'e' niente da mostrare.
+        Stringa vuota per spegnerlo. Non ha un gemello `messaggio()`: chi
+        lo imposta e' la pagina, che sa gia' cosa gli ha dato."""
+        testo = str(testo or "")
+        if testo == self._messaggio:
+            return
+        self._messaggio = testo
         self.update()
 
     # -- il rettangolo della sessione manuale -------------------------------
@@ -315,18 +357,22 @@ class Tela(QtWidgets.QWidget):
         """(fattore, dx, dy) per andare dal frame al widget, o None.
 
         Il fattore non si tiene in un attributo e non si imposta da fuori:
-        e' interamente determinato dalla dimensione del pixmap e da quella
-        del widget, e un attributo sarebbe solo una copia da tenere in
-        sincronia con un resizeEvent.
+        e' interamente determinato da self._dim_frame -- lo spazio in cui
+        vivono rettangoli e landmark -- e dalla dimensione del widget, e un
+        attributo sarebbe solo una copia da tenere in sincronia con un
+        resizeEvent. Il pixmap ci entra solo come RIPIEGO: quando
+        `dimensione_frame` passato a mostra() e' None, _dim_frame diventa la
+        dimensione del pixmap perche' in quel caso e' lui il frame (la
+        sessione manuale, che scrive il raster a risoluzione nativa).
 
         None quando la trasformazione non esiste -- nessun pixmap, pixmap
-        nullo, un lato a zero, il widget non ancora dimensionato. Chi
-        chiama e' un paintEvent o uno slot: qui non si divide mai per zero.
+        nullo, nessuno spazio dichiarato, un lato a zero, il widget non
+        ancora dimensionato. Chi chiama e' un paintEvent o uno slot: qui non
+        si divide mai per zero.
         """
-        if self._pixmap is None or self._pixmap.isNull():
+        if self._pixmap is None or self._pixmap.isNull() or self._dim_frame is None:
             return None
-        larghezza_frame = self._pixmap.width()
-        altezza_frame = self._pixmap.height()
+        larghezza_frame, altezza_frame = self._dim_frame
         if larghezza_frame <= 0 or altezza_frame <= 0:
             return None
         if self.width() <= 0 or self.height() <= 0:
@@ -461,16 +507,24 @@ class Tela(QtWidgets.QWidget):
         pittore = QtGui.QPainter(self)
         pittore.fillRect(self.rect(), self.palette().window())
         trasformazione = self.trasformazione()
+        if trasformazione is None and self._messaggio:
+            # Solo senza fotogramma: sopra un frame sarebbe peggio del
+            # vuoto che rimpiazza.
+            pittore.setPen(QtGui.QPen(self.palette().windowText().color()))
+            pittore.drawText(self.rect(),
+                             QtCore.Qt.AlignCenter | QtCore.Qt.TextWordWrap,
+                             self._messaggio)
         if trasformazione is not None:
             fattore, dx, dy = trasformazione
             # Senza questo il ridimensionamento di un 1080p e' a vicino piu'
             # prossimo: sui capelli e sui bordi del volto e' proprio cio'
             # che serve guardare per decidere dove tracciare il vettore.
             pittore.setRenderHint(QtGui.QPainter.SmoothPixmapTransform, True)
+            larghezza_frame, altezza_frame = self._dim_frame
             destinazione = QtCore.QRect(
                 int(dx), int(dy),
-                max(1, int(self._pixmap.width() * fattore)),
-                max(1, int(self._pixmap.height() * fattore)))
+                max(1, int(larghezza_frame * fattore)),
+                max(1, int(altezza_frame * fattore)))
             pittore.drawPixmap(destinazione, self._pixmap)
         if self._rects:
             pittore.setPen(QtGui.QPen(QtGui.QColor(90, 200, 250), 2))

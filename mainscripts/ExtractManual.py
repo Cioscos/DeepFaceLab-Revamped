@@ -370,6 +370,40 @@ def _op_salva(comando):
         # None -- quel caso non deve mai diventare un AttributeError su
         # Path(None).name.
         raise ValueError("volto scartato: nessun file scritto")
+
+    # La voce di rapporto, se chi ha chiamato ne ha data una cartella. Si
+    # rilegge dal disco invece di accumulare in memoria: la sessione salva
+    # un volto alla volta e la voce deve elencarli tutti, e il disco e'
+    # l'unica lettura che non puo' divergere da cio' che c'e' davvero. E'
+    # anche il primo produttore di STATO_CONFERMATO, che fino a qui non ne
+    # aveva nessuno.
+    #
+    # Le due scritture non hanno lo stesso peso: il .jpg qui sopra e'
+    # il lavoro dell'utente -- minuti di tracciamento a mano su un
+    # fotogramma che il rilevatore non aggancia -- mentre questa voce e'
+    # un comodo, ricostruibile in qualunque momento dal bottone «Rebuild
+    # report». Un guasto qui (disco pieno, cartella non scrivibile, un
+    # percorso assurdo nel comando) non deve mai far tornare un errore su
+    # un salvataggio gia' riuscito: la pagina rifarebbe a mano un volto
+    # gia' a posto, e il secondo salvataggio prenderebbe un face_idx
+    # diverso -- due volti dove doveva essercene uno. Si annuncia su
+    # stderr, mai su stdout: e' il canale del protocollo, e una stampa li'
+    # desincronizzerebbe il parser del client.
+    report_dir = comando.get("report_dir")
+    if report_dir:
+        try:
+            from mainscripts import ExtractIndex, ExtractReport
+            with ExtractReport.Scrittore(report_dir) as scrittore:
+                scrittore.scrivi(ExtractReport.voce(
+                    percorso,
+                    volti=ExtractIndex.volti_di_un_frame(uscita, percorso.name),
+                    luminanza=None,
+                    stato=ExtractReport.STATO_CONFERMATO,
+                    motore=ExtractReport.MOTORE_MANUALE))
+        except Exception as eccezione:
+            print("voce di rapporto non scritta per %s: %s" % (percorso.name, eccezione),
+                  file=sys.stderr)
+
     return {"op": "salvato", "id": comando.get("id"), "file": Path(scritto).name}
 
 

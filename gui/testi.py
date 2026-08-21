@@ -753,6 +753,10 @@ ESTRAZIONE_MANUALE_TIP = ("Start (or stop) the native manual extractor: draw the
                           "face rectangle on the canvas above instead of the old "
                           "cv2 window.")
 ESTRAZIONE_MANUALE_OCCUPA = "A manual session is running on this dataset. Exit it first."
+# La barra pulsante fra l'ingresso in sessione (o il cambio di motore) e la
+# prima risposta del figlio -- il primo `rileva` costruisce i modelli veri
+# e li porta in VRAM, ed e' un'attesa senza nessun altro segnale a schermo.
+ESTRAZIONE_CARICAMENTO_MOTORI = "Loading the detector and the landmarker…"
 # I tre controlli dei motori, visibili solo durante la sessione manuale.
 # Le voci delle tendine e i loro aiuti NON stanno qui: sono `label` e `help`
 # di mainscripts/MotoriCatalog.py, che ne e' la sorgente unica.
@@ -783,6 +787,18 @@ def estrazione_stato(totale_frame):
     if totale_frame == 0:
         return "No frames in this folder yet."
     return "%d frame(s)." % totale_frame
+
+
+def estrazione_cartella_vuota(nome_cartella):
+    """Al centro dell'area vuota, non solo in fondo alla barra: dice anche
+    cosa fare prima, perche' «frames» qui sono le immagini che i passi 2 e 3
+    estraggono dal video, non i volti."""
+    return ("No frames in %s yet.\n\n"
+            "Extract images from a video first (steps 2 and 3), then come back."
+            % nome_cartella)
+
+
+ESTRAZIONE_FILTRO_VUOTO = "No frames match this filter."
 
 
 def estrazione_volto_salvato(nome_file):
@@ -904,11 +920,14 @@ def estrazione_pesi_mancanti_tip(motore):
 
 
 def estrazione_motore_tooltip(motore):
-    """Il motore che ha prodotto il frame, come tooltip della miniatura in
-    pellicola -- 'unknown' e non un motore dedotto quando il campo manca
-    (voci vecchie, o ricostruite da 'extracttool index', che non lo
-    portano)."""
-    return "Engine: %s" % (motore if motore else "unknown")
+    """Il motore che ha prodotto la voce. «not recorded» e non «unknown»:
+    il campo manca per una ragione precisa -- la voce e' stata ricostruita
+    da `extracttool index`, che non deduce mai un motore, oppure e' piu'
+    vecchia del campo -- e «unknown» la faceva leggere come un guasto."""
+    return "Engine: %s" % (motore if motore else "not recorded")
+
+
+ESTRAZIONE_FRAME_NON_NEL_RAPPORTO = "Not in the extraction report: this frame has not been extracted yet."
 
 
 # -- la colonna dei comandi (gui/estrazione/comandi.py) ----------------------
@@ -921,3 +940,10 @@ HOT_KEY = "hot key"
 
 def estrazione_comando_tip(etichetta, tasto):
     return "%s (%s: %s)" % (etichetta, HOT_KEY, tasto)
+
+
+def estrazione_comando_etichetta(etichetta, tasto):
+    """Il tasto fra parentesi quadre, staccato da due spazi. La tabulazione
+    di prima non e' un separatore visibile in un QPushButton: il tasto
+    finiva dentro l'etichetta e non si distingueva."""
+    return "%s  [%s]" % (etichetta, tasto)

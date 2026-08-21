@@ -19,6 +19,12 @@ STATO_AUTOMATICO = "automatico"
 STATO_CONFERMATO = "confermato"
 STATO_SALTATO = "saltato"
 
+# La coppia che il rapporto scrive per i rami tracciati a mano. Una parola
+# sola in un posto solo: la scrivono Extractor.main (il ramo `--detector
+# manual`, la finestra cv2) e ExtractManual (_op_salva, la sessione nativa
+# della GUI), e sono due file diversi.
+MOTORE_MANUALE = "manual"
+
 
 def chiave_di(path):
     st = os.stat(str(path))

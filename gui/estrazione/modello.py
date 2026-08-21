@@ -77,6 +77,13 @@ class ModelloFrame(QtCore.QAbstractListModel):
     def rowCount(self, _parent=QtCore.QModelIndex()):
         return len(self._visibili)
 
+    def totale(self):
+        """Quanti frame ha la cartella, filtro ignorato: `rowCount` conta i
+        VISIBILI, e i due numeri divergono appena un filtro e' acceso --
+        che e' proprio il caso in cui la pagina deve scegliere quale dei due
+        messaggi vuoti mostrare."""
+        return len(self._tutti)
+
     def data(self, index, role=QtCore.Qt.DisplayRole):
         if not index.isValid() or not (0 <= index.row() < len(self._visibili)):
             return None
@@ -88,11 +95,10 @@ class ModelloFrame(QtCore.QAbstractListModel):
         if role == QtCore.Qt.DisplayRole:
             return percorso.name
         if role == QtCore.Qt.ToolTipRole:
-            # Il motore che ha prodotto il frame, sotto al mouse in
-            # pellicola: e' li' che l'utente guarda i frame, e senza
-            # questo campo lo stesso 'aligned/' con volti di motori
-            # diversi (ri-estrazione dei mancati con un motore diverso)
-            # diventa indistinguibile.
-            motore = indice.motore_di(voce) if voce is not None else None
-            return testi.estrazione_motore_tooltip(motore)
+            # Due assenze diverse: la voce che manca del tutto (frame mai
+            # estratto) e la voce senza motore (rapporto ricostruito, o piu'
+            # vecchio del campo). Prima dicevano la stessa cosa.
+            if voce is None:
+                return testi.ESTRAZIONE_FRAME_NON_NEL_RAPPORTO
+            return testi.estrazione_motore_tooltip(indice.motore_di(voce))
         return None

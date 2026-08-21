@@ -70,37 +70,70 @@ def _percorsi(cartella, estensioni):
     return fuori
 
 
-def _volti_per_frame(aligned_dir):
+def _volto_da_dfl(percorso):
+    """(source_filename, voce-volto) da un JPEG allineato, o None se il file
+    non e' un DFLJPG o non dichiara il frame da cui viene.
+
+    Estratta da `_volti_per_frame` perche' la sessione manuale ne ha
+    bisogno per un frame solo: due copie di questa aritmetica sono il modo
+    in cui una delle due smette di calcolare la stessa posa."""
     from DFLIMG import DFLJPG
     from facelib import FaceType, LandmarksProcessor
+    dfl = DFLJPG.load(percorso)
+    if dfl is None:
+        return None
+    sorgente = dfl.get_source_filename()
+    if not sorgente:
+        return None
+    rect = dfl.get_source_rect()
+    lmrks = dfl.get_landmarks()
+    posa = [0.0, 0.0, 0.0]
+    lato = 0
+    if rect is not None:
+        l, t, r, b = [int(x) for x in np.asarray(rect).reshape(-1)[:4]]
+        lato = max(r - l, b - t)
+        rect = [l, t, r, b]
+    else:
+        rect = [0, 0, 0, 0]
+    lmrks = np.asarray(lmrks)
+    if lmrks.ndim == 2 and lmrks.shape[0] == 68:
+        mat = LandmarksProcessor.get_transform_mat(lmrks, 256, FaceType.FULL)
+        allineati = LandmarksProcessor.transform_points(lmrks, mat)
+        posa = [float(p) for p in
+                LandmarksProcessor.estimate_pitch_yaw_roll(allineati)]
+    return sorgente, {"rect": rect, "posa": posa, "lato": lato}
+
+
+def _volti_per_frame(aligned_dir):
     per_frame = {}
     percorsi = _percorsi(aligned_dir, (".jpg",))
     for percorso in io.progress_bar_generator(percorsi, "Reading aligned faces"):
-        dfl = DFLJPG.load(percorso)
-        if dfl is None:
+        esito = _volto_da_dfl(percorso)
+        if esito is None:
             continue
-        sorgente = dfl.get_source_filename()
-        if not sorgente:
-            continue
-        rect = dfl.get_source_rect()
-        lmrks = dfl.get_landmarks()
-        posa = [0.0, 0.0, 0.0]
-        lato = 0
-        if rect is not None:
-            l, t, r, b = [int(x) for x in np.asarray(rect).reshape(-1)[:4]]
-            lato = max(r - l, b - t)
-            rect = [l, t, r, b]
-        else:
-            rect = [0, 0, 0, 0]
-        lmrks = np.asarray(lmrks)
-        if lmrks.ndim == 2 and lmrks.shape[0] == 68:
-            mat = LandmarksProcessor.get_transform_mat(lmrks, 256, FaceType.FULL)
-            allineati = LandmarksProcessor.transform_points(lmrks, mat)
-            posa = [float(p) for p in
-                    LandmarksProcessor.estimate_pitch_yaw_roll(allineati)]
-        per_frame.setdefault(sorgente, []).append(
-            {"rect": rect, "posa": posa, "lato": lato})
+        sorgente, voce_volto = esito
+        per_frame.setdefault(sorgente, []).append(voce_volto)
     return per_frame
+
+
+def volti_di_un_frame(aligned_dir, nome_frame):
+    """I volti gia' su disco per UN frame, nella stessa forma che
+    `_volti_per_frame` da' a tutti.
+
+    Il glob sullo stelo restringe la lettura ai pochi file plausibili --
+    l'estrazione nomina `<stelo>_<indice>.jpg` -- ma non decide: «00001_2.png»
+    produce «00001_2_0.jpg», che lo stelo di «00001.png» pesca. Chi decide
+    e' il source_filename scritto dentro il JPEG.
+    """
+    cartella = Path(aligned_dir)
+    if not cartella.is_dir():
+        return []
+    volti = []
+    for percorso in sorted(cartella.glob("%s_*.jpg" % Path(nome_frame).stem)):
+        esito = _volto_da_dfl(str(percorso))
+        if esito is not None and esito[0] == nome_frame:
+            volti.append(esito[1])
+    return volti
 
 
 def ricostruisci(input_dir, aligned_dir, cache_dir):

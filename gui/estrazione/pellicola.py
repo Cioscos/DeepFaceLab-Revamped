@@ -93,8 +93,16 @@ class Pellicola(QtWidgets.QListView):
         self.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         self.setHorizontalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
         self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        # Sempre presente, mai "AsNeeded": una cartella ha migliaia di frame,
+        # e se lo spazio non e' riservato quando i frame sono pochi (come in
+        # un test) la vista lo regala alla riga, che si stira di nuovo.
+        self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOn)
         self.setItemDelegate(_Delegato(self))
         self.clicked.connect(self._su_click)
+        # Verticalmente Fixed: il sizeHint qui sotto e' l'altezza vera, e
+        # senza questa policy il layout gliene concederebbe di piu' avendone.
+        self.setSizePolicy(QtWidgets.QSizePolicy.Expanding,
+                           QtWidgets.QSizePolicy.Fixed)
 
     def immagine_per(self, percorso):
         if not isinstance(percorso, Path):
@@ -116,3 +124,27 @@ class Pellicola(QtWidgets.QListView):
         return [i.data(modello.RUOLO_PERCORSO)
                 for i in self.selectedIndexes()
                 if isinstance(i.data(modello.RUOLO_PERCORSO), Path)]
+
+    def _altezza_utile(self):
+        """La cella del delegato piu' cio' che la vista le mette attorno.
+
+        La barra di scorrimento orizzontale c'e' sempre -- una cartella ha
+        migliaia di frame -- e la sua altezza cambia con la scala
+        tipografica: si chiede a lei invece di scrivere un numero, o alla
+        scala xlarge la striscia taglierebbe la barra colorata.
+        """
+        cella = self.itemDelegate().sizeHint(
+            QtWidgets.QStyleOptionViewItem(), QtCore.QModelIndex()).height()
+        return (cella + 2 * self.frameWidth()
+                + self.horizontalScrollBar().sizeHint().height())
+
+    #override
+    def sizeHint(self):
+        """L'altezza vera, non i 256x192 che QAbstractScrollArea regala a
+        chiunque. Misurato il 2026-08-21: con quel sizeHint ereditato la
+        striscia prendeva 192 px per un contenuto alto 78, e siccome in
+        ListMode con Flow.LeftToRight la riga si stira all'altezza del
+        viewport, il riquadro della selezione era alto tutti e 192.
+        Vincolare l'altezza chiude i due sintomi con una modifica sola."""
+        base = super().sizeHint()
+        return QtCore.QSize(base.width(), self._altezza_utile())

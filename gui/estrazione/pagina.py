@@ -12,12 +12,13 @@ import tempfile
 from pathlib import Path
 
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QPixmap
-from PyQt5.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QHBoxLayout,
+from PyQt5.QtGui import QImageReader, QPixmap
+from PyQt5.QtWidgets import (QButtonGroup, QCheckBox, QHBoxLayout,
                              QLabel, QMessageBox, QPushButton, QVBoxLayout,
                              QWidget)
 
 from gui import testi
+from gui import theme
 from gui.estrazione import avvio as avvio_mod
 from gui.estrazione import azioni as azioni_mod
 from gui.estrazione import indice as indice_mod
@@ -138,7 +139,7 @@ def _selettore_motori(motori, chiave_predefinita, aiuto, mancanti=frozenset()):
     Una voce in `mancanti` resta nella tendina -- sparire senza spiegazione
     sarebbe peggio -- ma disabilitata, con un aiuto che dice perche'
     (`testi.estrazione_pesi_mancanti_tip`)."""
-    selettore = QComboBox()
+    selettore = theme.tendina()
     selettore.setToolTip(aiuto)
     modello = selettore.model()
     for i, motore in enumerate(motori):
@@ -189,6 +190,30 @@ def _valori_con_default(passo, risposte):
     return valori
 
 
+def _dimensione_nativa(percorso, pixmap):
+    """La dimensione del frame su DISCO, che e' lo spazio in cui il rapporto
+    scrive i rettangoli. L'anteprima e' decodificata a LATO_ANTEPRIMA,
+    quindi le due non coincidono, e la differenza E' lo scarto del
+    rettangolo.
+
+    Solo l'intestazione del file, non i pixel: QImageReader.size() non
+    decodifica. Se non torna una dimensione dello STESSO orientamento del
+    pixmap si ripiega su None -- il lettore delle miniature applica
+    setAutoTransform, e un frame ruotato dall'EXIF darebbe una dimensione
+    trasposta: meglio un rettangolo scalato come prima che uno girato.
+    """
+    dimensione = QImageReader(str(percorso)).size()
+    if not dimensione.isValid() or dimensione.width() <= 0 or dimensione.height() <= 0:
+        return None
+    if pixmap.width() <= 0 or pixmap.height() <= 0:
+        return None
+    atteso = dimensione.width() / float(dimensione.height())
+    reale = pixmap.width() / float(pixmap.height())
+    if abs(atteso - reale) > 0.01:
+        return None
+    return dimensione.width(), dimensione.height()
+
+
 class PaginaEstrazione(QWidget):
     def __init__(self, radice_e=None, parent=None):
         super().__init__(parent)
@@ -214,6 +239,13 @@ class PaginaEstrazione(QWidget):
         self._rilevatore = MotoriCatalog.DEFAULT_RILEVATORE
         self._allineatore = MotoriCatalog.DEFAULT_ALLINEATORE
         self._tieni_in_memoria = True
+        # Un motore nuovo sta per essere costruito: lo alzano l'ingresso in
+        # sessione e i due selettori, lo consuma `_rileva` -- l'unico punto
+        # che sa se una rilevazione parte DAVVERO, e quindi se ci sara' una
+        # risposta a spegnere la barra. Resta alzato se la rilevazione non
+        # e' partita, ed e' giusto: i motori sono ancora tutti da caricare,
+        # e la prima che parte davvero mostrera' la barra.
+        self._motori_da_caricare = False
         # L'avviso di "project.json non scrivibile" e' gia' stato dato in
         # questa sessione: vedi `_ricorda_motori`.
         self._avvisato_memoria_non_scritta = False
@@ -291,7 +323,7 @@ class PaginaEstrazione(QWidget):
         self.bottone_dst = QPushButton(testi.FACESET_DST)
         self.bottone_src.setCheckable(True)
         self.bottone_dst.setCheckable(True)
-        self.selettore_operazione = QComboBox()
+        self.selettore_operazione = theme.tendina()
         self.bottone_avvia = QPushButton(testi.ESTRAZIONE_AVVIA)
         self.bottone_avvia.setToolTip(testi.ESTRAZIONE_AVVIA_TIP)
         self.bottone_manuale = QPushButton(testi.ESTRAZIONE_MANUALE)
@@ -487,6 +519,7 @@ class PaginaEstrazione(QWidget):
         self.tela.mostra(None, None, None)
         self._aggiorna_lato_bottoni()
         self._aggiorna_conteggi_filtro()
+        self._aggiorna_messaggio_vuoto()
         if sessione_interrotta:
             self.etichetta_stato.setText(
                 testi.estrazione_sessione_interrotta_dal_ricaricamento(len(percorsi)))
@@ -503,6 +536,11 @@ class PaginaEstrazione(QWidget):
     def _cambia_lato(self, lato):
         if self._progetto is not None and lato != self._lato:
             self.apri(self._progetto, lato)
+        else:
+            # Il bottone si e' gia' scommutato da solo al click: senza
+            # questa riga un riclic sul lato attivo lascia la barra senza
+            # nessun lato acceso mentre la pagina e' ancora su quel lato.
+            self._aggiorna_lato_bottoni()
 
     def _aggiorna_lato_bottoni(self):
         self.bottone_src.setChecked(self._lato == "src")
@@ -527,6 +565,20 @@ class PaginaEstrazione(QWidget):
 
     def _su_filtro(self, chiave):
         self.modello.applica_filtro(chiave)
+        self._aggiorna_messaggio_vuoto()
+
+    def _aggiorna_messaggio_vuoto(self):
+        """Due vuoti diversi meritano due frasi diverse: la cartella senza
+        frame manda l'utente ai passi 2 e 3, il filtro senza risultati no --
+        li' i frame ci sono."""
+        if self._cartella is None or self._pixmap_corrente is not None \
+                or self.modello.rowCount() > 0:
+            self.tela.imposta_messaggio("")
+        elif self.modello.totale() == 0:
+            self.tela.imposta_messaggio(
+                testi.estrazione_cartella_vuota(self._cartella.name))
+        else:
+            self.tela.imposta_messaggio(testi.ESTRAZIONE_FILTRO_VUOTO)
 
     # -- job manager e conflitti ------------------------------------------
 
@@ -1003,6 +1055,14 @@ class PaginaEstrazione(QWidget):
             workdir = Path(tempfile.mkdtemp(prefix="dfl_estrazione_"))
             self._trasporto = TrasportoAsincrono(workdir)
             self.servizio = servizio_mod.Servizio(self._trasporto)
+        # Il primo `rileva` costruisce i modelli veri e li porta in VRAM.
+        # Stessa barra pulsante che `_lancia` mostra fra il click e la
+        # prima riga di un job, per lo stesso motivo: qui pero' non c'e'
+        # nessun canale di avanzamento da cui aspettarsi un `open`, quindi
+        # la spegne `_su_volti` alla prima risposta. Non la si accende qui:
+        # su una pellicola vuota nessuna rilevazione parte e nessuna
+        # risposta arriverebbe mai a spegnerla.
+        self._motori_da_caricare = True
         # L'ingresso automatico da
         # _su_job_finito non passa dal toggle dell'utente -- il bottone
         # resterebbe "unchecked" mentre il suo testo gia' dice "Exit manual
@@ -1062,6 +1122,10 @@ class PaginaEstrazione(QWidget):
         # spenta qui sopra), ma e' residuo che attraversa le sessioni, e la
         # prossima cosa che legge tela.bloccato() da sola lo erediterebbe.
         self.tela.blocca(False)
+        # Uscire prima che la prima risposta dei motori arrivi e' il caso
+        # in cui la barra resterebbe accesa sopra una pagina che non aspetta
+        # piu' niente.
+        self.pila.togli_avvio()
         if self.servizio is not None:
             self.servizio.ferma()
             self.servizio = None
@@ -1078,6 +1142,7 @@ class PaginaEstrazione(QWidget):
         self._rilevatore = MotoriCatalog.DEFAULT_RILEVATORE
         self._allineatore = MotoriCatalog.DEFAULT_ALLINEATORE
         self._tieni_in_memoria = True
+        self._motori_da_caricare = False
         # "Una volta per sessione" e' la sessione MANUALE, come ogni altro
         # stato di questo blocco: chi rientra dopo aver dato i permessi
         # alla cartella deve poter essere avvisato di nuovo se non basta.
@@ -1161,7 +1226,9 @@ class PaginaEstrazione(QWidget):
         if pixmap.isNull():
             return
         self._pixmap_corrente = pixmap
-        self.tela.mostra(pixmap, self._rects_di(percorso), None)
+        self.tela.mostra(pixmap, self._rects_di(percorso), None,
+                         _dimensione_nativa(percorso, pixmap))
+        self._aggiorna_messaggio_vuoto()
 
     def _rects_di(self, percorso):
         """I rettangoli dei volti che il rapporto registra per questo frame,
@@ -1186,6 +1253,13 @@ class PaginaEstrazione(QWidget):
             self._frame_corrente = None
             self._pixmap_corrente = None
             self.tela.mostra(None, None, None)
+            self._aggiorna_messaggio_vuoto()
+            # Nessun frame da caricare vuol dire nessuna `_rileva` in
+            # partenza: la risposta che spegnerebbe la barra (in `_su_volti`)
+            # non arrivera' mai. Una barra di caricamento accesa su una
+            # pagina che non aspetta piu' niente mente come mentiva
+            # l'assenza di barra prima di questo lavoro.
+            self.pila.togli_avvio()
             return
         if self._frame_corrente in percorsi:
             i = (percorsi.index(self._frame_corrente) + passo) % len(percorsi)
@@ -1202,9 +1276,10 @@ class PaginaEstrazione(QWidget):
         # `shape` si scarta apposta: il raster che il servizio scrive E' il
         # frame a risoluzione nativa (mainscripts/ExtractManual.py::_op_frame
         # ricodifica senza ridimensionare), quindi la dimensione del pixmap
-        # e' gia' quella del frame -- ed e' l'unica sorgente della scala che
-        # la tela applica (gui/estrazione/tela.py::trasformazione). Tenerne
-        # due sarebbe tenere due verita' da riconciliare.
+        # e' gia' quella del frame -- per questo qui sotto mostra() non
+        # passa nessuna dimensione: senza di lei Tela la ricava dal pixmap
+        # da sola (gui/estrazione/tela.py::trasformazione). Tenerne due
+        # sarebbe tenere due verita' da riconciliare.
         raster, _forma = self.servizio.frame(percorso)
         self._frame_corrente = percorso
         self._rect_corrente = None
@@ -1243,9 +1318,21 @@ class PaginaEstrazione(QWidget):
         va direttamente all'allineatore, che e' cio' che rende il gesto
         fluido. Passa da `rileva_quando_puoi`, mai da `rileva`: bloccare
         l'interfaccia a ogni pressione di freccia e' esattamente il difetto
-        che `rileva_quando_puoi` esiste per togliere."""
+        che `rileva_quando_puoi` esiste per togliere.
+
+        E' anche l'unico posto da cui la barra dei motori si accende: prima
+        stava nei tre chiamanti che aspettano un motore nuovo, che pero'
+        non condividono questa guardia -- senza frame corrente la
+        rilevazione non parte, `_su_volti` non arriva mai e la barra resta
+        accesa per tutta la sessione. Solo `_motori_da_caricare` la
+        accende, mai ogni rilevazione: il rettangolo trascinato col mouse
+        passa di qui a ogni pixel, e una barra che dice «sto caricando i
+        motori» lampeggerebbe a ogni movimento dicendo il falso."""
         if self.servizio is None or self._frame_corrente is None:
             return
+        if self._motori_da_caricare:
+            self._motori_da_caricare = False
+            self.pila.mostra_avvio(testi.ESTRAZIONE_CARICAMENTO_MOTORI)
         frame = self._frame_corrente
         self.servizio.rileva_quando_puoi(
             frame, rect,
@@ -1272,6 +1359,10 @@ class PaginaEstrazione(QWidget):
                                           MotoriCatalog.CHIAVI_RILEVATORI,
                                           MotoriCatalog.DEFAULT_RILEVATORE)
         self._ricorda_motori()
+        # Cambiare motore ne costruisce uno nuovo: e' la stessa attesa
+        # dell'ingresso in sessione, e la barra la accende `_rileva` se una
+        # rilevazione parte davvero.
+        self._motori_da_caricare = True
         self._rileva(None)
 
     def _su_allineatore_scelto(self, _indice):
@@ -1282,6 +1373,8 @@ class PaginaEstrazione(QWidget):
                                            MotoriCatalog.CHIAVI_ALLINEATORI,
                                            MotoriCatalog.DEFAULT_ALLINEATORE)
         self._ricorda_motori()
+        # Stessa attesa di cambiare rilevatore: un modello nuovo da caricare.
+        self._motori_da_caricare = True
         self._rileva(self.tela.rettangolo())
 
     def _su_memoria_scelta(self, acceso):
@@ -1375,6 +1468,7 @@ class PaginaEstrazione(QWidget):
         self.spunta_memoria.blockSignals(False)
 
     def _su_volti(self, frame, rect_chiesto, volti):
+        self.pila.togli_avvio()
         if self.servizio is None or frame != self._frame_corrente:
             return          # consegna in ritardo, o sessione gia' chiusa
         if not volti:
@@ -1516,7 +1610,8 @@ class PaginaEstrazione(QWidget):
             landmarks=self._landmarks_correnti,
             face_type=_FACE_TYPE_LUNGO.get(valori.get("face-type"), "whole_face"),
             image_size=valori.get("image-size", 512),
-            jpeg_quality=valori.get("jpeg-quality", 90))
+            jpeg_quality=valori.get("jpeg-quality", 90),
+            report_dir=str(self._cache_dir()))
         if nome_file is None:
             # _invia valorizza
             # ultimo_errore in QUASI ogni fallimento, ma non e' garantito --

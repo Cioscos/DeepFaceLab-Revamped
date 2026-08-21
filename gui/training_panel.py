@@ -19,10 +19,11 @@ from pathlib import Path
 from PyQt5.QtCore import QSize, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QIcon, QImage, QPixmap
 from PyQt5.QtWidgets import (
-    QComboBox, QFrame, QHBoxLayout, QLabel, QPushButton, QSizePolicy,
+    QFrame, QHBoxLayout, QLabel, QPushButton, QSizePolicy,
     QSlider, QVBoxLayout, QWidget)
 
 from gui import testi
+from gui import theme
 from gui.finestra_immagine import FinestraImmagine
 from gui.loss_plot import COLORI, INTERVALLI, LossPlot
 from gui.loss_source import LossSource
@@ -286,11 +287,11 @@ class TrainingPanel(QWidget):
         #solo (vedi _sincronizza_selettore_campione).
         alto = QHBoxLayout()
         alto.addWidget(QLabel(testi.PREVIEW_LABEL))
-        self.selettore = QComboBox()
+        self.selettore = theme.tendina()
         self.selettore.setToolTip(testi.PREVIEW_SELECTOR_TIP)
         self.selettore.currentTextChanged.connect(self._su_cambio_anteprima)
         alto.addWidget(self.selettore, 1)
-        self.selettore_campione = QComboBox()
+        self.selettore_campione = theme.tendina()
         self.selettore_campione.setToolTip(testi.SAMPLE_SELECTOR_TIP)
         self.selettore_campione.setVisible(False)     # niente da scegliere finche' non c'e' una griglia a campioni
         self.selettore_campione.currentIndexChanged.connect(self.seleziona_campione)
@@ -343,7 +344,7 @@ class TrainingPanel(QWidget):
         riga_grafico.setContentsMargins(0, 0, 0, 0)
         riga_grafico.addWidget(QLabel(testi.LOSS_CHART))
         riga_grafico.addWidget(QLabel(testi.RANGE_LABEL))
-        self.intervallo = QComboBox()
+        self.intervallo = theme.tendina()
         self.intervallo.setToolTip(testi.RANGE_TIP)
         for n in INTERVALLI:
             testo = testi.RANGE_ALL if n == 0 else testi.range_last_label(n)
