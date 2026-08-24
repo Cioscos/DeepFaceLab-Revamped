@@ -170,6 +170,173 @@ def _voci_esistenti(cache_dir):
     return viste
 
 
+def _righe(cache_dir):
+    """Le righe dell'indice, in ordine di file. Una riga illeggibile si
+    salta: l'indice e' append-only e uno Stop puo' averne troncata una."""
+    percorso = Path(cache_dir) / NOME_INDICE
+    if not percorso.exists():
+        return []
+    fuori = []
+    for r in percorso.read_text(encoding="utf-8").splitlines():
+        if not r:
+            continue
+        try:
+            d = json.loads(r)
+        except ValueError:
+            continue
+        if isinstance(d, dict) and isinstance(d.get("n"), str):
+            fuori.append(d)
+    return fuori
+
+
+def _nomi_sul_disco(input_dir):
+    """{nome: (dimensione, mtime_ns)} dei soli file utili.
+
+    Una cartella irraggiungibile (sparita, permessi, un mount di rete che
+    non risponde) fa sollevare `OSError` invece di tornare vuoto: "vuota" e
+    "irraggiungibile" sono due esiti diversi, e il secondo non deve mai
+    sembrare a `riconcilia` che sul disco non c'e' rimasto niente -- o
+    poterebbe via ogni riga dell'indice per un errore di lettura.
+
+    Lo `stat()` sta DENTRO il ciclo dello `scandir`, come in
+    gui/faceset/indice.py::elenca: materializzare prima l'elenco costa tre
+    volte tanto sul drvfs, e nessun test lo vedrebbe.
+    """
+    fuori = {}
+    with os.scandir(str(input_dir)) as voci:
+        for v in voci:
+            try:
+                if not v.is_file():
+                    continue
+            except OSError:
+                continue
+            if os.path.splitext(v.name)[1].lower() not in ESTENSIONI:
+                continue
+            try:
+                st = v.stat()
+            except OSError:
+                continue
+            fuori[v.name] = (st.st_size, st.st_mtime_ns)
+    return fuori
+
+
+def _appendi(cache_dir, righe):
+    """Righe gia' pronte, in coda. NON passa da ScrittoreIndice.scrivi, che
+    riscriverebbe `ml` a zero e staccherebbe la riga dai suoi byte in
+    masks.bin: qui la maschera non si tocca, si eredita.
+
+    Ripara una riga troncata prima di scrivere, riusando la riparazione di
+    ScrittoreIndice: senza, il JSON nuovo si incollerebbe al frammento
+    lasciato da un arresto a meta' scrittura, e la rinomina appena
+    calcolata sparirebbe con lui alla lettura successiva.
+    """
+    if not righe:
+        return
+    Path(cache_dir).mkdir(parents=True, exist_ok=True)
+    percorso = Path(cache_dir) / NOME_INDICE
+    ScrittoreIndice._chiudi_una_riga_troncata(percorso)
+    with open(str(percorso), "a", encoding="utf-8") as f:
+        for r in righe:
+            f.write(json.dumps(r) + "\n")
+        f.flush()
+
+
+def _rinomine(righe, sul_disco):
+    """Le righe da appendere per i file rinominati da un sort.
+
+    Un file conta come rinominato quando la sua (dimensione, mtime) e'
+    UNICA su ENTRAMBI i lati: **una sola riga dell'indice** il cui nome non
+    e' (piu') sul disco -- una riga ancora viva non e' materiale per
+    rinominare un ALTRO file, resterebbe se stessa -- e un solo file nuovo
+    del disco che la rivendica. La stessa regola dell'ambiguita' del
+    lettore (gui/faceset/indice.py::Indice), estesa al lato disco: due file
+    diversi che condividono la coppia per coincidenza non identificano
+    nessuno, e si reindicizza invece di indovinare a chi appartiene la riga.
+
+    **"Una sola riga" non vuol dire "un solo file gia' visto"**: l'indice e'
+    append-only, quindi un file passato per piu' sort ha una riga per
+    passaggio, stessa (dimensione, mtime) e nome diverso a ogni volta. Se
+    quelle righe concordano su `src`, `mo` e `ml` descrivono la STESSA
+    faccia reindicizzata, non una collisione fra due file -- si accetta la
+    piu' recente. La regola dell'ambiguita' resta intera per righe che
+    concordano solo sulla coppia ma NON sul contenuto: quello e' il caso
+    che il fallback deve rifiutare, due file diversi con la stessa
+    dimensione e lo stesso mtime.
+    """
+    nomi_noti = set(r["n"] for r in righe)
+    per_coppia_righe = {}
+    for r in righe:
+        if r["n"] in sul_disco:
+            continue
+        per_coppia_righe.setdefault((r.get("s"), r.get("m")), []).append(r)
+    per_coppia_disco = {}
+    for nome, coppia in sul_disco.items():
+        if nome in nomi_noti:
+            continue
+        per_coppia_disco.setdefault(coppia, []).append(nome)
+    fuori = []
+    for coppia, candidate in per_coppia_righe.items():
+        nomi_candidati = per_coppia_disco.get(coppia) or []
+        if len(nomi_candidati) != 1:
+            continue
+        contenuti = set((r.get("src"), r.get("mo"), r.get("ml"),
+                        r.get("yaw"), r.get("pitch"), r.get("roll"),
+                        r.get("ft")) for r in candidate)
+        if len(contenuti) != 1:
+            continue
+        nuova = dict(candidate[-1])   # la piu' recente, come in _righe()
+        nuova["n"] = nomi_candidati[0]
+        fuori.append(nuova)
+    return fuori
+
+
+def pota(cache_dir, nomi_vivi):
+    """Riscrive l'indice tenendo solo le righe di file ancora sul disco.
+    Ritorna (righe_prima, righe_dopo).
+
+    `masks.bin` NON si tocca: gli offset delle righe superstiti devono
+    restare validi, quindi il blob si porta dietro i byte orfani.
+
+    La scrittura passa da un temporaneo e da os.replace, come
+    ExtractorLib.salva_volto: un altro processo puo' leggere questo file
+    mentre lo si riscrive.
+    """
+    righe = _righe(cache_dir)
+    tenute = [r for r in righe if r["n"] in nomi_vivi]
+    if len(tenute) == len(righe):
+        return len(righe), len(tenute)
+    percorso = Path(cache_dir) / NOME_INDICE
+    tmp = percorso.with_suffix(percorso.suffix + ".tmp")
+    with open(str(tmp), "w", encoding="utf-8") as f:
+        for r in tenute:
+            f.write(json.dumps(r) + "\n")
+        f.flush()
+    os.replace(str(tmp), str(percorso))
+    return len(righe), len(tenute)
+
+
+def riconcilia(cache_dir, input_dir):
+    """Allinea l'indice al disco senza aprire un solo JPEG.
+
+    L'ORDINE non e' negoziabile, ma non per il contenuto finale del file:
+    `pota` riferisce lo stato dell'indice AL MOMENTO IN CUI GIRA, quindi
+    girando prima di `_appendi` conta le righe di un file che non ha ancora
+    la rinomina, e il conteggio restituito ("righe") mente sul file che
+    esiste davvero -- pur restando corretto cio' che finisce su disco, che
+    non dipende dall'ordine.
+
+    `_nomi_sul_disco` e' la PRIMA riga, prima di ogni scrittura: se
+    `input_dir` non si legge solleva `OSError` e l'indice resta intatto,
+    invece di essere svuotato scambiando "irraggiungibile" per "vuota".
+    """
+    sul_disco = _nomi_sul_disco(input_dir)
+    righe = _righe(cache_dir)
+    rinominate = _rinomine(righe, sul_disco)
+    _appendi(cache_dir, rinominate)
+    prima, dopo = pota(cache_dir, set(sul_disco))
+    return {"rinominate": len(rinominate), "potate": prima - dopo, "righe": dopo}
+
+
 def _file_da_indicizzare(input_dir, only_missing, cache_dir):
     gia = _voci_esistenti(cache_dir) if only_missing else set()
     da_fare, saltati = [], 0
@@ -272,6 +439,14 @@ def indicizza(input_dir, cache_dir, only_missing=True):
     """Scrive l'indice della cartella. Ritorna i conteggi."""
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
+
+    # Prima di decidere cosa manca: un sort ha rinominato i file senza
+    # cambiarli, e senza questa riga `--only-missing` li rileggerebbe
+    # tutti (misurato sul dataset dell'utente: 14 566 righe per 2677 file).
+    esito_riconc = riconcilia(cache_dir, input_dir)
+    if esito_riconc["rinominate"] or esito_riconc["potate"]:
+        io.log_info('Index reconciled: %d renamed, %d pruned.'
+                    % (esito_riconc["rinominate"], esito_riconc["potate"]))
 
     da_fare, saltati = _file_da_indicizzare(input_dir, only_missing, cache_dir)
     with ScrittoreIndice(cache_dir) as scrittore:

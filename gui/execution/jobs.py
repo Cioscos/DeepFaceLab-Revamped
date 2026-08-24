@@ -125,9 +125,15 @@ class Job(QObject):
     progress = pyqtSignal(dict)      # una riga del canale DFL_PROGRESS_FILE
 
     def __init__(self, step, workspace, workdir, events_path, commands_path, previews_path, python_exe, dfl_root,
-                 invocation_args, env, parent=None):
+                 invocation_args, env, parent=None, avviato_da_utente=True):
         super().__init__(parent)
         self.step = step
+        # Chi ha avviato questo job -- non "va mostrato in primo piano",
+        # che invecchierebbe male: chi decide se portarlo a schermo (vedi
+        # MainWindow.open_console) legge questo, non il contrario. Un
+        # lancio automatico (l'indicizzazione che riparte da sola quando
+        # l'indice e' indietro) lo passa False.
+        self.avviato_da_utente = avviato_da_utente
         self.workspace = Path(workspace)
         # Presa al lancio, non al confronto: e' l'istante in cui il figlio ha
         # davvero cominciato a scrivere li' dentro.
@@ -285,7 +291,8 @@ class JobManager(QObject):
         self._dfl_root = Path(dfl_root)
         self._jobs = []
 
-    def try_start(self, step, answers: dict, workspace, extra_args=(), input_dir=None) -> Job:
+    def try_start(self, step, answers: dict, workspace, extra_args=(), input_dir=None,
+                  avviato_da_utente=True) -> Job:
         identita = identita_workspace(workspace)
         for job in self.active_jobs():
             if not stesso_workspace(identita, job.identita):
@@ -361,7 +368,7 @@ class JobManager(QObject):
         env.insert("DFL_PROGRESS_FILE", str(workdir / "progress.jsonl"))
 
         job = Job(step, workspace, workdir, events_path, commands_path, previews_path, self._python_exe, self._dfl_root,
-                  invocation_args, env, parent=self)
+                  invocation_args, env, parent=self, avviato_da_utente=avviato_da_utente)
         job.start_progress_tail()
         job.finished.connect(lambda code, job=job: self._on_job_finished(job, code))
         self._jobs.append(job)

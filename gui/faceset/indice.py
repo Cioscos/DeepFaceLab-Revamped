@@ -22,6 +22,8 @@ import os
 from collections import namedtuple
 from pathlib import Path
 
+from gui.faceset import fratelli
+
 Voce = namedtuple("Voce", [
     "nome", "dimensione", "mtime", "yaw", "pitch", "roll",
     "face_type", "source", "mask_off", "mask_len",
@@ -117,27 +119,38 @@ def elenca(cartella, estensioni):
     ciclo si riprende tutto il guadagno senza cambiare un risultato: e' un
     peggioramento che nessun test vedrebbe.
     """
-    letti = []
     try:
-        with os.scandir(str(cartella)) as voci:
-            for voce in voci:
-                try:
-                    if not voce.is_file():
-                        continue
-                except OSError:
-                    continue
-                if os.path.splitext(voce.name)[1].lower() not in estensioni:
-                    continue
-                try:
-                    st = voce.stat()
-                except OSError:
-                    letti.append((Path(voce.path), None, None))
-                    continue
-                letti.append((Path(voce.path), st.st_size, st.st_mtime_ns))
+        return _elenca_o_solleva(cartella, estensioni)
     except OSError:
         # Voce 3.23: la cartella c'e' ma non si elenca. Si mostra il fatto,
         # non si solleva dentro un evento Qt.
         return []
+
+
+def _elenca_o_solleva(cartella, estensioni):
+    """Come `elenca`, ma SOLLEVA `OSError` invece di inghiottirla.
+
+    Serve a chi -- fuori dal thread di Qt -- deve distinguere una cartella
+    VUOTA (letta, zero file) da una IRRAGGIUNGIBILE (inesistente, senza
+    permessi): `mappa_per_fotogramma` la usa proprio per questo, perche'
+    confondere le due cose azzererebbe un rapporto vero scambiandolo per
+    un fotogramma senza volti."""
+    letti = []
+    with os.scandir(str(cartella)) as voci:
+        for voce in voci:
+            try:
+                if not voce.is_file():
+                    continue
+            except OSError:
+                continue
+            if os.path.splitext(voce.name)[1].lower() not in estensioni:
+                continue
+            try:
+                st = voce.stat()
+            except OSError:
+                letti.append((Path(voce.path), None, None))
+                continue
+            letti.append((Path(voce.path), st.st_size, st.st_mtime_ns))
     letti.sort(key=lambda t: t[0])
     return letti
 
@@ -196,3 +209,30 @@ class Indice:
             else:
                 abbinati[p] = v
         return abbinati, mancanti
+
+
+def mappa_per_fotogramma(cache_dir, cartella, estensioni=(".jpg",)):
+    """({nome_fotogramma: [percorsi]}, [percorsi senza voce]).
+
+    Prima viveva in mainscripts/ExtractIndex.py::percorsi_di_un_frame come
+    glob su `<stelo>_*.jpg`, e un sort che rinomina i volti la rendeva
+    muta: il rettangolo restava e i landmark sparivano. Qui non guarda i
+    nomi dei file: enumera la cartella e la abbina all'indice, poi delega
+    l'inversione a `fratelli.mappa_per_frame`, che e' la sola sede della
+    regola «due volti sono fratelli se e solo se `source` coincide».
+
+    Non apre nessun JPEG: `src` sta gia' nell'indice, e l'abbinamento
+    disco-indice regge la rinomina da se'. Chi non e' nell'indice esce fra
+    i `mancanti` -- non e' uno scarto, e' il segnale che fa partire
+    l'indicizzazione.
+
+    SOLLEVA `OSError` se `cartella` non si puo' enumerare -- a differenza
+    di `elenca`, che la inghiotte per i chiamanti dentro un evento Qt:
+    questa funzione gira fuori dal thread di Qt (`_LavoroMappa.run`), e chi
+    la chiama deve poter distinguere «cartella vuota» da «cartella
+    irraggiungibile», o rischia di riconciliare il rapporto su una mappa
+    che non ha mai visto il disco davvero.
+    """
+    letti = _elenca_o_solleva(cartella, estensioni)
+    abbinati, mancanti = Indice(leggi(cache_dir)).abbina_letti(letti)
+    return fratelli.mappa_per_frame(abbinati), mancanti

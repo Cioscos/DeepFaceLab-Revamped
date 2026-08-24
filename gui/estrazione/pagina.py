@@ -11,7 +11,7 @@ sei filtri del rapporto e la `Pellicola`.
 import tempfile
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import QRunnable, Qt, QThreadPool, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QImage, QImageReader, QPixmap
 from PyQt5.QtWidgets import (QApplication, QButtonGroup, QCheckBox,
                              QHBoxLayout, QLabel, QMessageBox, QPushButton,
@@ -39,6 +39,7 @@ from gui.faceset.conflitti import PassoFittizio, artefatto_di, chi_occupa
 from gui.faceset.decodifica import Decodificatore
 from gui.faceset.dialogo import DialogoOperazione
 from gui.faceset.indice import elenca as elenca_cartella
+from gui.faceset.indice import mappa_per_fotogramma
 from gui.faceset.progresso import PilaProgresso
 from gui.progetti import identita_workspace, ricorda_risposte, risposte_ricordate
 from mainscripts import MotoriCatalog
@@ -222,11 +223,57 @@ def _dimensione_nativa(percorso, pixmap):
     return dimensione.width(), dimensione.height()
 
 
+class _LavoroMappa(QRunnable):
+    """Costruisce la mappa fotogramma -> volti fuori dal thread di Qt.
+
+    Solo funzioni pure (pathlib, json): nessun oggetto Qt viene toccato
+    da questo thread, la consegna al thread proprietario passa dal
+    segnale `_mappa_pronta`, mai da una chiamata diretta -- lo stesso
+    schema di `gui/faceset/decodifica.py::_Lavoro`.
+    """
+
+    def __init__(self, cache_dir, cartella, generazione, emettitore):
+        super().__init__()
+        self._cache_dir = cache_dir
+        self._cartella = cartella
+        self._generazione = generazione
+        self._emettitore = emettitore
+
+    def run(self):
+        # Controllo INIZIALE, come `decodifica._Lavoro.run`: con un solo
+        # thread nel pool, una raffica di apri() metterebbe in coda giri
+        # gia' superati -- senza questo ognuno pagherebbe comunque
+        # l'enumerazione completa prima di scoprirsi inutile, allargando
+        # la finestra in cui la pagina risponde con la mappa vuota.
+        if self._generazione != self._emettitore._generazione_mappa:
+            return
+        try:
+            mappa, mancanti = mappa_per_fotogramma(self._cache_dir, self._cartella)
+        except OSError:
+            # I2 della revisione finale: `mancanti=None` e' un sentinella,
+            # non una lista vuota -- una cartella IRRAGGIUNGIBILE non
+            # equivale a una vuota, o `_mappa_affidabile()` la crederebbe
+            # affidabile e `_riconcilia_rapporto` azzererebbe ogni riga.
+            mappa, mancanti = {}, None
+        try:
+            self._emettitore._mappa_pronta.emit(self._generazione, mappa, mancanti)
+        except RuntimeError:
+            # La pagina e' stata distrutta (finestra chiusa, non solo
+            # scheda) mentre l'enumerazione girava: non c'e' piu' nessuno
+            # a cui consegnare, e un'eccezione qui abortirebbe il processo
+            # -- stesso guasto e stessa cura di gui/training_panel.py.
+            pass
+
+
 class PaginaEstrazione(QWidget):
     # Emesso dal bottone "Show faces from this frame": chi ospita questa
     # pagina (la finestra principale) lo ascolta per portare la scheda di
     # cura del faceset sui volti del fotogramma indicato.
     richiesta_volti_del_frame = pyqtSignal(str, str)
+    # Segnale interno: l'unico passaggio fra il thread di lavoro di
+    # `_LavoroMappa` e il thread proprietario di questa pagina. Mai
+    # emesso ne' collegato fuori da questo modulo.
+    _mappa_pronta = pyqtSignal(int, object, object)
 
     def __init__(self, radice_e=None, parent=None):
         super().__init__(parent)
@@ -329,16 +376,68 @@ class PaginaEstrazione(QWidget):
         self._volti_correnti = []
         self._volti_di = None
         self._frame_chiesto = None
-        # Vero solo DENTRO la nostra richiesta al client: vedi
-        # `_su_volti_pronti`, che ascolta un canale condiviso con la
-        # finestra di dettaglio.
-        self._in_attesa_volti = False
+        # L'id della richiesta `frame` in volo, o None: il client e'
+        # ASINCRONO, quindi "sto aspettando" si riconosce per id -- non
+        # per un booleano "dentro la chiamata", che con una risposta
+        # differita non varrebbe piu' niente. Vedi `_su_volti_pronti`, che
+        # ascolta un canale condiviso con la finestra di dettaglio.
+        self._id_volti_atteso = None
+        # Il click che `_su_volto_scelto` non ha potuto risolvere subito
+        # perche' la richiesta al servizio era ancora in volo: (frame,
+        # punto), o None. Si riesegue alla consegna (`_su_volti_pronti`)
+        # invece di sparire -- col client sincrono di prima la risposta
+        # arrivava dentro la stessa chiamata, quindi il primo click non
+        # era mai in questa situazione.
+        self._click_in_sospeso = None
+        # La bandierina che copre il solo caso in cui il client CONSEGNA
+        # nello stesso giro della chiamata (i doppi dei test): li' la
+        # risposta arriva PRIMA che `_id_volti_atteso` sia assegnato.
+        self._attesa_diretta_volti = False
+        # Vero mentre il cursore d'attesa dei volti e' acceso: un
+        # `setOverrideCursor` per richiesta in volo, mai due, o lo stack
+        # di Qt resterebbe con un push non ripristinato quando una
+        # risposta ne supera un'altra.
+        self._cursore_volti_attivo = False
+        # L'ultimo guasto del client di dettaglio, (motivo, codice) o None
+        # se nessuno e' arrivato -- o se l'ultima risposta e' andata a buon
+        # fine. Lo legge SOLO `_perche_nessun_volto`, sul click: senza,
+        # un servizio muto faceva accusare al rapporto una vecchiaia che
+        # non aveva.
+        self._ultimo_guasto = None
         self._cartella_dettaglio = None
         self._cliente = None
         # La finestra di dettaglio aperta dal click sulla tela -- None
         # finche' nessuno ha ancora cliccato un volto. Costruita al primo
         # bisogno come `_cliente`, e per la stessa ragione.
         self._finestra_dettaglio = None
+        # La mappa fotogramma -> percorsi degli allineati, e i volti che
+        # l'indice non copre. Costruite da `_ricostruisci_mappa`, che gira
+        # fuori dal thread di Qt: su una cartella grande enumerare i volti
+        # costa secondi, e farlo nello slot che apre la cartella
+        # congelerebbe la pellicola.
+        self._mappa = {}
+        self._mancanti_indice = []
+        # La generazione della mappa che seguira' il ricaricamento provocato
+        # dal FINIRE della nostra stessa passata automatica -- None quando
+        # nessuna e' in attesa di essere consumata. Impostata da
+        # `_su_job_finito`, mai da `avvia_indicizzazione_volti`: solo a job
+        # finito si conosce il numero VERO del ricaricamento che quel job
+        # provoca. Un file non indicizzabile o una riconciliazione fallita
+        # non azzerano `_mancanti_indice`, quindi senza questo la consegna
+        # che segue rilancerebbe la stessa passata all'infinito;
+        # sulla GENERAZIONE e non sulla cartella perche' un apri() interposto
+        # (F5, cambio progetto) mentre la passata e' in volo si prende
+        # sempre un numero diverso, e non puo' consumare la guardia al
+        # posto del ricaricamento vero.
+        self._generazione_indicizzazione_da_consumare = None
+        # Ogni chiamata a `_ricostruisci_mappa` incrementa questo contatore
+        # PRIMA di avviare il lavoro: una consegna la cui generazione non
+        # e' piu' quella corrente arriva da una cartella che non e' piu'
+        # quella aperta, e va scartata invece di sovrascrivere `_mappa`
+        # con dati vecchi.
+        self._generazione_mappa = 0
+        self._pool_mappa = QThreadPool()
+        self._pool_mappa.setMaxThreadCount(1)
 
         self.modello = ModelloFrame()
         self.tela = Tela()
@@ -355,6 +454,7 @@ class PaginaEstrazione(QWidget):
         self.decodificatore_anteprima = Decodificatore(self)
         self.decodificatore_anteprima.TETTO_CACHE_BYTE = 48 * 1024 * 1024
         self.decodificatore_anteprima.pronta.connect(self._su_anteprima_pronta)
+        self._mappa_pronta.connect(self._su_mappa_pronta)
 
         self.bottone_src = QPushButton(testi.FACESET_SRC)
         self.bottone_dst = QPushButton(testi.FACESET_DST)
@@ -551,6 +651,9 @@ class PaginaEstrazione(QWidget):
         self._pixmap_corrente = None
         self._rect_corrente = None
         self._landmarks_correnti = None
+        # Un guasto del client appartiene alla cartella appena lasciata: su
+        # quella nuova non e' ancora successo niente.
+        self._ultimo_guasto = None
         # Senza questo il bottone "Undo" resta abilitato dopo un cambio di
         # progetto o di lato e agirebbe sui file del progetto PRECEDENTE:
         # nessun dato si perde (i percorsi della Mossa sono assoluti, e
@@ -582,6 +685,7 @@ class PaginaEstrazione(QWidget):
             self._nota_sessione_interrotta = None
             self.etichetta_stato.setText(testi.estrazione_stato(len(percorsi)))
         self._rigenera_comandi()
+        self._ricostruisci_mappa()
 
     def _cache_dir(self):
         return self._radice_e / CACHE_SOTTOCARTELLA / cache_mod.id_cartella(self._cartella)
@@ -766,6 +870,39 @@ class PaginaEstrazione(QWidget):
                            controlla_occupazione=False)
         return job
 
+    def avvia_indicizzazione_volti(self):
+        """La passata sull'indice di `aligned/`, per i soli volti che
+        `_ricostruisci_mappa` ha trovato scoperti -- diverso dal passo
+        sopra: quello ricostruisce il RAPPORTO per frame, questo l'indice
+        dei VOLTI (fratelli, landmark, maschera) che
+        `gui/faceset/indice.py::mappa_per_fotogramma` legge.
+
+        `controlla_occupazione=False` come `aggiorna_indice`, per la stessa
+        ragione: la cache vive fuori dal progetto, quindi non deve restare
+        grigio perche' un ALTRO job tiene la cartella. Ma qui il passo
+        dichiara `consumes` sull'artefatto allineato del lato corrente
+        (`azioni_mod.passo_indice_volti`): `try_start` lo rifiuta comunque,
+        per via interna, contro un job vero o la sessione manuale nativa
+        (registrata come occupante esterno) che scrivono LI' in questo
+        momento -- e' la corsa vera, non un caso di laboratorio: e' esattamente
+        cio' che `_su_job_finito` fa entrando da sola in sessione manuale a
+        estrazione finita, PRIMA che questa consegna arrivi.
+
+        `silenzioso=True`: nessuna finestra per un lavoro che l'utente non
+        ha chiesto -- il rifiuto finisce sulla riga di stato, e il
+        tentativo resta disponibile al prossimo giro (nessuno stato viene
+        marcato "in volo" qui: quella guardia vive in `_su_job_finito`,
+        sulla generazione del ricaricamento che la passata VERA provoca).
+        """
+        if self._gestore is None or self._cartella is None:
+            return None
+        cartella = self._cartella / "aligned"
+        passo = azioni_mod.passo_indice_volti(self._lato)
+        return self._lancia(passo, {}, cartella,
+                            extra_args=("--cache-dir", str(self._cache_dir_aligned()),
+                                        "--only-missing"),
+                            controlla_occupazione=False, silenzioso=True)
+
     def _chiedi_risposte(self, passo):
         """Il dialogo del passo, precaricato con cio' che il progetto
         ricorda e che al termine glielo fa ricordare.
@@ -800,34 +937,49 @@ class PaginaEstrazione(QWidget):
                                 testi.msg_project_action_failed(str(errore)))
         return risposte
 
-    def _lancia(self, passo, risposte, cartella, extra_args=(), controlla_occupazione=True):
+    def _lancia(self, passo, risposte, cartella, extra_args=(), controlla_occupazione=True,
+                silenzioso=False):
+        # `silenzioso=True` e' per un lancio che l'utente non ha chiesto
+        # (avvia_indicizzazione_volti, dalla mappa che si ricostruisce da
+        # sola): una QMessageBox qui bloccherebbe l'interfaccia su un
+        # dialogo che nessuno si aspetta, per un lavoro che nessuno ha
+        # avviato -- un vuoto senza spiegazione sarebbe stato piu' onesto di
+        # questo. Il rifiuto finisce sulla riga di stato, e non e' un vicolo
+        # cieco: il tentativo resta disponibile al prossimo giro, la stessa
+        # guardia "un job alla volta" e lo stesso StepConflict qui sotto
+        # valgono anche per un lancio esplicito dell'utente subito dopo.
+        def _rifiuta(titolo, testo):
+            if silenzioso:
+                self.etichetta_stato.setText(testo)
+                return None
+            QMessageBox.warning(self, titolo, testo)
+            return None
         # Un job alla volta da questa pagina -- stessa scelta di
         # gui/faceset/pagina.py, e per la stessa ragione (le barre
         # numerate dal figlio si pilotano a vicenda con due job vivi).
         if self._job_corrente is not None:
-            QMessageBox.warning(self, testi.TITLE_FACESET_ONE_AT_A_TIME,
-                                testi.faceset_one_job_at_a_time(
-                                    self._nome_job_corrente))
-            return None
-        # controlla_occupazione=False e' solo per aggiorna_indice(): quel
-        # passo non dichiara ne' consumes ne' produces ne' modifies (la
-        # cache vive fuori dal progetto, come in gui/faceset/pagina.py),
-        # quindi non contende mai niente -- e non deve restare grigio
-        # perche' un ALTRO job tiene la cartella, esattamente come
-        # avvia_indicizzazione() in gui/faceset/pagina.py.
+            return _rifiuta(testi.TITLE_FACESET_ONE_AT_A_TIME,
+                            testi.faceset_one_job_at_a_time(self._nome_job_corrente))
+        # controlla_occupazione=False e' per aggiorna_indice() e
+        # avvia_indicizzazione_volti(): quei due non contendono l'artefatto
+        # per QUESTO controllo locale (aggiorna_indice non dichiara niente;
+        # avvia_indicizzazione_volti dichiara `consumes`, ma la rete che
+        # conta per lei e' quella dentro try_start qui sotto, non questa),
+        # quindi non devono restare grigi perche' un ALTRO job tiene la
+        # cartella, esattamente come avvia_indicizzazione() in
+        # gui/faceset/pagina.py.
         if controlla_occupazione:
             occupata = self._occupata()
             if occupata is not None:
-                QMessageBox.warning(self, testi.TITLE_STEP_BUSY,
-                                    testi.job_holds(occupata[0], occupata[1]))
-                return None
+                return _rifiuta(testi.TITLE_STEP_BUSY, testi.job_holds(occupata[0], occupata[1]))
         try:
             job = self._gestore.try_start(passo, risposte, self._progetto,
-                                          extra_args=extra_args, input_dir=cartella)
+                                          extra_args=extra_args, input_dir=cartella,
+                                          avviato_da_utente=not silenzioso)
         except StepConflict as exc:
-            QMessageBox.warning(self, testi.TITLE_STEP_BUSY, str(exc))
+            esito = _rifiuta(testi.TITLE_STEP_BUSY, str(exc))
             self._rigenera_comandi()
-            return None
+            return esito
         self.pila.pulisci()
         if job is not None:
             self._job_corrente = job
@@ -946,6 +1098,10 @@ class PaginaEstrazione(QWidget):
 
     def _su_job_finito(self, _codice):
         self._timer_rapporto.stop()
+        # Preso PRIMA di azzerarlo: serve dopo apri() per riconoscere se il
+        # ricaricamento che quella chiamata provoca e' quello della NOSTRA
+        # passata automatica (vedi sotto).
+        nome_job_finito = self._nome_job_corrente
         self._job_corrente = None
         self._nome_job_corrente = ""
         self.pila.pulisci()
@@ -960,6 +1116,16 @@ class PaginaEstrazione(QWidget):
         # Il job ha scritto il rapporto incrementalmente: ricaricare
         # rilegge cio' che ha appena prodotto.
         self.apri(self._progetto, self._lato)
+        # Se il job appena finito era la nostra passata automatica,
+        # `apri()` ha appena incrementato la generazione per il
+        # ricaricamento che lei stessa ha provocato: e' QUELLA consegna,
+        # e nessun'altra, a non dover rilanciare un secondo tentativo
+        # (vedi _su_mappa_pronta). Catturare il NUMERO invece della
+        # cartella regge anche un apri() interposto (F5, cambio progetto)
+        # nel frattempo: quello si prende sempre una generazione diversa,
+        # quindi non puo' consumare questa guardia al posto suo.
+        if nome_job_finito == azioni_mod.passo_indice_volti(self._lato).name:
+            self._generazione_indicizzazione_da_consumare = self._generazione_mappa
         # "Extract and fix the misses" non apre piu' la finestra
         # cv2 -- entra da sola nella sessione manuale nativa, filtrata sui
         # frame che il rilevatore ha mancato. E' l'OPERAZIONE scelta
@@ -1331,10 +1497,203 @@ class PaginaEstrazione(QWidget):
         self._volti_correnti = []
         self._volti_di = None
         self._frame_chiesto = None
+        self._click_in_sospeso = None
         self.tela.imposta_volti([])
 
+    def _cache_dir_aligned(self):
+        """La cache dell'indice faceset per la cartella `aligned/` di
+        oggi -- lo stesso `percorso_cache` che usa la pagina di cura,
+        NON `_cache_dir()` qui sopra: quella e' la cache del rapporto di
+        estrazione, un'altra cosa."""
+        return cache_mod.percorso_cache(self._radice_e, self._cartella / "aligned")
+
+    def _ricostruisci_mappa(self):
+        """La mappa fotogramma -> percorsi degli allineati, fuori dal
+        thread di Qt.
+
+        `_mappa`/`_mancanti_indice` si svuotano QUI, prima ancora di
+        accodare il lavoro -- non alla consegna. Senza questo, per tutta
+        l'enumerazione (1,34 s sul dataset di riferimento, secondi su uno
+        grande) la pagina risponderebbe ancora con la mappa della
+        cartella APERTA PRIMA: `_cambia_lato`/il menu Project cambiano
+        `self._cartella` ma non hanno nessun altro modo di dirlo, e un
+        click in quella finestra disegnerebbe e aprirebbe il volto
+        dell'altro dataset.
+
+        Non solleva mai verso il chiamante: e' un lavoro di sfondo, e una
+        cartella non leggibile o non ancora indicizzata deve lasciare la
+        pagina usabile con la mappa vuota -- esattamente lo stato di un
+        progetto non ancora estratto. La barra pulsante e' la stessa di
+        un job che parte (`_lancia`) e di un motore che si carica in
+        sessione manuale (`_rileva`): una cartella molto grande su drvfs
+        costa secondi di sola enumerazione, ed e' l'unico segnale che il
+        "Refresh state" non e' rimasto fermo.
+        """
+        self._generazione_mappa += 1
+        generazione = self._generazione_mappa
+        self._mappa, self._mancanti_indice = {}, []
+        if self._cartella is None:
+            return
+        cartella = self._cartella / "aligned"
+        self.pila.mostra_avvio(testi.ESTRAZIONE_MAPPA_IN_COSTRUZIONE)
+        self._pool_mappa.start(
+            _LavoroMappa(self._cache_dir_aligned(), cartella, generazione, self))
+
+    def _mappa_affidabile(self):
+        """Posso fidarmi di `self._mappa` per riscrivere una riga del
+        rapporto -- puntuale o per riconciliazione?
+
+        Tre condizioni, in un solo posto invece che ripetute in ogni sito
+        che scrive dalla mappa: `_mancanti_indice` non e' None -- la
+        cartella si e' potuta ENUMERARE, o la mappa non dice niente di
+        vero sul disco, vedi `_LavoroMappa.run` -- ed e' vuoto -- l'indice
+        e' completo, altrimenti la mappa sottostima i volti dei file non
+        ancora indicizzati -- e nessuno deve occupare l'artefatto allineato
+        di questa cartella (`_occupata()`, altrimenti la mappa e' uno
+        snapshot in corsa contro uno scrittore vero -- un job, la cura del
+        faceset, un occupante esterno). Le tre domande valgono a
+        prescindere da CHI stia per scrivere: la riconciliazione globale e
+        la correzione puntuale del fotogramma corrente pongono tutte e tre
+        questa stessa domanda, e una copia locale del controllo e' il modo
+        in cui una delle due resterebbe indietro il giorno che le altre
+        cambiassero.
+        """
+        return (self._mancanti_indice is not None and not self._mancanti_indice
+                and self._occupata() is None)
+
+    def _su_mappa_pronta(self, generazione, mappa, mancanti):
+        """Slot del segnale `_mappa_pronta`: gira sempre sul thread
+        proprietario di questa pagina, mai su quello di `_LavoroMappa`.
+
+        Il confronto di generazione viene PRIMA di toccare qualunque cosa,
+        `pila` compresa: una consegna superata non deve spegnere la barra
+        del giro nuovo, ancora in corso.
+        """
+        if generazione != self._generazione_mappa:
+            return    # una cartella diversa e' stata aperta nel frattempo
+        self.pila.togli_avvio()
+        self._mappa, self._mancanti_indice = mappa, mancanti
+        # Un click o una spunta possono essere arrivati PRIMA di questa
+        # consegna, quando la mappa era ancora vuota: `_assicura_volti`
+        # li ha gia' segnati come "risposta consegnata" (zero volti) sul
+        # fotogramma corrente. Senza invalidare quel segno qui, la pagina
+        # continuerebbe a dire "nessun volto" anche dopo che la mappa vera
+        # e' arrivata, finche' non si cambia fotogramma e si torna --
+        # esattamente la frase falsa che questo lavoro esiste per togliere.
+        if self._frame_corrente is not None and self._volti_di == self._frame_corrente:
+            self._volti_di = None
+            self._assicura_volti()
+            # La riga di stato puo' aver detto "sto ancora indicizzando"
+            # per questo click: se la mappa appena arrivata ha chiuso
+            # quella ragione, il messaggio vecchio non deve restare a
+            # schermo in attesa di un secondo click che lo aggiorni.
+            if self.etichetta_stato.text() == testi.ESTRAZIONE_INDICE_IN_CORSO:
+                self.etichetta_stato.setText(self._perche_nessun_volto())
+        # I volti che l'indice non copre fanno partire la passata da soli:
+        # QUI, non in _ricostruisci_mappa, perche' e' questo slot -- non
+        # quello che accoda il lavoro -- a ricevere `_mancanti_indice`
+        # com'e' DAVVERO (in _ricostruisci_mappa e' ancora la lista appena
+        # svuotata). La consegna che `_su_job_finito` marca come "quella
+        # del nostro ricaricamento" (sulla generazione, vedi il costruttore)
+        # non ne fa partire un secondo, anche se i mancanti sono rimasti --
+        # altrimenti un file non indicizzabile rilancerebbe la stessa
+        # passata a ogni consegna.
+        if generazione == self._generazione_indicizzazione_da_consumare:
+            self._generazione_indicizzazione_da_consumare = None
+        elif self._mancanti_indice:
+            self.avvia_indicizzazione_volti()
+        # `_mappa_affidabile()`: con `_mancanti_indice` non vuoto la mappa
+        # sottostima ancora i volti dei file non indicizzati, e azzerare un
+        # fotogramma su quel conteggio provvisorio sarebbe il difetto
+        # opposto -- un rettangolo vero cancellato perche' l'indicizzazione
+        # non e' ancora arrivata; con un occupante vivo e' uno snapshot in
+        # corsa contro uno scrittore vero.
+        if self._mappa_affidabile():
+            self._riconcilia_rapporto()
+
+    def _fotogrammi_divergenti(self):
+        """I fotogrammi il cui conteggio nel rapporto non e' quello che la
+        mappa gli attribuisce.
+
+        Il confronto e' per CONTEGGIO: prende un volto aggiunto o tolto ma
+        non uno modificato -- un volto rilandmarkato cambia rect e posa, non
+        il numero.
+        """
+        fuori = []
+        for v in self._voci:
+            if not isinstance(v, dict) or not isinstance(v.get("nome"), str):
+                continue
+            atteso = len(self._mappa.get(v["nome"]) or [])
+            n = v.get("n_volti")
+            if not isinstance(n, int) or n != atteso:
+                fuori.append(v["nome"])
+        return fuori
+
+    def _riconcilia_rapporto(self):
+        """Riscrive a zero volti le righe che la mappa smentisce.
+
+        Solo quelle che si risolvono a ZERO: un fotogramma i cui allineati
+        sono stati cancellati si sistema da solo, senza chiedere niente a
+        nessuno. I divergenti che hanno ancora volti richiederebbero una
+        risposta del servizio per fotogramma -- si contano soltanto, e il
+        bottone "Rebuild report" resta la strada per sistemarli tutti in
+        una passata sola.
+
+        Il chiamante (`_su_mappa_pronta`) gia' verifica `_mappa_affidabile()`
+        prima di entrare qui: non si ripete il controllo, per non lasciare
+        una seconda copia che un giorno resti indietro rispetto alla prima.
+        Vale comunque la pena dire perche' quel controllo esiste --
+        "occupata" non e' solo un job o una sessione manuale DI QUESTA
+        pagina: vede anche un occupante arrivato da un'altra pagina (la
+        cura del faceset condivide lo stesso `aligned/` e lo stesso
+        gestore) o registrato come esterno (`registra_occupante`).
+        Chiunque sia, puo' aggiungere sul disco, in mezzo a una scansione
+        gia' partita, un fotogramma che quella scansione non ha fatto in
+        tempo a vedere: apparirebbe "senza volti" e verrebbe azzerato per
+        sempre (ultima riga vince), anche se il file e' li'. Costa solo un
+        giro: alla prossima apertura, a scrittura ferma, la riconciliazione
+        lo riprende.
+        """
+        da_svuotare = [n for n in self._fotogrammi_divergenti()
+                       if not self._mappa.get(n)]
+        if not da_svuotare:
+            return 0
+        vecchie = dict((v["nome"], v) for v in self._voci
+                       if isinstance(v, dict) and isinstance(v.get("nome"), str))
+        nuove = []
+        for nome in da_svuotare:
+            voce = dict(vecchie[nome])
+            voce.update({"nome": nome, "n_volti": 0, "volti": []})
+            nuove.append(voce)
+        try:
+            for voce in nuove:
+                indice_mod.scrivi_voce(self._cache_dir(), voce)
+        except OSError:
+            # Il rapporto e' un comodo, ricostruibile dal bottone: un disco
+            # pieno non deve impedire di aprire la cartella.
+            return 0
+        nomi = set(da_svuotare)
+        self._voci = [v for v in self._voci
+                      if not (isinstance(v, dict) and v.get("nome") in nomi)]
+        self._voci.extend(nuove)
+        self.modello.aggiorna_voci(nuove)
+        self._aggiorna_conteggi_filtro()
+        return len(nuove)
+
+    def _risolvi_fratelli(self, nome_frame):
+        """I percorsi degli allineati di `nome_frame`, dalla mappa gia'
+        costruita -- mai una nuova lettura del disco.
+
+        METODO legato, non una mappa congelata: e' cosi' che
+        `_apri_finestra_dettaglio` lo passa alla finestra di dettaglio, e
+        ogni chiamata rilegge `self._mappa` COM'E' ORA -- se un
+        `_ricostruisci_mappa` successivo la sostituisce, la finestra gia'
+        aperta lo vede senza bisogno di reinserirlo.
+        """
+        return list(self._mappa.get(nome_frame) or [])
+
     def _assicura_volti(self):
-        """I volti del fotogramma corrente, dalla cache o dal servizio.
+        """I volti del fotogramma corrente, dalla mappa o dal servizio.
 
         Non avvia MAI il servizio da sola: la chiamano una spunta appena
         accesa, un click sulla tela, o un cambio di fotogramma con una
@@ -1346,24 +1705,45 @@ class PaginaEstrazione(QWidget):
             return
         if self._volti_di == self._frame_corrente:
             return
+        percorsi = self._mappa.get(self._frame_corrente.name) or []
+        if not percorsi:
+            # Zero volti e' una risposta, non un'assenza di risposta: si
+            # registra come consegnata (come il ramo sotto), cosi' non si
+            # ripete la domanda a ogni cambio di spunta -- e soprattutto
+            # non si paga l'avvio del servizio per farselo dire, che e'
+            # il costo che questa mappa esiste per togliere.
+            self._volti_correnti = []
+            self._volti_di = self._frame_corrente
+            self.tela.imposta_volti([])
+            return
         cliente = self._cliente_dettaglio()
         if cliente is None:
             return
         self._frame_chiesto = self._frame_corrente
         # Il primo scambio col servizio costa l'import (~6 s): un cursore
         # d'attesa e' l'unico modo di dire che l'interfaccia non e' morta.
-        # `finally` come in gui/faceset/pagina.py -- un cursore che non si
-        # ripristina e' peggio del congelamento che deve nascondere.
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        # Il client e' SINCRONO: la risposta arriva dentro questa chiamata,
-        # ed e' l'unica che `_su_volti_pronti` deve accettare.
-        self._in_attesa_volti = True
+        # Il client e' ASINCRONO: il cursore si ripristina alla CONSEGNA
+        # (`_su_volti_pronti`) o al guasto (`_su_dettaglio_fallito`), non
+        # in un `finally` qui -- scatterebbe subito, prima che la
+        # risposta arrivi. Un solo push anche se una richiesta ne
+        # supera un'altra (cambio rapido di fotogramma): lo stack di Qt
+        # va ripristinato lo stesso numero di volte che e' stato spinto.
+        if not self._cursore_volti_attivo:
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            self._cursore_volti_attivo = True
+        # La bandierina copre la consegna SINCRONA dei doppi di test (la
+        # risposta arriva dentro `volti_del_frame`, prima che l'id sia
+        # assegnato qui sotto); il client vero e' asincrono e usa l'id.
+        self._attesa_diretta_volti = True
         try:
-            cliente.volti_del_frame(self._cartella / "aligned",
-                                    self._frame_corrente.name)
+            self._id_volti_atteso = cliente.volti_del_frame(percorsi)
         finally:
-            self._in_attesa_volti = False
+            self._attesa_diretta_volti = False
+
+    def _ripristina_cursore_volti(self):
+        if self._cursore_volti_attivo:
             QApplication.restoreOverrideCursor()
+            self._cursore_volti_attivo = False
 
     def _su_volti_pronti(self, dati):
         """Slot del client. Scarta le consegne che non riguardano il
@@ -1378,29 +1758,132 @@ class PaginaEstrazione(QWidget):
         del volto che ha aperto -- che non e' detto sia questo: basta
         scorrere la pellicola a finestra aperta. Senza filtro i suoi volti
         finirebbero disegnati su questo fotogramma, in silenzio.
-        Si accetta la sola risposta arrivata dentro la nostra richiesta:
-        il client e' sincrono, quindi `_in_attesa_volti` e' vero esattamente
-        per quella. La finestra si difende in un altro modo -- accetta la
-        risposta che contiene il volto che ha aperto -- perche' li' la
+        Si accetta la sola risposta della richiesta in volo, riconosciuta
+        per id -- il client e' ASINCRONO, quindi non basta piu' un
+        booleano "dentro la chiamata": una consegna differita puo' arrivare
+        a un giro dell'event loop di distanza, con un'altra gia' partita
+        nel frattempo. La finestra si difende in un altro modo -- accetta
+        la risposta che contiene il volto che ha aperto -- perche' li' la
         richiesta e' sua e la nostra le arriverebbe comunque.
 
-        **Oggi regge la prima guardia, e la seconda e' difesa in
-        profondita'**: con un client sincrono una consegna in ritardo non
-        puo' arrivare affatto, quindi `_frame_chiesto != _frame_corrente`
-        non e' raggiungibile in produzione. Resta perche' e' esattamente
-        cio' che servirebbe il giorno che il client rispondesse fuori dalla
-        chiamata, e allora sarebbe l'unica difesa: non e' codice morto, e'
-        la difesa dell'altro caso.
+        **La seconda guardia, `_frame_chiesto != _frame_corrente`, oggi e'
+        RAGGIUNGIBILE in produzione**: con un client asincrono una consegna
+        puo' arrivare dopo che il fotogramma e' gia' cambiato sotto di lei.
+        Non e' piu' difesa in profondita', e' la difesa vera.
         """
-        if not self._in_attesa_volti:
+        if not (self._attesa_diretta_volti or
+                (self._id_volti_atteso is not None
+                 and dati.get("id") == self._id_volti_atteso)):
             return
+        self._id_volti_atteso = None
+        self._ripristina_cursore_volti()
         if self._frame_chiesto != self._frame_corrente:
             return
         volti = [v._replace(maschera=self._maschera_colorata(v.nome_maschera))
                  for v in volti_mod.volti_da_risposta(dati)]
         self._volti_correnti = volti
         self._volti_di = self._frame_corrente
+        # Una risposta e' arrivata: qualunque guasto precedente non
+        # riguarda piu' lo stato di ORA.
+        self._ultimo_guasto = None
         self.tela.imposta_volti(volti)
+        self._aggiorna_rapporto_dal_servizio(dati)
+        self._esegui_click_in_sospeso()
+
+    def _esegui_click_in_sospeso(self):
+        """Il click che `_su_volto_scelto` aveva dovuto rimandare perche'
+        la richiesta era ancora in volo: si riesegue ORA, sul fotogramma
+        per cui era stato fatto. Se nel frattempo la pellicola e' scorsa
+        altrove si scarta in silenzio, come un gesto che non ha piu'
+        senso -- e' lo stesso criterio di `_su_anteprima_pronta`."""
+        sospeso, self._click_in_sospeso = self._click_in_sospeso, None
+        if sospeso is None:
+            return
+        frame, punto = sospeso
+        if frame != self._frame_corrente:
+            return
+        self._su_volto_scelto(None, punto)
+
+    def _aggiorna_rapporto_dal_servizio(self, dati):
+        """La riga del fotogramma mostrato, riscritta se non concorda.
+
+        Costa zero richieste: e' la risposta che la pagina ha gia' chiesto
+        per disegnare i landmark. `posa` e `lato` arrivano da li' perche'
+        calcolarli qui vorrebbe dire importare facelib in gui/.
+
+        Un volto senza `rect` valido (il servizio lo lascia None quando il
+        file non ha un rettangolo sorgente registrato) CONTA comunque, col
+        rettangolo normalizzato a [0,0,0,0]: e' la stessa canonicalizzazione
+        di `ExtractIndex._volto_da_dfl`, l'altro produttore dello stesso
+        conteggio -- quello che alimenta la mappa e la riconciliazione
+        globale. Escluderlo farebbe divergere `n_volti` dal numero di
+        percorsi che la mappa attribuisce a questo fotogramma, e
+        `_riconcilia_rapporto` non lo saprebbe mai correggere: sana solo le
+        righe che la mappa smentisce A ZERO, mai un conteggio parziale. Un
+        rettangolo degenere resta comunque escluso dal disegno e dal click
+        da `volti_mod.rect_utilizzabile`, che e' il posto giusto per quella
+        decisione -- qui si conta un volto, non un rettangolo disegnabile.
+
+        Si riscrive SOLO se qualcosa cambia: il formato e' append-only, e
+        una riga identica per ogni fotogramma sfogliato farebbe crescere il
+        rapporto senza dire niente di nuovo.
+
+        Salta se la mappa non e' affidabile (`_mappa_affidabile()`, la
+        stessa domanda del chiamante di `_riconcilia_rapporto`): i percorsi
+        che il servizio ha appena letto vengono da uno snapshot della mappa
+        (`self._mappa`), e un volto scritto sul disco dopo quello snapshot,
+        o non ancora indicizzato, non ci sarebbe dentro -- riscrivere ora
+        peggiorerebbe la riga invece di correggerla. Il prossimo giro, a
+        mappa affidabile, la riprende.
+        """
+        if not self._mappa_affidabile():
+            return
+        nome = self._frame_corrente.name
+        nuovi_volti = []
+        for voce in dati.get("volti") or ():
+            rect = voce.get("rect")
+            if isinstance(rect, list) and len(rect) == 4:
+                rect = [int(v) for v in rect]
+            else:
+                rect = [0, 0, 0, 0]
+            nuovi_volti.append({"rect": rect,
+                                "posa": [float(v) for v in
+                                        (voce.get("posa") or [0.0, 0.0, 0.0])],
+                                "lato": int(voce.get("lato") or 0)})
+        vecchia = next((v for v in self._voci
+                        if isinstance(v, dict) and v.get("nome") == nome), None)
+        if vecchia is not None and vecchia.get("volti") == nuovi_volti:
+            return
+        try:
+            st = self._frame_corrente.stat()
+        except OSError:
+            # Il frame e' sparito fra la lettura e qui: niente da scrivere,
+            # `dimensione`/`mtime` sarebbero comunque inventati.
+            return
+        nuova = dict(vecchia or {"formato": indice_mod.FORMATO, "nome": nome,
+                                 "luminanza": None, "stato": "automatico",
+                                 "motore": None})
+        # `dimensione`/`mtime` sono la CHIAVE del rapporto
+        # (mainscripts/ExtractReport.py, docstring): un sort che rinomina i
+        # frame non deve invalidarlo. Questa via -- il click sulla tela,
+        # non un passo automatico -- le ometteva.
+        nuova.update({"nome": nome, "n_volti": len(nuovi_volti), "volti": nuovi_volti,
+                     "dimensione": st.st_size, "mtime": st.st_mtime_ns})
+        try:
+            indice_mod.scrivi_voce(self._cache_dir(), nuova)
+        except OSError:
+            # Il rapporto e' un comodo, ricostruibile dal bottone: un disco
+            # pieno non deve impedire di navigare.
+            return
+        self._voci = [v for v in self._voci
+                      if not (isinstance(v, dict) and v.get("nome") == nome)]
+        self._voci.append(nuova)
+        self.modello.aggiorna_voci([nuova])
+        self._aggiorna_conteggi_filtro()
+        if self._pixmap_corrente is not None:
+            self.tela.mostra(self._pixmap_corrente, self._rects_di(self._frame_corrente),
+                             None, _dimensione_nativa(self._frame_corrente,
+                                                      self._pixmap_corrente))
 
     def _maschera_colorata(self, nome):
         """Il file annunciato dal servizio, aperto e tinto UNA VOLTA. None
@@ -1428,21 +1911,58 @@ class PaginaEstrazione(QWidget):
             self._cliente = ClienteDettaglio(self._workdir_dettaglio(), parent=self)
             self._cliente.volti_pronti.connect(self._su_volti_pronti)
             self._cliente.fallito.connect(self._su_dettaglio_fallito)
+            self._cliente.salvato.connect(self._su_volto_salvato)
         return self._cliente
 
-    def _su_dettaglio_fallito(self, _motivo, _codice=None):
+    def _su_volto_salvato(self, _dati):
+        """La finestra di dettaglio ha riscritto un allineato.
+
+        Due conseguenze, e nessuna delle due chiede codice nuovo: la
+        (dimensione, mtime) del file e' cambiata, quindi
+        `_ricostruisci_mappa` lo trova fra i mancanti e fa ripartire
+        l'indicizzazione per quel solo volto; e i volti in mano alla
+        pagina sono vecchi, quindi si richiedono di nuovo -- ed e' la
+        risposta a riscrivere la riga del rapporto
+        (`_aggiorna_rapporto_dal_servizio`).
+
+        Il conteggio NON cambia mai in questo caso: e' esattamente il buco
+        che la riconciliazione per conteggio non copre, e questo slot ne
+        e' l'altra meta'.
+        """
+        self._ricostruisci_mappa()
+        self._dimentica_volti()
+        self._su_sovrapposizioni()
+
+    def _su_dettaglio_fallito(self, motivo, codice=None):
         """Il servizio non ha risposto -- morto per inattivita', o un file
         illeggibile.
 
-        Non fa NIENTE, di proposito, e le due meta' della ragione sono
-        diverse. Non scrive sulla riga di stato: la richiesta successiva
-        riavvia il servizio, e un avviso a ogni fotogramma scorso sarebbe
-        rumore. E non svuota i volti: questo segnale porta anche i
-        fallimenti dell'operazione `open` (la finestra di dettaglio), e
-        svuotare li' cancellerebbe i volti della revisione per un guasto
-        che non li riguarda. Un `frame` fallito lascia `_volti_di` fermo,
-        quindi `_assicura_volti` ritentera' da se'.
+        Continua a non scrivere sulla riga di stato: la richiesta
+        successiva riavvia il servizio, e un avviso a ogni fotogramma
+        scorso sarebbe rumore. E continua a non svuotare i volti: questo
+        segnale porta anche i fallimenti di `open` (la finestra di
+        dettaglio), e svuotare li' cancellerebbe i volti della revisione
+        per un guasto che non li riguarda.
+
+        Ma ORA ricorda l'ultimo guasto: e' `_su_volto_scelto` a usarlo, e
+        senza di lui il click accusava il rapporto di essere vecchio anche
+        quando era giusto -- la diagnosi falsa che ha aperto questo ciclo.
+
+        E ripristina il cursore d'attesa dei volti, se acceso: il segnale
+        e' condiviso e non porta l'id di chi e' caduto, quindi non si sa
+        SE il guasto riguardi proprio la nostra richiesta -- ma un cursore
+        che resta acceso per sempre e' peggio di uno spento un giro
+        troppo presto.
         """
+        self._ultimo_guasto = (motivo, codice)
+        self._id_volti_atteso = None
+        self._ripristina_cursore_volti()
+        # Un click rimasto in sospeso non ha piu' niente da aspettare: si
+        # scioglie qui, mostrando il guasto vero invece di restare muto
+        # fino al click successivo.
+        sospeso, self._click_in_sospeso = self._click_in_sospeso, None
+        if sospeso is not None and sospeso[0] == self._frame_corrente:
+            self.etichetta_stato.setText(self._perche_nessun_volto())
 
     def _su_volto_scelto(self, percorso, punto):
         """Il click sulla tela in revisione.
@@ -1463,14 +1983,51 @@ class PaginaEstrazione(QWidget):
             if not self.tela.punto_in_rapporto(punto):
                 return
             self._assicura_volti()
+            if self._volti_di != self._frame_corrente:
+                # La richiesta e' partita ma non e' ancora tornata (client
+                # ASINCRONO): il click non si inghiotte, si rimanda alla
+                # consegna -- `_esegui_click_in_sospeso`, chiamato da
+                # `_su_volti_pronti`. La riga di stato deve dirlo SUBITO,
+                # non restare quella di prima del click: senza, un secondo
+                # click durante l'attesa resta muto quanto il primo.
+                self._click_in_sospeso = (self._frame_corrente, punto)
+                self.etichetta_stato.setText(self._perche_nessun_volto())
+                return
             volto = volti_mod.volto_al_punto(self._volti_correnti, *punto)
             if volto is None:
                 if self._frame_corrente is not None:
-                    self.etichetta_stato.setText(
-                        testi.estrazione_rapporto_piu_vecchio(self._frame_corrente.name))
+                    self.etichetta_stato.setText(self._perche_nessun_volto())
                 return
             percorso = volto.percorso
         self._apri_finestra_dettaglio(percorso)
+
+    def _perche_nessun_volto(self):
+        """Quale delle cinque ragioni e', invece di indovinarne una sola.
+
+        L'ordine conta: «il servizio non ha risposto» va provato per
+        primo, perche' in quel caso non sappiamo niente del disco e ogni
+        altra frase sarebbe un'affermazione senza prova. `_volti_di` e' il
+        discriminante e c'era gia': vale il fotogramma corrente SOLO se una
+        risposta e' arrivata. Fra un guasto e l'indicizzazione in corso
+        c'e' un terzo stato che il client sincrono di prima non poteva mai
+        produrre: la richiesta e' partita e basta aspettare, non un guasto
+        e non l'indice -- `_id_volti_atteso` e' non-None SOLO mentre una
+        richiesta `frame` e' in volo.
+        """
+        nome = self._frame_corrente.name
+        if self._volti_di != self._frame_corrente:
+            motivo, codice = self._ultimo_guasto or (None, None)
+            if codice is not None or motivo is not None:
+                return testi.estrazione_dettaglio_non_risponde(
+                    testi.dettaglio_guasto(codice, motivo))
+            if self._id_volti_atteso is not None:
+                return testi.ESTRAZIONE_VOLTI_IN_ARRIVO
+            return testi.ESTRAZIONE_INDICE_IN_CORSO
+        if self._mancanti_indice:
+            return testi.ESTRAZIONE_INDICE_IN_CORSO
+        if self._volti_correnti:
+            return testi.ESTRAZIONE_NESSUN_VOLTO_SOTTO_IL_PUNTO
+        return testi.estrazione_rapporto_piu_vecchio(nome)
 
     def _apri_finestra_dettaglio(self, percorso):
         if self._finestra_dettaglio is None:
@@ -1480,11 +2037,16 @@ class PaginaEstrazione(QWidget):
             # importa torch mentre il primo e' vivo. E `pronto` non si
             # collega qui: la finestra ci si e' gia' collegata da se' alla
             # costruzione, e un secondo ascoltatore che richiama `mostra`
-            # raddoppia il giro dei fratelli -- sincrono, e ogni giro
+            # raddoppia il giro dei fratelli, e ogni giro
             # rilegge dal disco i dati DFL di tutti.
             cliente = self._cliente_dettaglio()
             self._finestra_dettaglio = FinestraDettaglio(
                 self._workdir_dettaglio(), cliente=cliente)
+            # Il METODO, non una mappa gia' calcolata: senza, la striscia
+            # dei fratelli resterebbe vuota in silenzio -- lo stesso
+            # ripiego di un volto senza `source_filename`, mai un
+            # `TypeError` rumoroso come prima di questa riga.
+            self._finestra_dettaglio.imposta_risolutore_fratelli(self._risolvi_fratelli)
         # I fratelli dello STESSO fotogramma: le frecce sfogliano il
         # gruppo invece di una lista vuota.
         self._finestra_dettaglio.imposta_ordine(
@@ -1503,9 +2065,11 @@ class PaginaEstrazione(QWidget):
         # faceva nessuno. La finestra si mostra e si porta davanti
         # comunque: se rifiuta, e' proprio quella che tiene il lavoro che
         # l'utente ha appena deciso di non perdere.
-        # Stesso pattern di _assicura_volti: lo scambio col servizio e'
-        # sincrono e il primo costa l'import, e la finestra appena mostrata
-        # sembrerebbe morta senza un cursore che lo dica.
+        # Il client e' asincrono: la clessidra qui copre solo l'istante
+        # del click, un lampo. La vera attesa -- il primo scambio costa
+        # l'import -- e' coperta dall'indicatore della finestra stessa
+        # (`FinestraDettaglio.indicatore_attesa`, sopra la tela), non da
+        # questo cursore.
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             self._finestra_dettaglio.apri_volto(percorso)
@@ -2002,6 +2566,20 @@ class PaginaEstrazione(QWidget):
             self._salvati_per_frame[self._frame_corrente] = \
                 self._prossimo_face_idx_libero(self._frame_corrente)
         face_idx = self._salvati_per_frame[self._frame_corrente]
+        # I fratelli gia' noti, per la voce di rapporto che il servizio
+        # scrive insieme al file (mainscripts/ExtractManual.py::_op_salva):
+        # elenca i volti gia' allineati di QUESTO fotogramma, mai il file
+        # che sta per nascere -- `self._mappa` e' la foto scattata
+        # all'apertura della cartella, quindi non puo' contenere un file
+        # che a quel momento non esisteva ancora. Il filtro `exists()` copre
+        # la direzione opposta: un fratello cancellato DOPO la foto (a mano,
+        # da un sort) libera il suo indice, e `_prossimo_face_idx_libero`
+        # -- che guarda il disco vero, non la mappa -- lo riassegnerebbe al
+        # file che sta per nascere. Mandarlo lo stesso duplicherebbe la voce
+        # nel rapporto: lo stesso nome una volta da `fratelli` (stantio) e
+        # una da `scritto` (mainscripts/ExtractManual.py::_op_salva).
+        fratelli = [str(q) for q in (self._mappa.get(self._frame_corrente.name) or [])
+                   if q.exists()]
         nome_file = self.servizio.salva(
             path=str(self._frame_corrente),
             output_dir=str(self._cartella / "aligned"),
@@ -2011,7 +2589,8 @@ class PaginaEstrazione(QWidget):
             face_type=_FACE_TYPE_LUNGO.get(valori.get("face-type"), "whole_face"),
             image_size=valori.get("image-size", 512),
             jpeg_quality=valori.get("jpeg-quality", 90),
-            report_dir=str(self._cache_dir()))
+            report_dir=str(self._cache_dir()),
+            fratelli=fratelli)
         if nome_file is None:
             # _invia valorizza
             # ultimo_errore in QUASI ogni fallimento, ma non e' garantito --

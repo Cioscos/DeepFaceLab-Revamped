@@ -54,6 +54,16 @@ def leggi(cache_dir):
     return list(per_nome.values())
 
 
+def scrivi_voce(cache_dir, voce):
+    """Appende una riga al rapporto. Ultima riga vince: riscrivere un
+    fotogramma vuol dire appenderlo di nuovo, mai riscrivere il file."""
+    percorso = Path(cache_dir)
+    percorso.mkdir(parents=True, exist_ok=True)
+    with open(str(percorso / NOME_RAPPORTO), "a", encoding="utf-8") as f:
+        f.write(json.dumps(voce) + "\n")
+        f.flush()
+
+
 def motore_di(v):
     """La coppia rilevatore+allineatore che ha prodotto la voce, o None.
 

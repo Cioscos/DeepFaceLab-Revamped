@@ -58,10 +58,15 @@ ALLINEAMENTO_NON_VALIDO = "allineamento_non_valido"
 SERVIZIO_MUTO = "servizio_muto"
 
 # E' arrivata la risposta di una richiesta PRECEDENTE, rimasta indietro
-# dopo un tempo scaduto. Il client la scarta invece di consegnarla al
-# posto di quella corrente -- consegnarla sposterebbe lo sfasamento sulla
-# richiesta dopo, e non si riassorbirebbe mai. Il motivo grezzo porta i
-# due numeri di sequenza, che a chi guarda non dicono niente.
+# dopo un tempo scaduto. Appartiene al SOLO ramo sincrono del client (il
+# `trasporto` iniettato, mai usato in produzione): li' non c'e' un id da
+# correlare, solo un ordine presunto, e una risposta fuori posto si scarta
+# invece di consegnarla al posto di quella corrente -- consegnarla
+# sposterebbe lo sfasamento sulla richiesta dopo. Il ramo asincrono vero
+# correla per id, quindi una risposta con un id sconosciuto si scarta in
+# silenzio: non e' piu' raggiungibile da un processo vero. Il motivo
+# grezzo porta i due numeri di sequenza, che a chi guarda non dicono
+# niente.
 RISPOSTA_FUORI_SEQUENZA = "risposta_fuori_sequenza"
 
 # I due insiemi restano distinti perche' le reti che li tengono onesti
@@ -73,5 +78,8 @@ RISPOSTA_FUORI_SEQUENZA = "risposta_fuori_sequenza"
 CODICI_SERVIZIO = (FILE_ILLEGGIBILE, FRAME_ASSENTE, SENZA_MATRICE,
                    SENZA_RETTANGOLO, ALLINEAMENTO_NON_VALIDO)
 CODICI_CLIENT = (SERVIZIO_MUTO, RISPOSTA_FUORI_SEQUENZA)
+# Nota per chi tocca questo elenco: RISPOSTA_FUORI_SEQUENZA e' l'unico
+# codice che un processo vero non emette mai -- solo il ramo di test del
+# client.
 
 CODICI = CODICI_SERVIZIO + CODICI_CLIENT

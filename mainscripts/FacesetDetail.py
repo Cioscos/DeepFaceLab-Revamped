@@ -123,6 +123,42 @@ def _landmarks_di_frame(dfl):
     return lmrks.astype(float).tolist()
 
 
+def _posa_e_lato(dfl, rect):
+    """I due campi che `ExtractReport.voce` vuole per ogni volto.
+
+    La canonicalizzazione e' la STESSA di ExtractIndex._volto_da_dfl, e non
+    per gusto: `get_landmarks()` torna i punti nella dimensione con cui il
+    volto e' stato salvato (512, o 768 per head), mentre
+    estimate_pitch_yaw_roll assume col suo default una camera tarata per
+    256. Passarle i punti cosi' come sono da' una posa sbagliata in
+    silenzio -- misurato altrove: ~14 gradi di pitch, ~28 di yaw. Il lato
+    invece viene dal rettangolo nello spazio del FOTOGRAMMA.
+
+    Un guasto di facelib qui degrada alla posa di ripiego -- la stessa
+    dei landmark non 68 -- invece di sollevare: questa funzione gira
+    dentro il ciclo di `_rispondi_frame`, che protegge un file rotto
+    perdendo SOLO lui. Lasciarla sollevare perderebbe l'intera voce
+    (rettangolo, landmark, maschera compresi) per un guasto che riguarda
+    solo la posa.
+    """
+    from facelib import FaceType, LandmarksProcessor
+    posa = [0.0, 0.0, 0.0]
+    lmrks = np.asarray(dfl.get_landmarks())
+    if lmrks.ndim == 2 and lmrks.shape[0] == 68:
+        try:
+            mat = LandmarksProcessor.get_transform_mat(lmrks, 256, FaceType.FULL)
+            allineati = LandmarksProcessor.transform_points(lmrks, mat)
+            posa = [float(p) for p in
+                    LandmarksProcessor.estimate_pitch_yaw_roll(allineati)]
+        except Exception:
+            posa = [0.0, 0.0, 0.0]
+    lato = 0
+    if rect is not None:
+        l, t, r, b = rect
+        lato = max(r - l, b - t)
+    return posa, int(lato)
+
+
 def _volto_per_il_protocollo(percorso, ident, indice, workdir):
     """Una voce di `volti`, o None se il file non e' un JPEG DFL.
 
@@ -144,6 +180,7 @@ def _volto_per_il_protocollo(percorso, ident, indice, workdir):
         "shape": list(dfl.get_shape()),
         "mask": None,
     }
+    voce["posa"], voce["lato"] = _posa_e_lato(dfl, voce["rect"])
     if dfl.has_xseg_mask():
         byte_grezzi = bytes(np.asarray(dfl.get_xseg_mask_compressed()).tobytes())
         # L'INDICE oltre all'id: due volti dello stesso fotogramma stanno
@@ -194,15 +231,17 @@ def _rispondi_open(comando, ident, workdir):
 
 
 def _rispondi_frame(comando, ident, workdir):
-    """I volti gia' su disco per un fotogramma. Una cartella `aligned/`
-    che non esiste non e' un errore: e' lo stato di un progetto su cui non
-    si e' ancora estratto niente."""
-    from mainscripts import ExtractIndex
-    try:
-        percorsi = ExtractIndex.percorsi_di_un_frame(comando.get("aligned_dir"),
-                                                     comando.get("frame"))
-    except Exception as e:
-        return _errore(ident, e)
+    """I volti gia' su disco per un fotogramma.
+
+    I percorsi li decide il CHIAMANTE. Questo servizio non sa piu' quale
+    file venga da quale fotogramma, e non deve saperlo: la regola vive in
+    gui/faceset/indice.py::mappa_per_fotogramma, che la ricava dall'indice
+    invece che dal nome del file. Un elenco vuoto -- un progetto su cui non
+    si e' ancora estratto niente -- non e' un errore.
+    """
+    percorsi = comando.get("percorsi")
+    if not isinstance(percorsi, list):
+        percorsi = []
     volti = []
     for indice, percorso in enumerate(percorsi):
         try:

@@ -371,12 +371,11 @@ def _op_salva(comando):
         # Path(None).name.
         raise ValueError("volto scartato: nessun file scritto")
 
-    # La voce di rapporto, se chi ha chiamato ne ha data una cartella. Si
-    # rilegge dal disco invece di accumulare in memoria: la sessione salva
-    # un volto alla volta e la voce deve elencarli tutti, e il disco e'
-    # l'unica lettura che non puo' divergere da cio' che c'e' davvero. E'
-    # anche il primo produttore di STATO_CONFERMATO, che fino a qui non ne
-    # aveva nessuno.
+    # La voce di rapporto, se chi ha chiamato ne ha data una cartella. La
+    # sessione salva un volto alla volta e la voce deve elencarli tutti: i
+    # gia' esistenti arrivano dal chiamante come `fratelli`, non da una
+    # ricerca qui dentro. E' anche il primo produttore di STATO_CONFERMATO,
+    # che fino a qui non ne aveva nessuno.
     #
     # Le due scritture non hanno lo stesso peso: il .jpg qui sopra e'
     # il lavoro dell'utente -- minuti di tracciamento a mano su un
@@ -393,10 +392,17 @@ def _op_salva(comando):
     if report_dir:
         try:
             from mainscripts import ExtractIndex, ExtractReport
+            # I fratelli li manda il chiamante, che ha la mappa: cercarli
+            # qui per nome smetteva di funzionare al primo sort. Il file
+            # appena scritto non e' fra loro -- e' nato adesso.
+            fratelli = comando.get("fratelli") or []
+            # Deduplicato: il file appena scritto non deve comparire due
+            # volte se il chiamante lo manda gia' fra i fratelli.
+            percorsi = [Path(f) for f in fratelli if Path(f) != Path(scritto)] + [Path(scritto)]
             with ExtractReport.Scrittore(report_dir) as scrittore:
                 scrittore.scrivi(ExtractReport.voce(
                     percorso,
-                    volti=ExtractIndex.volti_di_un_frame(uscita, percorso.name),
+                    volti=ExtractIndex.volti_dai_percorsi(percorsi),
                     luminanza=None,
                     stato=ExtractReport.STATO_CONFERMATO,
                     motore=ExtractReport.MOTORE_MANUALE))

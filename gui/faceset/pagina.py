@@ -1026,6 +1026,12 @@ class PaginaCuraFaceset(QWidget):
             self._cartella_dettaglio = Path(tempfile.mkdtemp(prefix="dfl_dettaglio_"))
         return self._cartella_dettaglio
 
+    def _risolvi_fratelli(self, nome_frame):
+        """Il risolutore che la finestra di dettaglio interroga: i
+        percorsi degli allineati di un fotogramma, se stesso compreso,
+        letti dalla mappa che `ricalcola` tiene aggiornata."""
+        return fratelli_mod.percorsi_del_frame(self._mappa_frame, nome_frame)
+
     def _su_volto_aperto(self, percorso):
         if self._cliente is None:
             from gui.dettaglio.finestra import FinestraDettaglio
@@ -1038,9 +1044,13 @@ class PaginaCuraFaceset(QWidget):
                 self._workdir_dettaglio(), cliente=self._cliente)
             # `pronto` NON si collega qui: la finestra ci si e' gia'
             # collegata da se' alla costruzione, e un secondo ascoltatore
-            # che richiama `mostra` raddoppia il giro dei fratelli --
-            # sincrono, e ogni giro rilegge dal disco i dati DFL di tutti.
+            # che richiama `mostra` raddoppia il giro dei fratelli, e
+            # ogni giro rilegge dal disco i dati DFL di tutti.
             self._cliente.fallito.connect(self._su_dettaglio_fallito)
+            # Il METODO, non `self._mappa_frame` gia' calcolata: la mappa
+            # si sostituisce a ogni `ricalcola()`, e un dizionario passato
+            # una volta sola resterebbe quello del ricalcolo di allora.
+            self._finestra_dettaglio.imposta_risolutore_fratelli(self._risolvi_fratelli)
         self._finestra_dettaglio.imposta_ordine(self.modello.percorsi_visibili())
         # I fotogrammi stanno un livello sopra la cartella che si guarda: si
         # lavora su `aligned`, `aligned_resized` o `aligned_enhanced`. Si
@@ -1055,13 +1065,12 @@ class PaginaCuraFaceset(QWidget):
         # qui si disegnava e si chiedeva in due passi, e la domanda non la
         # faceva nessuno. La finestra si mostra comunque: se rifiuta, e'
         # proprio quella che tiene il lavoro appena salvato dall'utente.
-        # L'attesa e' sincrona (il client blocca sul primo scambio col
-        # servizio, fino a 6 s per l'import al primo doppio click della
-        # sessione): il cursore a clessidra e' l'unico modo di dire
-        # all'utente che la finestra non e' morta. Il `finally` serve
-        # perche' `apri()` emette i suoi segnali in modo sincrono --
-        # un gestore agganciato a `pronto`/`fallito` che sollevasse
-        # lascerebbe altrimenti il cursore a clessidra per sempre.
+        # Il client e' asincrono e la chiamata torna subito: la clessidra
+        # qui copre solo l'istante del click, un lampo. La vera attesa --
+        # fino a 6 s per l'import al primo doppio click della sessione --
+        # e' coperta dall'indicatore della finestra stessa
+        # (`FinestraDettaglio.indicatore_attesa`, sopra la tela), che si
+        # spegne alla consegna vera.
         # Il volto che la finestra mostra ORA: e' li' che la griglia deve
         # tornare se l'abbandono viene rifiutato.
         rimasto = self._finestra_dettaglio.percorso()

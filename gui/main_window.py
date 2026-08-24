@@ -499,15 +499,58 @@ class MainWindow(QMainWindow):
         progetto = self.archivio.attivo()
         return progetto.cartella if progetto is not None else default_workspace(self._dfl_root)
 
-    def _on_job_started(self, _job):
+    def _on_job_started(self, job):
         # Slot diretto di job_manager.job_started: protetto con
         # _esegui_protetta come le altre azioni che toccano l'archivio dei
         # progetti (qui, _aggiorna_selettore scandisce il disco).
-        self._esegui_protetta(self._on_job_started_ora)
+        self._esegui_protetta(lambda: self._on_job_started_ora(job))
 
-    def _on_job_started_ora(self):
+    def _on_job_started_ora(self, job=None):
+        # La console la apre chi OSSERVA che un job e' partito, non chi lo
+        # lancia: le pagine (estrazione, cura del faceset) chiamano
+        # job_manager.try_start direttamente, e finche' l'apertura stava in
+        # _attach_job -- chiamato solo dalla lista Steps -- lo stdout dei
+        # loro figli non arrivava da nessuna parte. Un traceback compreso.
+        # La console si apre sempre -- nessuna riga va persa -- ma va in
+        # primo piano solo se e' stato l'utente ad avviare il job: un
+        # lancio automatico (l'indicizzazione dei volti che riparte da sola)
+        # non deve strappare lo schermo a una console che l'utente sta
+        # gia' guardando.
+        if job is not None and job not in self._consoles:
+            self.open_console(job, focus=job.avviato_da_utente)
+            self._collega_uscita(job)
         self._refresh_running_jobs_menu()
         self._aggiorna_selettore()
+
+    def _collega_uscita(self, job):
+        """Collega i due canali di stdout del job alla sua console.
+
+        Separato da _on_job_started_ora perche' _attach_job -- chiamato
+        esplicitamente dal percorso della lista Steps, dopo che il segnale
+        job_started e' gia' passato da try_start -- non deve rifare questo
+        collegamento una seconda volta.
+        """
+        def _on_output(line):
+            console = self._consoles.get(job)
+            if console is not None:
+                console.append(line)
+        job.output.connect(_on_output)
+
+        def _on_output_update(line):
+            """Rewrite the console's last line, the way a carriage return
+            rewrites a terminal row: select from the end of the document
+            back to the start of its block and replace the text. Selecting
+            a *block* rather than a visual line is what keeps this right for
+            a status line long enough to wrap."""
+            console = self._consoles.get(job)
+            if console is None:
+                return
+            cursor = console.textCursor()
+            cursor.movePosition(QTextCursor.End)
+            cursor.movePosition(QTextCursor.StartOfBlock, QTextCursor.KeepAnchor)
+            cursor.removeSelectedText()
+            cursor.insertText(line)
+        job.output_update.connect(_on_output_update)
 
     def _on_any_job_finished(self, job, _code):
         # Slot diretto di job_manager.job_finished, protetto con
@@ -1282,7 +1325,7 @@ class MainWindow(QMainWindow):
         """The open console view of `job`, or None when it is closed."""
         return self._consoles.get(job)
 
-    def open_console(self, job):
+    def open_console(self, job, focus=True):
         """Build a console view for `job` and fill it from the job's buffer.
 
         Idempotent: an already open console is raised, not duplicated. The
@@ -1293,11 +1336,18 @@ class MainWindow(QMainWindow):
         A freshly built tab is raised too, and that has to be said out loud:
         QTabWidget selects a tab on its own only when it is the first one in
         an empty widget, so from the second job on the new console would be
-        added behind whatever was already on screen.
+        added behind whatever was already on screen. `focus=False` skips
+        exactly that step -- the tab is built and the output still lands in
+        it, but the dock does not pop open and the currently shown console
+        stays where it was. Used for a job the user did not start (see
+        Job.avviato_da_utente): its output must not be lost, but it must
+        not steal the screen from a console the user is actually watching
+        either.
         """
         existing = self._consoles.get(job)
         if existing is not None:
-            self.console_tabs.setCurrentWidget(existing)
+            if focus:
+                self.console_tabs.setCurrentWidget(existing)
             return existing
         text_edit = QTextEdit()
         text_edit.setReadOnly(True)
@@ -1312,8 +1362,9 @@ class MainWindow(QMainWindow):
         text_edit.setPlainText("\n".join(job.captured_lines))
         self._consoles[job] = text_edit
         self.console_tabs.addTab(text_edit, self._console_title(job))
-        self.console_tabs.setCurrentWidget(text_edit)
-        self.console_dock.show()
+        if focus:
+            self.console_tabs.setCurrentWidget(text_edit)
+            self.console_dock.show()
         return text_edit
 
     def close_console(self, job):
@@ -1552,9 +1603,14 @@ class MainWindow(QMainWindow):
                 return
 
     def _attach_job(self, step, job, extra_args):
+        # L'apertura della console e il collegamento dell'uscita sono gia'
+        # avvenuti da _on_job_started_ora, richiamato da job_started -- che
+        # try_start (sopra, nel chiamante) ha gia' emesso in modo sincrono
+        # prima di tornare. Richiamarla qui e' idempotente (job e' gia' in
+        # _consoles) e serve solo per il refresh dei menu.
         self._jobs_in_order.append(job)
         self._job_status_text[job] = testi.JOB_RUNNING
-        self.open_console(job)
+        self._on_job_started_ora(job)
         if self.step_view.step is step:
             self.step_view.set_job(job, _is_training_step(step))
             # set_job() above just wrote its own unprefixed default
@@ -1563,28 +1619,6 @@ class MainWindow(QMainWindow):
             # not only after the next navigation or status change.
             self._set_job_status(job, testi.JOB_RUNNING)
         self._refresh_running_jobs_menu()
-
-        def _on_output(line):
-            console = self._consoles.get(job)
-            if console is not None:
-                console.append(line)
-        job.output.connect(_on_output)
-
-        def _on_output_update(line):
-            """Rewrite the console's last line, the way a carriage return
-            rewrites a terminal row: select from the end of the document
-            back to the start of its block and replace the text. Selecting
-            a *block* rather than a visual line is what keeps this right for
-            a status line long enough to wrap."""
-            console = self._consoles.get(job)
-            if console is None:
-                return
-            cursor = console.textCursor()
-            cursor.movePosition(QTextCursor.End)
-            cursor.movePosition(QTextCursor.StartOfBlock, QTextCursor.KeepAnchor)
-            cursor.removeSelectedText()
-            cursor.insertText(line)
-        job.output_update.connect(_on_output_update)
 
         tail = None
         if step.process == PROCESS_SESSION and _is_training_step(step):

@@ -218,14 +218,15 @@ class Tela(QtWidgets.QWidget):
         if dx == 0 and dy == 0:
             # Un evento di movimento e' arrivato, ma niente si e' spostato:
             # non conta come trascinamento, o un gesto fermo chiederebbe lo
-            # stesso il riallineamento sincrono al rilascio.
+            # stesso il riallineamento al rilascio.
             return
         self._ha_mosso = True
         self._punti = sel_mod.trasla(self._punti, self._selezione, dx, dy)
         self.update()
-        # Solo la tela: nessuna richiesta al servizio durante il gesto. Il
-        # client e' sincrono, e un viaggio per mouseMoveEvent terrebbe la
-        # GUI ferma fra un movimento e l'altro.
+        # Solo la tela: nessuna richiesta al servizio durante il gesto. Un
+        # viaggio per mouseMoveEvent sommergerebbe il servizio di un
+        # comando per pixel spostato, anche con un client che non blocca
+        # piu' la GUI fra un movimento e l'altro.
         self.punti_mossi.emit(self.punti())
 
     #override

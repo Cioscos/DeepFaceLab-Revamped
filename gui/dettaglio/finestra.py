@@ -117,6 +117,11 @@ class FinestraDettaglio(QtWidgets.QWidget):
         self._cliente = cliente
         self._percorso = None
         self._ordine = []
+        # Chi risolve i fratelli di un fotogramma: `fn(nome_frame) ->
+        # [percorsi]`, vedi `imposta_risolutore_fratelli`. None per
+        # default -- la striscia resta vuota, lo stesso ripiego di un
+        # volto senza `source_filename`.
+        self._risolutore_fratelli = None
         self._frame_dir = None
         self._dati = None
         self._storia = None
@@ -130,6 +135,13 @@ class FinestraDettaglio(QtWidgets.QWidget):
         self._modo_maschera = MASCHERA_OFF
         self._motori_avvisati = False
         self._modo_rilevamento = None
+        # Il filtro di appartenenza di `_su_pronto`: l'id della richiesta
+        # `apri` che ha aperto il volto CORRENTE, e la bandierina che
+        # copre il solo caso in cui il client consegna nello stesso giro
+        # della chiamata (il `trasporto` sincrono dei test) -- li' la
+        # risposta arriva PRIMA che `_id_apertura` sia assegnato.
+        self._id_apertura = None
+        self._attesa_apertura = False
 
         self.tela = Tela()
         self.pannello = PannelloAree(self._colori)
@@ -174,6 +186,22 @@ class FinestraDettaglio(QtWidgets.QWidget):
         scorrevole = QtWidgets.QScrollArea()
         scorrevole.setWidget(self.tela)
         scorrevole.setWidgetResizable(False)
+        self._scorrevole = scorrevole   # per posizionare l'indicatore, sotto
+        # L'attesa dell'apertura, ora che il client non blocca piu' il
+        # thread della GUI: indeterminata (min e max a zero e' l'idioma
+        # gia' in uso nel pacchetto per «sta lavorando e non so quanto ci
+        # mette»). NON entra in nessun layout -- figlio diretto di
+        # `scorrevole`, posizionato a mano (`_riposiziona_indicatore`) e
+        # tenuto sopra con `raise_()`: un widget gestito da un layout
+        # sposta i suoi vicini quando appare o sparisce, e la tela
+        # scattava di 35 px in giu' e ritorno a ogni apertura -- lo stesso
+        # difetto «sgraziato» che questo indicatore doveva togliere,
+        # spostato dal bianco a uno scatto.
+        self.indicatore_attesa = QtWidgets.QProgressBar(scorrevole.viewport())
+        self.indicatore_attesa.setRange(0, 0)
+        self.indicatore_attesa.setTextVisible(False)
+        self.indicatore_attesa.setToolTip(testi.DETTAGLIO_ATTESA)
+        self.indicatore_attesa.setVisible(False)
 
         # Anche la striscia scorre: il suo minimo cresce col numero di
         # fratelli (misurato: 150 px a due miniature, 1554 a venti), e
@@ -266,6 +294,22 @@ class FinestraDettaglio(QtWidgets.QWidget):
         # percorso None. La tela nasce modificabile, ed e' la stessa riga
         # che la spegne.
         self._aggiorna_modificabilita()
+        self._riposiziona_indicatore()
+
+    #override
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._riposiziona_indicatore()
+
+    def _riposiziona_indicatore(self):
+        """La geometria dell'indicatore, ricalcolata a mano perche' non e'
+        in nessun layout (vedi il commento alla costruzione): centrato
+        sull'area visibile di `scorrevole`, vicino al bordo superiore."""
+        area = self._scorrevole.viewport().rect()
+        larghezza = max(40, min(200, area.width() - 16))
+        x = max(0, (area.width() - larghezza) // 2)
+        self.indicatore_attesa.setGeometry(x, 8, larghezza, 18)
+        self.indicatore_attesa.raise_()
 
     # -- cio' che la pagina imposta -------------------------------------
 
@@ -287,6 +331,18 @@ class FinestraDettaglio(QtWidgets.QWidget):
         quale sia: l'intera griglia dalla pagina di cura, i soli fratelli
         da quella di estrazione. La striscia guarda un'altra cosa."""
         self._ordine = [Path(p) for p in percorsi]
+
+    def imposta_risolutore_fratelli(self, fn):
+        """Chi trova i fratelli di un fotogramma: `fn(nome_frame)` deve
+        tornare i percorsi dei suoi allineati, se stesso compreso.
+
+        Un CALLABLE e non una mappa gia' calcolata: le frecce cambiano
+        volto, e il volto nuovo puo' venire da un altro fotogramma -- una
+        mappa passata una volta sola sarebbe stantia alla prima freccia.
+        `None` (il default) lascia la striscia vuota, per chi -- lo
+        strumento degli scatti -- non ha nessun indice da interrogare.
+        """
+        self._risolutore_fratelli = fn
 
     # -- il volto mostrato ----------------------------------------------
 
@@ -544,7 +600,9 @@ class FinestraDettaglio(QtWidgets.QWidget):
 
     def _su_punti_mossi(self, _punti):
         """Durante il gesto: SOLO il titolo. Nessuna richiesta al
-        servizio -- il client e' sincrono e blocca il thread della GUI."""
+        servizio -- una per `mouseMoveEvent` sommergerebbe il servizio di
+        un comando per pixel spostato, anche con un client che non
+        blocca piu' il thread della GUI."""
         self._aggiorna_titolo()
 
     def _su_trascinamento_finito(self, punti_allineati):
@@ -561,8 +619,8 @@ class FinestraDettaglio(QtWidgets.QWidget):
 
         Sui punti che non muovono il ritaglio si SALTA: la mascella di un
         `whole_face` non entra in `get_transform_mat`, quindi il raster
-        tornerebbe identico a quello che gia' si vede, e il client e'
-        sincrono -- il viaggio si paga con l'interfaccia ferma. Su un
+        tornerebbe identico a quello che gia' si vede, e il viaggio non
+        serve a niente anche se non blocca piu' l'interfaccia. Su un
         volto `head` gli stessi punti muovono il ritaglio, e allora si
         chiede: l'insieme non e' una costante, e' funzione del face type.
 
@@ -661,25 +719,16 @@ class FinestraDettaglio(QtWidgets.QWidget):
         # aver reso punti utilizzabili.
         self._modo_rilevamento = modo
         self._avvisa_motori_una_volta()
-        # L'etichetta si RIDIPINGE prima della chiamata, che e' sincrona:
-        # fra la scrittura e il ritorno il ciclo degli eventi non gira, e
-        # la risposta sovrascrive il testo prima del primo paintEvent --
-        # misurato con un filtro sugli eventi Paint: con zero proposte, e
-        # con piu' d'una, l'avviso sulla memoria video non arrivava MAI
-        # sullo schermo, e non tornava piu' perche' si dice una volta
-        # sola. Il cursore d'attesa e' quello che le due pagine mettono
-        # attorno all'altro scambio sincrono; questo e' il piu' lento
-        # della finestra, perche' ci sta dentro la costruzione dei motori.
-        # Il `finally` perche' `rileva` emette i suoi segnali in modo
-        # sincrono: uno slot che sollevasse lascerebbe la clessidra per
-        # sempre.
+        # L'etichetta si RIDIPINGE subito: la richiesta e' asincrona e
+        # torna prima che l'event loop giri da solo, quindi senza questa
+        # riga l'avviso resterebbe accodato dietro la risposta invece di
+        # comparire per primo. L'indicatore e' lo stesso che copre
+        # l'apertura -- questo e' lo scambio piu' lento della finestra,
+        # perche' ci sta dentro la costruzione dei motori.
         self.etichetta_stato.repaint()
-        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
-        try:
-            self._cliente.rileva(self._percorso, self._frame_dir, modo,
-                                 self.tendina_allineatore.currentData(), rilevatore)
-        finally:
-            QtWidgets.QApplication.restoreOverrideCursor()
+        self.indicatore_attesa.setVisible(True)
+        self._cliente.rileva(self._percorso, self._frame_dir, modo,
+                             self.tendina_allineatore.currentData(), rilevatore)
 
     def _avvisa_motori_una_volta(self):
         """Il costo in memoria video, detto PRIMA della richiesta.
@@ -710,6 +759,7 @@ class FinestraDettaglio(QtWidgets.QWidget):
         condividono, e un'eccezione in uno slot costa quanto una in un
         paintEvent.
         """
+        self.indicatore_attesa.setVisible(False)
         if self._storia is None:
             return
         proposte = self._proposte_utilizzabili(dati)
@@ -744,7 +794,13 @@ class FinestraDettaglio(QtWidgets.QWidget):
         segnale lo porta; il motivo puo' essere un'eccezione, una stringa
         o None -- il client emette tutte e tre le forme -- e nessuna deve
         sollevare dentro uno slot.
+
+        Spegne anche l'indicatore di attesa, se acceso: `fallito` e'
+        condiviso con le richieste della pagina, quindi non si sa SE il
+        guasto riguardi l'apertura in corso -- ma un indicatore che resta
+        acceso per sempre e' peggio di uno spento un giro troppo presto.
         """
+        self.indicatore_attesa.setVisible(False)
         self.etichetta_stato.setText(testi.dettaglio_guasto(codice, motivo))
 
     def _proposte_utilizzabili(self, dati):
@@ -865,19 +921,38 @@ class FinestraDettaglio(QtWidgets.QWidget):
             return False
         self.mostra(percorso, None)
         if self._cliente is not None:
-            self._cliente.apri(percorso)
+            self.indicatore_attesa.setVisible(True)
+            # Con un client ASINCRONO la risposta arriva a un giro
+            # successivo dell'event loop: `_id_apertura` deve gia' essere
+            # pronto per quando arriva. La bandierina copre il ramo
+            # SINCRONO (il `trasporto` iniettato dei test): li' `apri`
+            # consegna dentro questa stessa chiamata, cioe' PRIMA che
+            # l'assegnazione qui sotto sia avvenuta.
+            self._attesa_apertura = True
+            try:
+                self._id_apertura = self._cliente.apri(percorso)
+            finally:
+                self._attesa_apertura = False
         return True
 
     def _su_pronto(self, dati):
-        """Senza filtro d'appartenenza, a differenza di `_su_volti_pronti`,
-        e non per dimenticanza: la risposta `opened` non porta il percorso
-        del volto, quindi non c'e' niente su cui riconoscerla. Nemmeno una
-        bandierina di rientranza servirebbe: `apri_volto` fa
-        `mostra(percorso, None)` e subito dopo chiede al servizio, quindi
-        una bandierina alzata qui rifiuterebbe proprio la risposta che si
-        sta aspettando."""
-        if self._percorso is not None:
-            self.mostra(self._percorso, dati)
+        """Filtro di appartenenza: si accetta solo la risposta della
+        richiesta di apertura CORRENTE, riconosciuta per `id`.
+
+        Con un client sincrono era impossibile distinguere una risposta
+        in ritardo, perche' non ne arrivavano mai: reso asincrono, una
+        `opened` rimasta indietro puo' arrivare DOPO che le frecce hanno
+        gia' aperto un altro volto -- disegnarla sopra sarebbe la cosa
+        peggiore che questa finestra possa fare. Il ramo della bandierina
+        serve al `trasporto` sincrono dei test, dove la consegna avviene
+        prima che `_id_apertura` sia stato scritto (vedi `apri_volto`).
+        """
+        if self._percorso is None:
+            return
+        if not (self._attesa_apertura or dati.get("id") == self._id_apertura):
+            return
+        self.indicatore_attesa.setVisible(False)
+        self.mostra(self._percorso, dati)
 
     def _sposta(self, passo):
         if self._percorso is None or self._percorso not in self._ordine:
@@ -938,11 +1013,22 @@ class FinestraDettaglio(QtWidgets.QWidget):
     # -- i fratelli --------------------------------------------------------
 
     def _chiedi_i_fratelli(self):
+        """I percorsi li trova il risolutore iniettato, non piu' il
+        servizio: `ClienteDettaglio.volti_del_frame` vuole percorsi
+        espliciti, e questa finestra non ha un indice da interrogare da
+        se'. Senza risolutore, o senza fratelli per QUESTO fotogramma, la
+        striscia resta vuota -- zero percorsi non vale un viaggio verso il
+        servizio."""
         nome = (self._dati or {}).get("source_filename")
-        if self._cliente is None or nome is None or self._percorso is None:
+        if self._cliente is None or nome is None or self._percorso is None \
+                or self._risolutore_fratelli is None:
             self._mostra_fratelli([], None)
             return
-        self._cliente.volti_del_frame(self._percorso.parent, nome)
+        percorsi = self._risolutore_fratelli(nome) or []
+        if not percorsi:
+            self._mostra_fratelli([], None)
+            return
+        self._cliente.volti_del_frame(percorsi)
 
     def _su_volti_pronti(self, dati):
         """ATTENZIONE: `volti_pronti` e' un segnale CONDIVISO. Il client e'

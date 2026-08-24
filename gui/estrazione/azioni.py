@@ -13,8 +13,10 @@ widget attraverso un attributo, non un letterale -- quindi chi le riscrive
 non ha nessuna rete sotto, solo questa nota.
 """
 import collections
+import dataclasses
 
 from gui.catalog.model import KIND_MAIN, PROCESS_BATCH, Invocation, StepDef
+from gui.faceset.conflitti import ARTEFATTI
 
 Operazione = collections.namedtuple(
     "Operazione", "chiave etichetta passo_src passo_dst")
@@ -36,6 +38,50 @@ PASSO_INDICE = StepDef(
                             args=("--input-dir", "{WORKSPACE}/data_src")),),
     optional=True,
 )
+
+# Il gemello di PASSO_INDICE che punta all'indice dei VOLTI (quello di
+# gui/faceset/azioni.py, non il rapporto per frame sopra): la pagina lo
+# lancia da sola (PaginaEstrazione.avvia_indicizzazione_volti) su un
+# aligned/ che l'indice non copre ancora, cosi' landmark e fratelli
+# arrivano senza passare dalla pagina di cura. Non sta nel catalogo,
+# nessuno script generato lo lancia.
+#
+# NUDO, senza `consumes`: privato apposta, non esportato -- passarlo a
+# _lancia/try_start al posto di passo_indice_volti() sotto perderebbe la
+# protezione IN SILENZIO, la stessa corsa contro chi scrive in aligned/
+# che questo modulo esiste per chiudere.
+# passo_indice_volti() e' l'UNICO modo pubblico di ottenere questo passo,
+# e aggiunge `consumes` sull'artefatto allineato del lato giusto: la
+# pagina lo lancia da sola, quindi la corsa contro chi scrive DAVVERO in
+# aligned/ in quel momento -- la sessione manuale nativa che
+# _su_job_finito apre a estrazione finita, un attimo prima che questa
+# consegna arrivi -- non e' un caso raro da escludere con un controllo
+# locale, e' il percorso primario. `consumes` la fa rifiutare per via
+# strutturale da `conflict()` (gui/execution/conflicts.py), la stessa
+# rete che protegge ogni altro job su questa cartella, sessione manuale
+# compresa (registrata li' come occupante esterno).
+_TEMPLATE_INDICE_VOLTI = StepDef(
+    name="Index extraction faces",
+    family="estrazione",
+    kind=KIND_MAIN,
+    process=PROCESS_BATCH,
+    summary="Indexes aligned/ faces into the interface's cache, for the frame-to-faces map.",
+    invocations=(Invocation(verb=("facesettool", "index"),
+                            args=("--input-dir", "{WORKSPACE}/data_src")),),
+    optional=True,
+)
+
+
+def passo_indice_volti(lato):
+    """Il passo che indicizza i volti di `aligned/`, con `consumes`
+    sull'artefatto allineato del lato indicato
+    (`gui/faceset/conflitti.py::ARTEFATTI`, la stessa griglia che
+    `chi_occupa`/la sessione manuale nativa usano) -- un solo `StepDef`
+    non basterebbe: src e dst sono due artefatti diversi, e il template
+    non sa quale finche' non conosce `self._lato` del chiamante."""
+    return dataclasses.replace(_TEMPLATE_INDICE_VOLTI,
+                               consumes=(ARTEFATTI.get(lato, "faceset_src"),))
+
 
 OPERAZIONI = (
     Operazione("auto", "Extract automatically",

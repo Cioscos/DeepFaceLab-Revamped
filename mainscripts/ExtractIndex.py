@@ -116,46 +116,17 @@ def _volti_per_frame(aligned_dir):
     return per_frame
 
 
-def percorsi_di_un_frame(aligned_dir, nome_frame):
-    """I percorsi degli allineati che dichiarano `nome_frame` come
-    sorgente, ordinati per nome.
+def volti_dai_percorsi(percorsi):
+    """Le voci-volto per gli allineati che gli si danno, nella stessa forma
+    che `_volti_per_frame` da' a tutte.
 
-    Il glob sullo stelo restringe la lettura ai pochi file plausibili --
-    l'estrazione nomina `<stelo>_<indice>.jpg` -- ma non decide:
-    «00001_2.png» produce «00001_2_0.jpg», che lo stelo di «00001.png»
-    pesca. Chi decide e' il `source_filename` scritto dentro il JPEG.
-
-    E' la sola sede di questa regola: la usano `volti_di_un_frame` qui
-    sotto e l'operazione `frame` del servizio di dettaglio
-    (mainscripts/FacesetDetail.py). Due copie sono il modo in cui una
-    delle due smette di accorgersi dei .png numerati.
-    """
-    from DFLIMG import DFLJPG
-    if not aligned_dir or not nome_frame:
-        return []
-    cartella = Path(aligned_dir)
-    if not cartella.is_dir():
-        return []
-    fuori = []
-    for percorso in sorted(cartella.glob("%s_*.jpg" % Path(nome_frame).stem)):
-        dfl = DFLJPG.load(str(percorso))
-        if dfl is not None and dfl.get_source_filename() == nome_frame:
-            fuori.append(percorso)
-    return fuori
-
-
-def volti_di_un_frame(aligned_dir, nome_frame):
-    """I volti gia' su disco per UN fotogramma, nella stessa forma che
-    `_volti_per_frame` da' a tutti.
-
-    Legge ogni JPEG due volte -- una in `percorsi_di_un_frame` per il
-    `source_filename`, una qui per la posa -- ed e' accettato: sono uno o
-    due file, ~5,8 ms l'uno, e la chiamata avviene una volta sola quando
-    la sessione manuale entra su un fotogramma. Il prezzo compra la
-    regola scritta in un posto solo.
+    Non decide quali file appartengano a quale fotogramma: quella regola
+    vive in gui/faceset/indice.py::mappa_per_fotogramma, che la ricava
+    dall'indice. Qui prima c'era un glob su `<stelo>_*.jpg`, e un sort che
+    rinominava i volti lo rendeva muto.
     """
     volti = []
-    for percorso in percorsi_di_un_frame(aligned_dir, nome_frame):
+    for percorso in percorsi:
         esito = _volto_da_dfl(str(percorso))
         if esito is not None:
             volti.append(esito[1])

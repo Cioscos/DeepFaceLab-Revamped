@@ -793,6 +793,13 @@ ESTRAZIONE_MANUALE_OCCUPA = "A manual session is running on this dataset. Exit i
 # prima risposta del figlio -- il primo `rileva` costruisce i modelli veri
 # e li porta in VRAM, ed e' un'attesa senza nessun altro segnale a schermo.
 ESTRAZIONE_CARICAMENTO_MOTORI = "Loading the detector and the landmarker…"
+# La barra pulsante durante la lettura della mappa fotogramma -> volti
+# (`PaginaEstrazione._ricostruisci_mappa`), fuori dal thread di Qt: su una
+# cartella grande l'enumerazione costa secondi, e senza questa riga
+# l'apertura sembrerebbe congelata. Non costruisce nessun indice -- quello
+# lo scrive un passo a parte -- si limita a leggerlo e ad abbinarlo a cio'
+# che c'e' sul disco: il testo non deve promettere di piu' di questo.
+ESTRAZIONE_MAPPA_IN_COSTRUZIONE = "Reading the aligned faces…"
 # I tre controlli dei motori, visibili solo durante la sessione manuale.
 # Le voci delle tendine e i loro aiuti NON stanno qui: sono `label` e `help`
 # di mainscripts/MotoriCatalog.py, che ne e' la sorgente unica.
@@ -1030,6 +1037,22 @@ def estrazione_rapporto_piu_vecchio(nome_frame):
             % nome_frame)
 
 
+ESTRAZIONE_NESSUN_VOLTO_SOTTO_IL_PUNTO = (
+    "No face here. Click on a face to open it.")
+ESTRAZIONE_INDICE_IN_CORSO = (
+    "Still indexing the aligned faces — the landmarks will appear when it "
+    "is done.")
+ESTRAZIONE_VOLTI_IN_ARRIVO = (
+    "Loading the faces for this frame — click again in a moment.")
+
+
+def estrazione_dettaglio_non_risponde(motivo):
+    """Il guasto del servizio, detto sul CLICK e non sullo scorrimento: un
+    avviso a ogni fotogramma scorso sarebbe rumore, ma un click e' un gesto
+    esplicito e merita una risposta."""
+    return "Could not read the aligned faces: %s" % motivo
+
+
 # -- la finestra del volto allineato (gui/dettaglio/) ------------------------
 DETTAGLIO_AREE_TITOLO = "Areas"
 DETTAGLIO_AREE_TIP = ("Turn an area off to keep its points out of the "
@@ -1077,6 +1100,7 @@ DETTAGLIO_RILEVA_VOLTO_TIP = (
 DETTAGLIO_MOTORI_IN_MEMORIA = (
     "The detection models stay loaded for five minutes. On a machine that "
     "is also training, that is video memory the training cannot use.")
+DETTAGLIO_ATTESA = "Waiting for the face service..."
 DETTAGLIO_NESSUNA_PROPOSTA = "No face found in the source frame."
 DETTAGLIO_NESSUN_LANDMARK = (
     "The landmarker returned no usable points for the face box this "
