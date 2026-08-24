@@ -1,10 +1,14 @@
-"""Il client del servizio di dettaglio, e la finestra che lo consuma.
+"""Il client del servizio di dettaglio: una riga JSON per richiesta.
 
 Il servizio si avvia PIGRAMENTE al primo doppio click e muore da se' dopo
-qualche minuto di inattivita'. Se muore per conto suo, la richiesta
-successiva lo riavvia: una richiesta senza risposta non blocca niente, la
-finestra mostra il volto (il JPEG c'e' comunque) e dichiara che i dati DFL
-non sono disponibili.
+TIMEOUT_INATTIVITA_S senza comandi (cinque minuti, mainscripts/FacesetDetail.py).
+Se muore per conto suo, la richiesta successiva lo riavvia: una richiesta
+senza risposta non blocca niente, chi guarda vede il volto (il JPEG c'e'
+comunque) e legge il guasto vero -- non una diagnosi sul file, che era
+falsa su un volto sano.
+
+La finestra che lo consuma sta in gui/dettaglio/finestra.py: qui resta il
+solo client, che entrambe le pagine costruiscono e passano a lei.
 
 `trasporto` e' iniettabile perche' un test non deve avviare un processo
 per verificare che il comando parta con il percorso giusto.
@@ -13,22 +17,35 @@ import json
 import time
 from pathlib import Path
 
-from PyQt5.QtCore import QObject, QPoint, QPointF, QRect, Qt, pyqtSignal
-from PyQt5.QtGui import QColor, QImage, QPainter, QPixmap, QPolygonF
-from PyQt5.QtWidgets import (QCheckBox, QHBoxLayout, QLabel,
-                             QVBoxLayout, QWidget)
+from PyQt5.QtCore import QObject, pyqtSignal
 
-from gui import testi
-from gui import theme
-from gui.faceset.griglia import MASCHERA_OFF, MODI_MASCHERA
-from gui.numeri import intero_qt_utilizzabile
+from mainscripts import DettaglioGuasti
 
 TIMEOUT_MS = 8000
 
 
+class ServizioMuto(OSError):
+    """Il servizio non ha risposto entro TIMEOUT_MS.
+
+    E' una classe sua, e non un `OSError` nudo, per una ragione sola: chi
+    la intercetta la riconosce per TIPO. Riconoscerla dal testo del
+    messaggio si romperebbe in silenzio alla prima riformulazione, che e'
+    esattamente il difetto che il catalogo dei codici esiste per togliere.
+    """
+
+
 class ClienteDettaglio(QObject):
     pronto = pyqtSignal(dict)
-    fallito = pyqtSignal(object)
+    volti_pronti = pyqtSignal(dict)
+    riallineato = pyqtSignal(dict)
+    salvato = pyqtSignal(dict)
+    rilevato = pyqtSignal(dict)
+    # Due argomenti: il motivo grezzo del servizio e il suo codice
+    # (mainscripts/DettaglioGuasti.py), None quando il guasto non e'
+    # catalogato. Il motivo resta il PRIMO, cosi' uno slot che ne prende
+    # uno solo -- Qt li accetta -- riceve esattamente quello che riceveva
+    # prima.
+    fallito = pyqtSignal(object, object)
 
     def __init__(self, workdir, trasporto=None, parent=None):
         super().__init__(parent)
@@ -38,22 +55,92 @@ class ClienteDettaglio(QObject):
         self._processo = None
 
     def apri(self, percorso):
+        self._chiedi({"op": "open", "path": str(percorso)}, "opened", self.pronto)
+
+    def volti_del_frame(self, aligned_dir, nome_frame):
+        """I volti gia' su disco per un fotogramma. Consegna la risposta
+        INTERA: chi ascolta ha bisogno anche dei campi che nessun
+        namedtuple porta -- il nome del file della maschera -- e
+        distillarla qui vorrebbe dire decidere al posto suo."""
+        self._chiedi({"op": "frame", "aligned_dir": str(aligned_dir),
+                      "frame": str(nome_frame)}, "framed", self.volti_pronti)
+
+    def riallinea(self, percorso, frame_dir, source_landmarks):
+        """L'anteprima del riallineamento: nessuna scrittura nel progetto.
+
+        `source_landmarks` passa cosi' com'e', a differenza dei due percorsi
+        che passano da `str()`: un `np.ndarray` (la forma in cui i landmark
+        vivono altrove nel pacchetto) non e' serializzabile in JSON e fa
+        fallire `json.dumps` dentro `_chiedi` -- l'errore arriva comunque a
+        `fallito`, ma come un `TypeError` che non dice da dove viene."""
+        self._chiedi({"op": "riallinea", "path": str(percorso),
+                      "frame_dir": str(frame_dir),
+                      "source_landmarks": source_landmarks},
+                     "riallineato", self.riallineato)
+
+    def salva(self, percorso, frame_dir, source_landmarks):
+        """L'unica richiesta che riscrive il file allineato.
+
+        Stessa avvertenza di `riallinea` su `source_landmarks`: passa raw."""
+        self._chiedi({"op": "salva", "path": str(percorso),
+                      "frame_dir": str(frame_dir),
+                      "source_landmarks": source_landmarks},
+                     "salvato", self.salvato)
+
+    def rileva(self, percorso, frame_dir, modo, allineatore, rilevatore=None):
+        """Proposte dai motori. Il rilevatore si manda SOLO nel modo
+        `volto`: nel modo `landmarks` il servizio non lo costruisce
+        nemmeno, e mandarne uno lascerebbe credere il contrario a chi
+        legge il protocollo."""
+        comando = {"op": "rileva", "path": str(percorso),
+                   "frame_dir": str(frame_dir), "modo": modo,
+                   "allineatore": allineatore}
+        if rilevatore is not None:
+            comando["rilevatore"] = rilevatore
+        self._chiedi(comando, "rilevato", self.rilevato)
+
+    def _chiedi(self, comando, op_attesa, segnale):
+        """Il giro comune a ogni operazione verso il servizio: numera,
+        invia, decodifica, e emette `segnale` oppure `fallito`. Non solleva
+        mai -- un servizio morto per inattivita' entra proprio da qui, e la
+        richiesta successiva lo riavvia."""
         self._id += 1
-        comando = {"op": "open", "id": self._id, "path": str(percorso)}
+        comando = dict(comando, id=self._id)
         try:
             risposta = self._invia(json.dumps(comando) + "\n")
+        except ServizioMuto as e:
+            self.fallito.emit(e, DettaglioGuasti.SERVIZIO_MUTO)
+            return
         except Exception as e:
-            self.fallito.emit(e)
+            self.fallito.emit(e, None)
             return
         try:
             dati = json.loads(risposta)
         except (TypeError, ValueError) as e:
-            self.fallito.emit(e)
+            self.fallito.emit(e, None)
             return
-        if dati.get("op") != "opened":
-            self.fallito.emit(dati.get("motivo"))
+        if dati.get("op") != op_attesa:
+            # Il codice viaggia insieme al motivo: e' cio' che permette a
+            # chi mostra il guasto di dire una frase sua invece di
+            # ripetere il testo d'implementazione del servizio. Un guasto
+            # senza codice arriva con None, non sparisce.
+            self.fallito.emit(dati.get("motivo"), dati.get("codice"))
             return
-        self.pronto.emit(dati)
+        if dati.get("id") != self._id:
+            # Un timeout ha sfasato le consegne: questa risposta e' di una
+            # richiesta PRECEDENTE, arrivata solo ora. Consegnarla come se
+            # fosse quella corrente sposterebbe lo sfasamento sulla
+            # richiesta successiva, e non si riassorbirebbe mai. Il motivo
+            # passa da una variabile, non da un letterale nudo dentro
+            # `.emit(...)`: una guardia della suite cammina l'AST di gui/ per
+            # ricavare il vocabolario dei comandi verso il trainer da ogni
+            # chiamata a `.emit(...)` con un argomento costante, e un
+            # letterale qui ci finirebbe dentro senza avere niente a che
+            # fare con quel canale.
+            motivo = "id fuori sequenza (atteso %r, ricevuto %r)" % (self._id, dati.get("id"))
+            self.fallito.emit(motivo, DettaglioGuasti.RISPOSTA_FUORI_SEQUENZA)
+            return
+        segnale.emit(dati)
 
     def _invia(self, riga):
         if self._trasporto is not None:
@@ -87,7 +174,7 @@ class ClienteDettaglio(QObject):
         while not self._processo.canReadLine():
             rimanente_ms = int((scadenza - time.monotonic()) * 1000)
             if rimanente_ms <= 0 or not self._processo.waitForReadyRead(rimanente_ms):
-                raise OSError("il servizio di dettaglio non ha risposto")
+                raise ServizioMuto("il servizio di dettaglio non ha risposto")
         return bytes(self._processo.readLine()).decode("utf-8", "replace")
 
     def _avvia(self):
@@ -103,230 +190,3 @@ class ClienteDettaglio(QObject):
         if self._processo is not None:
             self._processo.kill()
             self._processo = None
-
-
-def _punti_utilizzabili(landmarks):
-    """Solo i punti che sono davvero due numeri consegnabili a Qt.
-
-    Un NaN o un intero fuori scala attraverserebbe le somme senza
-    sollevare per morire dentro l'int() di un paintEvent -- e un
-    paintEvent che solleva si porta via il processo con dentro ogni altra
-    scheda aperta.
-
-    Il predicato e' `intero_qt_utilizzabile` e **non** il solo
-    `numero_finito`, che era la forma di prima: `1e300` e' finito, quindi
-    passava, e moriva un momento dopo dentro il `QPoint(int(x), int(y))`
-    del paintEvent con l'`OverflowError` della firma a 32 bit. Il caso non
-    e' teorico -- i landmark arrivano da `DFLJPG.get_landmarks()` di un file
-    dell'utente, serializzati in JSON da un altro processo, e nessuno dei
-    due passaggi li guarda.
-    """
-    buoni = []
-    for punto in landmarks or ():
-        try:
-            x, y = punto
-        except (TypeError, ValueError):
-            continue
-        if intero_qt_utilizzabile(x) and intero_qt_utilizzabile(y):
-            buoni.append((float(x), float(y)))
-    return buoni
-
-
-def _poligoni_utilizzabili(polys):
-    """[(tipo, [(x, y), ...]), ...] dal campo `polys` del protocollo.
-
-    La forma vera e' quella di `SegIEPolys.dump()`: un dizionario con una
-    lista di poligoni, ognuno col suo `type` (1 include, 0 esclude) e i
-    suoi `pts`. Tutto il resto -- `None`, una lista al posto del
-    dizionario, un poligono che non e' un dizionario, dei punti che non
-    sono punti -- si scarta invece di sollevare: questi dati arrivano da
-    un altro processo, e il posto dove morirebbero e' un paintEvent.
-    """
-    if not isinstance(polys, dict):
-        return []
-    fuori = []
-    for poligono in polys.get("polys") or ():
-        if not isinstance(poligono, dict):
-            continue
-        punti = _punti_utilizzabili(poligono.get("pts"))
-        if len(punti) < 2:
-            continue
-        tipo = poligono.get("type")
-        fuori.append((tipo if isinstance(tipo, int) else 1, punti))
-    return fuori
-
-
-class _Tela(QLabel):
-    #Un poligono INCLUDE aggiunge alla maschera, un EXCLUDE la scava: due
-    #colori, perche' a occhio la differenza non si deduce dalla forma.
-    COLORE_INCLUDE = QColor(80, 220, 140)
-    COLORE_EXCLUDE = QColor(240, 120, 90)
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._punti = []
-        self._poligoni = []
-        self._mostra_punti = False
-        self._maschera = None
-        self._modo = MASCHERA_OFF
-        # In alto a sinistra, e non e' estetica: landmark e poligoni
-        # arrivano in coordinate dell'IMMAGINE, e questo e' cio' che le
-        # rende coordinate del widget. Con l'allineamento predefinito
-        # (centrato in verticale) una finestra piu' alta del volto li
-        # spostava tutti in blocco.
-        self.setAlignment(Qt.AlignLeft | Qt.AlignTop)
-
-    def imposta_dati(self, punti, maschera, poligoni=()):
-        self._punti = punti
-        self._maschera = maschera
-        self._poligoni = list(poligoni)
-        self.update()
-
-    def imposta_punti_visibili(self, valore):
-        self._mostra_punti = bool(valore)
-        self.update()
-
-    def imposta_modo_maschera(self, modo):
-        self._modo = modo
-        self.update()
-
-    def _area_del_volto(self):
-        """Il rettangolo occupato dall'immagine, in coordinate del widget.
-
-        Con l'allineamento in alto a sinistra e' l'origine piu' la
-        dimensione del pixmap; senza pixmap (nessun volto ancora mostrato)
-        si ripiega sull'intero widget, che e' quanto si sapeva prima.
-        """
-        pixmap = self.pixmap()
-        if pixmap is None or pixmap.isNull():
-            return self.rect()
-        return QRect(0, 0, pixmap.width(), pixmap.height())
-
-    #override
-    def paintEvent(self, event):
-        super().paintEvent(event)
-        painter = QPainter(self)
-        if self._maschera is not None and self._modo != MASCHERA_OFF:
-            painter.setOpacity(1.0 if self._modo == "only" else 0.45)
-            # Sul VOLTO, non su tutta la finestra: `self.rect()` stirava la
-            # maschera su ogni pixel del widget, quindi appena il layout
-            # dava alla tela piu' spazio del volto la maschera non stava
-            # piu' sopra il volto -- e a schermo si legge come una
-            # segmentazione sbagliata.
-            painter.drawImage(self._area_del_volto(), self._maschera)
-            painter.setOpacity(1.0)
-        for tipo, punti in self._poligoni:
-            painter.setPen(self.COLORE_INCLUDE if tipo else self.COLORE_EXCLUDE)
-            painter.drawPolygon(QPolygonF([QPointF(x, y) for x, y in punti]))
-        if self._mostra_punti:
-            painter.setPen(QColor(255, 90, 90))
-            for x, y in self._punti:
-                painter.drawPoint(QPoint(int(x), int(y)))
-
-
-class FinestraDettaglio(QWidget):
-    def __init__(self, workdir, parent=None):
-        super().__init__(parent, Qt.Window)
-        self._workdir = Path(workdir)
-        self._percorso = None
-        self._ordine = []
-        self._landmark_visibili = False
-        self.tela = _Tela()
-        # Gli stessi due interruttori della pagina, sullo stesso volto a
-        # piena risoluzione: la finestra si apre proprio per guardare la
-        # maschera da vicino, e senza comandi mostrava il JPEG e basta.
-        self.spunta_landmark = QCheckBox(testi.FACESET_LANDMARKS)
-        self.spunta_landmark.setToolTip(testi.FACESET_LANDMARKS_TIP)
-        self.spunta_landmark.toggled.connect(self.mostra_landmark)
-        self.selettore_maschera = theme.tendina()
-        for chiave, etichetta in MODI_MASCHERA:
-            self.selettore_maschera.addItem(etichetta, chiave)
-        self.selettore_maschera.currentIndexChanged.connect(self._su_modo_maschera)
-        barra = QHBoxLayout()
-        barra.addWidget(self.spunta_landmark)
-        barra.addWidget(self.selettore_maschera)
-        barra.addStretch(1)
-        layout = QVBoxLayout(self)
-        layout.addLayout(barra)
-        layout.addWidget(self.tela)
-        self.setWindowTitle(testi.FACESET_DETAIL_TITLE)
-        self._aggiorna_selettore_maschera()
-
-    def percorso(self):
-        return self._percorso
-
-    def imposta_ordine(self, percorsi):
-        self._ordine = list(percorsi)
-
-    def mostra(self, percorso, dati):
-        self._percorso = Path(percorso)
-        self.tela.setPixmap(QPixmap(str(percorso)))
-        punti = _punti_utilizzabili((dati or {}).get("landmarks"))
-        maschera = None
-        nome = (dati or {}).get("mask")
-        if nome:
-            candidata = QImage(str(self._workdir / nome))
-            maschera = None if candidata.isNull() else candidata
-        self.tela.imposta_dati(punti, maschera,
-                               _poligoni_utilizzabili((dati or {}).get("polys")))
-        self._aggiorna_selettore_maschera()
-        # Stessa regola della maschera: un interruttore acceso su un volto
-        # che non ha landmark promette dei punti che non esistono.
-        self.spunta_landmark.setEnabled(bool(punti))
-        self.spunta_landmark.setToolTip(
-            testi.FACESET_LANDMARKS_TIP if punti else testi.FACESET_NO_LANDMARKS)
-
-    def mostra_landmark(self, valore):
-        self._landmark_visibili = bool(valore)
-        self.tela.imposta_punti_visibili(valore)
-
-    def landmark_visibili(self):
-        return self._landmark_visibili
-
-    def imposta_modo_maschera(self, modo):
-        self.tela.imposta_modo_maschera(modo)
-
-    def _su_modo_maschera(self, indice_voce):
-        modo = self.selettore_maschera.itemData(indice_voce)
-        if modo is not None:
-            self.imposta_modo_maschera(modo)
-
-    def _aggiorna_selettore_maschera(self):
-        """Il selettore vale per il volto mostrato ORA.
-
-        Navigando con le frecce si passa da un volto con maschera a uno
-        senza: lasciare il modo acceso mostrerebbe la maschera del volto
-        precedente -- la tela la tiene finche' non gliene si da' un'altra
-        -- cioe' la cosa peggiore che questa finestra possa fare.
-        """
-        c_e = self.tela._maschera is not None
-        self.selettore_maschera.setEnabled(c_e)
-        self.selettore_maschera.setToolTip(
-            testi.FACESET_MASK_TIP if c_e else testi.FACESET_NO_MASKS)
-        if not c_e:
-            self.selettore_maschera.setCurrentIndex(0)
-            self.imposta_modo_maschera(MASCHERA_OFF)
-
-    def _sposta(self, passo):
-        if self._percorso is None or self._percorso not in self._ordine:
-            return
-        i = self._ordine.index(self._percorso) + passo
-        if 0 <= i < len(self._ordine):
-            self.mostra(self._ordine[i], None)
-
-    def vai_avanti(self):
-        self._sposta(1)
-
-    def vai_indietro(self):
-        self._sposta(-1)
-
-    #override
-    def keyPressEvent(self, event):
-        if event.key() == Qt.Key_Escape:
-            self.close()
-        elif event.key() == Qt.Key_Right:
-            self.vai_avanti()
-        elif event.key() == Qt.Key_Left:
-            self.vai_indietro()
-        else:
-            super().keyPressEvent(event)

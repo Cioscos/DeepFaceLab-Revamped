@@ -9,6 +9,12 @@ altrove: se serve un testo nuovo, nasce qui. I testi con un buco dentro sono
 funzioni, non stringhe con un `%` lasciato in giro, cosi' chi li chiama non
 puo' sbagliare il numero di argomenti senza accorgersene.
 """
+# I codici di guasto del servizio di dettaglio. Un modulo di dati puri,
+# senza nessun import suo: gui/ non importa mainscripts, e questa e' la
+# stessa eccezione gia' fatta per MotoriCatalog, per la stessa ragione --
+# l'elenco ha una sorgente sola, e leggerlo non costa torch.
+from mainscripts import DettaglioGuasti
+
 from gui.catalog.model import KIND_CLEAR, KIND_EBSYNTH, KIND_VIEWER
 from gui.faceset.indice import STATO_ASSENTE, STATO_PARZIALE
 from gui.workspace import STATE_BLOCKED, STATE_DONE, STATE_READY
@@ -679,6 +685,19 @@ def heatmap_filter_pill_html(mostrati, totali, quanti_bin):
         _HEATMAP_FILTER_HREF, HEATMAP_FILTER_CLEAR)
 
 
+def faceset_frame_filter_pill(mostrati, totali, nome_frame):
+    return "Showing %d of %d · frame %s" % (mostrati, totali, nome_frame)
+
+
+def faceset_frame_filter_pill_html(mostrati, totali, nome_frame):
+    """La stessa pastiglia dei bin, con dentro lo stesso comando che la
+    spegne: un solo posto dove si legge che la griglia e' una fetta, e un
+    solo posto da cui si torna indietro."""
+    return '%s · <a href="%s">%s</a>' % (
+        faceset_frame_filter_pill(mostrati, totali, nome_frame),
+        _HEATMAP_FILTER_HREF, HEATMAP_FILTER_CLEAR)
+
+
 FACESET_SIZE_TIP = "How large the faces are drawn in the grid."
 FACESET_MASK_OFF = "No mask"
 FACESET_MASK_OVERLAY = "Mask overlay"
@@ -690,6 +709,24 @@ FACESET_NO_MASKS = ("No face in this folder has an XSeg mask in the index. "
 FACESET_LANDMARKS = "Landmarks"
 FACESET_LANDMARKS_TIP = "Draw the 68 alignment points on top of the face."
 FACESET_NO_LANDMARKS = "This face carries no landmarks: there is nothing to draw."
+FACESET_SIBLING_PREV = "◀"
+FACESET_SIBLING_NEXT = "▶"
+FACESET_SIBLING_TIP = ("The other faces extracted from the same frame. The strip "
+                       "beside the grid marks where they are in the current order.")
+FACESET_NO_INDEX_FOR_SIBLINGS = ("Index the folder to see which faces come from "
+                                 "the same frame.")
+FACESET_MENU_SAME_FRAME = "Show aligned from the same frame"
+FACESET_MENU_SAME_FRAME_TIP = ("Show only the faces extracted from the same frame "
+                               "as this one.")
+FACESET_MENU_ORIGINAL_FRAME = "Show original frame"
+FACESET_MENU_ORIGINAL_FRAME_TIP = ("Open the Extraction page on the frame this "
+                                   "face was extracted from.")
+
+
+def faceset_sibling_counter(posizione, totale, nome_frame):
+    """«2 of 4 from 00042.jpg»: la posizione dentro il gruppo, il gruppo
+    intero (il volto corrente compreso) e il frame da cui vengono."""
+    return "%d of %d from %s" % (posizione, totale, nome_frame)
 
 
 def action_not_applicable(etichetta, nome_cartella):
@@ -741,7 +778,6 @@ def faceset_one_job_at_a_time(nome_passo):
 
 
 FACESET_DETAIL_TITLE = "Face detail"
-FACESET_DETAIL_NO_DFL = "This file carries no DFL data: landmarks and mask are unavailable."
 
 
 # -- la pagina di estrazione -------------------------------------------------
@@ -781,6 +817,33 @@ ESTRAZIONE_INDICIZZA = "Rebuild report"
 ESTRAZIONE_INDICIZZA_TIP = ("For a folder extracted before this page existed: rebuilds "
                             "the per-frame report from the aligned faces already on "
                             "disk, without re-running detection.")
+ESTRAZIONE_VOLTI_DEL_FRAME = "Show faces from this frame"
+ESTRAZIONE_VOLTI_DEL_FRAME_TIP = ("Open Faceset curation showing only the aligned "
+                                  "faces extracted from the selected frame.")
+
+ESTRAZIONE_SOVRAPP_RECT = "Rect"
+ESTRAZIONE_SOVRAPP_RECT_TIP = ("Draw the face rectangles the report recorded "
+                               "for this frame.")
+ESTRAZIONE_SOVRAPP_LANDMARKS = "Landmarks"
+ESTRAZIONE_SOVRAPP_LANDMARKS_TIP = ("Draw the landmarks stored inside the "
+                                    "aligned faces of this frame. Reads them "
+                                    "from disk the first time.")
+ESTRAZIONE_SOVRAPP_MASCHERA = "XSeg mask"
+ESTRAZIONE_SOVRAPP_MASCHERA_TIP = ("Overlay the XSeg mask of each aligned "
+                                   "face back onto the frame, where one "
+                                   "exists.")
+ESTRAZIONE_SOVRAPP_MANUALE_TIP = ("Overlays apply while browsing frames. The "
+                                  "manual session always shows the live "
+                                  "detection, which comes from the engine "
+                                  "and not from disk.")
+
+
+def estrazione_frame_sparito(nome):
+    return "%s is no longer in this folder." % nome
+
+
+def estrazione_nessun_volto_indicizzato(nome):
+    return ("No indexed face comes from %s. Index the aligned folder first." % nome)
 
 
 def estrazione_stato(totale_frame):
@@ -894,6 +957,15 @@ def estrazione_servizio_guasto_tooltip(righe_stderr):
     return "Child process traceback:\n" + "\n".join(ultime)
 
 
+def estrazione_componi_stato(nota, testo):
+    """Una nota che deve sopravvivere al prossimo aggiornamento della riga
+    di stato invece di lasciarsene sovrascrivere -- lo stesso principio di
+    `estrazione_stato_manuale`, qui per l'avviso di sessione interrotta che
+    `mostra_frame` scrive un attimo prima di mostrare il fotogramma
+    successivo."""
+    return " · ".join(p for p in (nota, testo) if p)
+
+
 def estrazione_stato_manuale(nota_salvataggio, nome_frame, stato_rilevamento):
     """La riga di stato della sessione manuale
     (gui/estrazione/pagina.py::PaginaEstrazione._aggiorna_stato_manuale):
@@ -947,3 +1019,136 @@ def estrazione_comando_etichetta(etichetta, tasto):
     di prima non e' un separatore visibile in un QPushButton: il tasto
     finiva dentro l'etichetta e non si distingueva."""
     return "%s  [%s]" % (etichetta, tasto)
+
+
+def estrazione_rapporto_piu_vecchio(nome_frame):
+    """Il click cade su un rettangolo del rapporto, ma il disco non ha
+    piu' nessun volto allineato li' sotto: il rapporto e' rimasto
+    indietro rispetto alla cartella `aligned`."""
+    return ("No aligned face on disk matches that rectangle in %s. The report "
+            "is older than the aligned folder — rebuild it to refresh it."
+            % nome_frame)
+
+
+# -- la finestra del volto allineato (gui/dettaglio/) ------------------------
+DETTAGLIO_AREE_TITOLO = "Areas"
+DETTAGLIO_AREE_TIP = ("Turn an area off to keep its points out of the "
+                      "selection. Click the swatch to change its colour.")
+DETTAGLIO_AREE_NOMI = {
+    "mascella":              "Jaw",
+    "sopracciglio-destro":   "Right brow",
+    "sopracciglio-sinistro": "Left brow",
+    "naso":                  "Nose",
+    "occhio-destro":         "Right eye",
+    "occhio-sinistro":       "Left eye",
+    "bocca":                 "Mouth",
+}
+DETTAGLIO_COLORE_TITOLO = "Pick a colour for this area"
+DETTAGLIO_FRATELLI_TIP = "The other faces extracted from the same frame"
+DETTAGLIO_SALVA = "Save"
+DETTAGLIO_SALVA_TIP = "Write the edited landmarks back into this face"
+DETTAGLIO_REVERT = "Revert"
+DETTAGLIO_REVERT_TIP = "Go back to the last saved landmarks"
+DETTAGLIO_DISFA = "Undo"
+DETTAGLIO_RIFA = "Redo"
+DETTAGLIO_ABBANDONA = "This face has unsaved landmark edits. Discard them?"
+DETTAGLIO_SOLA_LETTURA_SENZA_FRAME = (
+    "Read-only: the source frame is not on disk, so the face cannot be "
+    "re-cut from it.")
+DETTAGLIO_SOLA_LETTURA_MATRICE = (
+    "Read-only: this face has no usable alignment matrix — either it carries "
+    "none, or the one it carries cannot be reversed to put the edits back "
+    "onto the source frame.")
+DETTAGLIO_SOLA_LETTURA_PUNTI = (
+    "Read-only: this face does not carry a 68-point landmark set in frame "
+    "coordinates. The points drawn here come from the aligned crop, and an "
+    "edit would have nowhere to go back to.")
+DETTAGLIO_MASCHERA_DEGRADA = (
+    "The XSeg mask was re-cut with the face. Hand-drawn polygons keep their "
+    "exact shape; the painted mask loses a little sharpness each time.")
+DETTAGLIO_RILEVA_LANDMARKS = "Re-detect landmarks"
+DETTAGLIO_RILEVA_LANDMARKS_TIP = (
+    "Run the chosen landmarker on the face box this image already has. "
+    "Nothing is written until you save.")
+DETTAGLIO_RILEVA_VOLTO = "Re-detect face"
+DETTAGLIO_RILEVA_VOLTO_TIP = (
+    "Run the detector on the whole source frame. It may find a different "
+    "box, several boxes, or none. Nothing is written until you save.")
+DETTAGLIO_MOTORI_IN_MEMORIA = (
+    "The detection models stay loaded for five minutes. On a machine that "
+    "is also training, that is video memory the training cannot use.")
+DETTAGLIO_NESSUNA_PROPOSTA = "No face found in the source frame."
+DETTAGLIO_NESSUN_LANDMARK = (
+    "The landmarker returned no usable points for the face box this "
+    "image carries.")
+DETTAGLIO_MOTORI_SPENTI = "Re-detection needs a face that can be edited."
+DETTAGLIO_GUASTO_SENZA_MOTIVO = (
+    "The face service failed without saying why. The next request restarts "
+    "it.")
+
+
+def dettaglio_titolo(nome, modificata):
+    """Il titolo della finestra: il nome del file, con un segno se ci sono
+    modifiche non salvate."""
+    return ("%s *" % nome) if modificata else nome
+
+
+def dettaglio_proposte(quante):
+    """Quante proposte hanno risposto, quando sono piu' di una: se ne
+    applica una al posto di chi guarda, e il numero non si nasconde."""
+    return "%d faces found: showing the first." % quante
+
+
+# Il codice del guasto -> la frase che si legge. Le chiavi vengono dal
+# catalogo, non da letterali: un codice ribattezzato da una parte sola
+# spegnerebbe la mappa in silenzio, e un guasto tornerebbe a mostrare il
+# testo d'implementazione del servizio.
+DETTAGLIO_GUASTI = {
+    DettaglioGuasti.FILE_ILLEGGIBILE: (
+        "This file cannot be read: it is missing, damaged, or not a JPEG."),
+    DettaglioGuasti.FRAME_ASSENTE: (
+        "The source frame is not on disk, so this face cannot be re-cut "
+        "from it."),
+    DettaglioGuasti.SENZA_MATRICE: (
+        "This face carries no alignment matrix, so edits have no way back "
+        "onto the source frame."),
+    DettaglioGuasti.SENZA_RETTANGOLO: (
+        "This face carries no source face box, so there is nothing to run "
+        "the landmarker on."),
+    DettaglioGuasti.ALLINEAMENTO_NON_VALIDO: (
+        "Those landmarks do not produce a valid alignment. Move them apart "
+        "and try again."),
+    DettaglioGuasti.SERVIZIO_MUTO: (
+        "The face service did not answer in time. Try again: the next "
+        "request restarts it."),
+    DettaglioGuasti.RISPOSTA_FUORI_SEQUENZA: (
+        "A late answer from an earlier request was discarded. Try again."),
+}
+
+
+def dettaglio_guasto(codice, motivo):
+    """Il guasto del servizio, detto da qui e non da lui.
+
+    Il servizio parla italiano d'implementazione («non e' un JPEG DFL»), e
+    quel testo non e' una frase da leggere a schermo: si mostra la frase
+    del catalogo, scelta dal CODICE che il guasto porta con se'. Il testo
+    non si guarda mai per capire quale guasto sia -- si romperebbe in
+    silenzio alla prima riformulazione.
+
+    Il ripiego e' il motivo grezzo dietro un prefisso, e vale per ogni
+    guasto senza codice: un errore di libreria, un `.npy` che manca, il
+    servizio morto per inattivita'. Meglio una riga tecnica che un guasto
+    sparito. Il prefisso non nomina nessuna operazione di
+    proposito: `fallito` e' un segnale condiviso, e ci arrivano anche i
+    guasti di richieste che appartengono alla pagina.
+
+    `motivo` puo' essere un'eccezione, una stringa o None -- il client
+    emette tutte e tre le forme -- e nessuna deve sollevare qui dentro:
+    chi chiama e' uno slot Qt.
+    """
+    if codice in DETTAGLIO_GUASTI:
+        return DETTAGLIO_GUASTI[codice]
+    motivo = "" if motivo is None else str(motivo).strip()
+    if not motivo:
+        return DETTAGLIO_GUASTO_SENZA_MOTIVO
+    return "The face service reported: %s" % motivo

@@ -38,34 +38,14 @@ non entra piu' in un int a 32 bit).
 from PyQt5 import QtCore, QtGui, QtWidgets
 
 from gui import numeri
+from gui.dettaglio.gruppi import GRUPPI_68
+from gui.estrazione import volti as volti_mod
 
 RAGGIO_PUNTO = 2
 # Il pallino della mascella e' piu' grosso degli altri, come nel disegno
 # originale (`cv2.circle(..., 2)` per la mascella, `1` per tutto il resto).
 RAGGIO_MASCELLA = 2
 RAGGIO_LANDMARK = 1
-
-# La topologia dei 68 landmark, ricopiata da `landmarks_68_pt` e da
-# `draw_landmarks` in facelib/LandmarksProcessor.py. E' ricopiata e non
-# importata perche' `gui/` non importa mai `facelib`: il prezzo e' che le due
-# tabelle possono divergere, e il test che le confronta gruppo per gruppo e'
-# cio' che lo impedisce.
-#
-# Quattro spezzate APERTE e tre CHIUSE, esattamente come le due chiamate a
-# `cv2.polylines` dell'originale. Il naso e' l'unico caso speciale: e' aperto
-# ma l'ultimo segmento torna indietro al punto 30, la radice della canna
-# (nell'originale `np.concatenate((nose, [nose[-6]]))`), altrimenti la punta
-# resta appesa. Qui il ritorno e' un indice in piu' nella tabella invece che
-# un ramo nel codice.
-GRUPPI_68 = (
-    ("mascella",              tuple(range(0, 17)),          False),
-    ("sopracciglio-destro",   tuple(range(17, 22)),         False),
-    ("sopracciglio-sinistro", tuple(range(22, 27)),         False),
-    ("naso",                  tuple(range(27, 36)) + (30,), False),
-    ("occhio-destro",         tuple(range(36, 42)),         True),
-    ("occhio-sinistro",       tuple(range(42, 48)),         True),
-    ("bocca",                 tuple(range(48, 68)),         True),
-)
 
 
 def gruppi_landmark(punti):
@@ -156,7 +136,7 @@ def _punto_qt(x, y):
     servirebbe a niente. QPoint(int(x), int(y)) e' il punto in cui PyQt5
     solleva OverflowError sopra i 2**31, cioe' il posto dove la seconda
     meta' del controllo (intero_qt_utilizzabile) diventa davvero
-    necessaria e non solo dichiarata (vedi gui/faceset/dettaglio.py).
+    necessaria e non solo dichiarata (vedi gui/dettaglio/tela.py).
 
     Torna None invece di sollevare: qui si arriva da un paintEvent."""
     if not (numeri.numero_finito(x) and numeri.numero_finito(y)):
@@ -170,6 +150,13 @@ class Tela(QtWidgets.QWidget):
     vettore_tracciato = QtCore.pyqtSignal(object, object)
     rettangolo_cambiato = QtCore.pyqtSignal(object)
     blocco_cambiato = QtCore.pyqtSignal(bool)
+    # (percorso, (x, y)) in coordinate del FOTOGRAMMA. Il percorso e non il
+    # Volto: chi ascolta e' la pagina, che deve aprire un file, e un
+    # namedtuple che attraversa un segnale invita a tenerne una copia che
+    # nessuno aggiorna. Il punto perche' il percorso puo' essere None --
+    # "non ho volti caricati, non so rispondere" -- e in quel caso la
+    # pagina deve poter ripetere la ricerca dopo averli chiesti.
+    volto_scelto = QtCore.pyqtSignal(object, object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -185,6 +172,14 @@ class Tela(QtWidgets.QWidget):
         self._modo_vettore = False
         self._sessione_manuale = False
         self._messaggio = ""
+        # Livello DIVERSO da `_rects`: quelli vengono dal rapporto e sono
+        # cio' che si disegna, questi vengono dal disco e sono cio' che si
+        # puo' aprire. Nel caso normale coincidono; quando non coincidono
+        # il rapporto e' piu' vecchio della cartella.
+        self._volti = []
+        self._mostra_rect = True
+        self._mostra_landmarks = False
+        self._mostra_maschera = False
 
     def mostra(self, pixmap, rect, landmarks, dimensione_frame=None):
         """`rect` e `landmarks` sono in coordinate del FRAME, come li
@@ -231,6 +226,48 @@ class Tela(QtWidgets.QWidget):
 
     def imposta_landmarks(self, punti):
         self._punti = _coppie_utilizzabili(punti)
+        self.update()
+
+    def imposta_volti(self, volti):
+        """I volti che gli allineati di questo fotogramma dichiarano, gia'
+        normalizzati da gui/estrazione/volti.py e con la maschera gia'
+        colorata."""
+        self._volti = list(volti or ())
+        self.update()
+
+    def volti(self):
+        return list(self._volti)
+
+    def volto_sotto(self, pos):
+        """Il volto che sta sotto un punto in coordinate del WIDGET, o
+        None. Fa la conversione da se' perche' e' l'unico posto in cui il
+        mouse incontra i volti, e farla fuori invita a dimenticarla."""
+        if not self._volti:
+            return None
+        x, y = self._al_frame(pos.x(), pos.y())
+        return volti_mod.volto_al_punto(self._volti, x, y)
+
+    def punto_in_rapporto(self, punto):
+        """`punto` (x, y) in coordinate del FRAME cade dentro almeno uno
+        dei rettangoli che il rapporto ha registrato per questo fotogramma
+        -- gli stessi `_rects` che il paintEvent disegna. Un click fuori da
+        ognuno di loro e' un gesto neutro sul fondo del fotogramma: chi
+        chiama non deve scrivere niente ne' chiedere niente al servizio.
+        L'unico posto che sa fare questa aritmetica, per non duplicarla nel
+        chiamante."""
+        try:
+            x, y = punto
+        except (TypeError, ValueError):
+            return False
+        return any(l <= x <= r and t <= y <= b for l, t, r, b in self._rects)
+
+    def imposta_sovrapposizioni(self, rect, landmarks, maschera):
+        """Le tre spunte della revisione. Valgono per cio' che si DISEGNA,
+        mai per cio' che ESISTE: il click apre il volto qualunque sia la
+        combinazione accesa."""
+        self._mostra_rect = bool(rect)
+        self._mostra_landmarks = bool(landmarks)
+        self._mostra_maschera = bool(maschera)
         self.update()
 
     def blocca(self, acceso):
@@ -353,6 +390,70 @@ class Tela(QtWidgets.QWidget):
 
     # -- la scala ----------------------------------------------------------
 
+    # Un velo, non una toppa: sotto deve restare visibile il volto, che e'
+    # cio' che si sta guardando.
+    OPACITA_MASCHERA = 0.45
+
+    def trasformazione_maschera(self, volto, lato_raster):
+        """La QTransform che porta un pixel del raster della maschera nello
+        spazio del widget, o None.
+
+        QUATTRO spazi e TRE trasformazioni, e confonderli e' un difetto
+        silenzioso (vedi il docstring del modulo, che ne dichiarava due):
+
+            raster della maschera --(lato_allineato / lato_raster)-->
+            spazio dell'allineato --(inversa dell'affine)-->
+            spazio del fotogramma --(fattore, dx, dy)--> widget
+
+        La prima scala NON e' pleonastica: DFLJPG.set_xseg_mask ricomprime
+        la maschera a piacere (ripiega su JPEG sopra i 50 000 byte), quindi
+        il raster non ha la dimensione dell'allineato.
+
+        L'ordine di moltiplicazione di Qt e' "prima il sinistro", ed e'
+        stato verificato eseguendo contro l'aritmetica manuale su tre
+        punti -- non dedotto dalla documentazione.
+
+        `volto.affine` porta gia' i sei argomenti nell'ordine di Qt e ha
+        gia' escluso le matrici singolari: `inverted()` qui riesce sempre,
+        e il suo flag si legge lo stesso perche' da qui si arriva a un
+        paintEvent.
+        """
+        if volto.affine is None:
+            return None
+        trasformazione = self.trasformazione()
+        if trasformazione is None:
+            return None
+        if not (numeri.numero_finito(lato_raster) and lato_raster > 0):
+            return None
+        lato_allineato = volto.lato_allineato
+        if lato_allineato is None:
+            # Una voce senza `shape`: disegnare la maschera alla scala del
+            # proprio raster la metterebbe nel posto sbagliato con un
+            # risultato plausibile, che e' peggio del non disegnarla.
+            return None
+        allineato_al_frame, invertibile = QtGui.QTransform(*volto.affine).inverted()
+        if not invertibile:
+            return None
+        fattore, dx, dy = trasformazione
+        s = float(lato_allineato) / float(lato_raster)
+        return (QtGui.QTransform().scale(s, s)
+                * allineato_al_frame
+                * QtGui.QTransform().translate(dx, dy).scale(fattore, fattore))
+
+    def _disegna_maschere(self, pittore):
+        for volto in self._volti:
+            if volto.maschera is None or volto.maschera.isNull():
+                continue
+            totale = self.trasformazione_maschera(
+                volto, float(volto.maschera.width()))
+            if totale is None:
+                continue
+            pittore.save()
+            pittore.setOpacity(self.OPACITA_MASCHERA)
+            pittore.setTransform(totale, False)
+            pittore.drawImage(QtCore.QPointF(0.0, 0.0), volto.maschera)
+            pittore.restore()
+
     def trasformazione(self):
         """(fattore, dx, dy) per andare dal frame al widget, o None.
 
@@ -413,10 +514,21 @@ class Tela(QtWidgets.QWidget):
             self._punta = evento.pos()
             self.update()
         else:
-            # Fuori dalla sessione manuale (in revisione) la tela e' di sola
-            # lettura: non c'e' un rettangolo singolo da bloccare, e la
-            # tela non puo' dedurlo da _rects -- glielo dice la pagina.
             if not self._sessione_manuale:
+                # In revisione la tela e' di sola lettura per il
+                # RETTANGOLO, non per il click: qui il gesto apre il volto
+                # che sta sotto, e non tocca ne' `_rects` ne' `_ricentra`.
+                punto = self._al_frame(evento.pos().x(), evento.pos().y())
+                volto = self.volto_sotto(evento.pos())
+                if volto is not None:
+                    self.volto_scelto.emit(volto.percorso, punto)
+                elif not self._volti:
+                    # Nessun volto CARICATO -- non "nessun volto sotto il
+                    # mouse". La tela non puo' rispondere e chiede a chi
+                    # puo': la pagina li recuperera' e ripetera' la ricerca
+                    # su questo punto. Coi volti in mano, invece, un click
+                    # sul fondo resta un gesto neutro.
+                    self.volto_scelto.emit(None, punto)
                 return
             self.blocca(not self._bloccato)
 
@@ -431,6 +543,13 @@ class Tela(QtWidgets.QWidget):
         # solo passaggio del mouse cancellerebbe gli N rettangoli del
         # rapporto (_ricentra sostituisce _rects con uno solo).
         if not self._sessione_manuale:
+            # Il cursore dice dove si puo' cliccare. Cambia solo se i volti
+            # sono gia' stati caricati: nessun recupero al semplice
+            # passaggio del mouse, che farebbe partire il servizio mentre
+            # si scorre la pellicola.
+            self.setCursor(QtCore.Qt.PointingHandCursor
+                           if self.volto_sotto(evento.pos()) is not None
+                           else QtCore.Qt.ArrowCursor)
             return
         if self._bloccato:
             return
@@ -469,7 +588,7 @@ class Tela(QtWidgets.QWidget):
 
     # -- il disegno --------------------------------------------------------
 
-    def _disegna_landmark(self, pittore):
+    def _disegna_landmark(self, pittore, punti):
         """I landmark collegati, come li disegna DFL da sempre.
 
         Un volto e' fatto di spezzate, non di una nuvola di puntini: senza i
@@ -482,10 +601,14 @@ class Tela(QtWidgets.QWidget):
         puo' portare fuori scala un punto solo, e perdere l'intera mascella
         per quello sarebbe peggio del buco. Qui si arriva da un paintEvent,
         quindi non si solleva mai.
+
+        `punti` arriva da fuori: e' `self._punti` per i landmark vivi della
+        sessione manuale, oppure `volto.punti` per un allineato del
+        rapporto -- lo stesso disegno serve a entrambi.
         """
         pittore.setPen(QtGui.QPen(QtGui.QColor(250, 220, 90), 1))
-        for _nome, punti, chiusa in gruppi_landmark(self._punti):
-            qpunti = [_punto_qt(*self._al_widget(x, y)) for x, y in punti]
+        for _nome, gruppo, chiusa in gruppi_landmark(punti):
+            qpunti = [_punto_qt(*self._al_widget(x, y)) for x, y in gruppo]
             coppie = list(zip(qpunti, qpunti[1:]))
             if chiusa and len(qpunti) > 2:
                 coppie.append((qpunti[-1], qpunti[0]))
@@ -494,8 +617,8 @@ class Tela(QtWidgets.QWidget):
                     pittore.drawLine(uno, altro)
         # I pallini restano, e sono l'unica cosa disegnata quando i punti non
         # sono 68 -- vedi gruppi_landmark, che li' torna vuota.
-        mascella = set(GRUPPI_68[0][1]) if len(self._punti) == 68 else set()
-        for indice, (x, y) in enumerate(self._punti):
+        mascella = set(GRUPPI_68[0][1]) if len(punti) == 68 else set()
+        for indice, (x, y) in enumerate(punti):
             punto = _punto_qt(*self._al_widget(x, y))
             if punto is None:
                 continue
@@ -526,7 +649,11 @@ class Tela(QtWidgets.QWidget):
                 max(1, int(larghezza_frame * fattore)),
                 max(1, int(altezza_frame * fattore)))
             pittore.drawPixmap(destinazione, self._pixmap)
-        if self._rects:
+        if self._volti and self._mostra_maschera:
+            # Sotto tutto il resto: e' un velo sul volto, e rettangoli e
+            # landmark devono restare leggibili sopra di lei.
+            self._disegna_maschere(pittore)
+        if self._rects and self._mostra_rect:
             pittore.setPen(QtGui.QPen(QtGui.QColor(90, 200, 250), 2))
             for l, t, r, b in self._rects:
                 alto_sinistra = _punto_qt(*self._al_widget(l, t))
@@ -534,7 +661,14 @@ class Tela(QtWidgets.QWidget):
                 if alto_sinistra is not None and basso_destra is not None:
                     pittore.drawRect(QtCore.QRect(alto_sinistra, basso_destra))
         if self._punti:
-            self._disegna_landmark(pittore)
+            # I landmark VIVI della sessione manuale: vengono dal motore,
+            # non dal disco, e le tre spunte non li governano -- nasconderli
+            # combatterebbe il lavoro che si sta facendo.
+            self._disegna_landmark(pittore, self._punti)
+        if self._volti and self._mostra_landmarks:
+            for volto in self._volti:
+                if volto.punti:
+                    self._disegna_landmark(pittore, volto.punti)
         if self._centro is not None and self._punta is not None:
             # Gia' in coordinate del widget: nascono dal mouse e muoiono al
             # rilascio, non passano mai dal frame.

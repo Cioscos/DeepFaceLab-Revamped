@@ -181,6 +181,17 @@ QCheckBox::indicator {
     width: 18px;
     height: 18px;
 }
+/* Stessa regola di QPushButton:disabled e dei campi qui sopra, e per la
+   stessa ragione: la riga sull'indicatore porta gia' l'interruttore sul
+   motore del foglio di stile, che per cio' che non trova scritto usa i
+   propri default -- e il default del testo e' quello acceso. Misurato
+   sulla barra della finestra del volto allineato: 207 pixel chiari
+   nell'etichetta "Landmarks" con l'interruttore attivo, gli stessi 207
+   con l'interruttore spento, accanto a quattro pulsanti correttamente
+   grigi nella stessa barra. */
+QCheckBox:disabled {
+    color: %(testo_lieve)s;
+}
 QListWidget::item {
     padding: 4px 6px;
 }

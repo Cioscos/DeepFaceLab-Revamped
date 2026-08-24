@@ -9,7 +9,7 @@ sfondo, immagine, cornice di selezione.
 from collections import OrderedDict
 
 from PyQt5.QtCore import QRect, QSize, Qt, pyqtSignal
-from PyQt5.QtGui import QColor, QImage
+from PyQt5.QtGui import QColor, QImage, QPen
 from PyQt5.QtWidgets import (QAbstractItemView, QListView, QStyle,
                              QStyledItemDelegate)
 
@@ -34,6 +34,11 @@ MODI_MASCHERA = (
 )
 
 MARGINE = 6
+
+# Lo stesso verde del poligono INCLUDE della finestra di dettaglio
+# (gui/dettaglio/tela.py): due superfici che dicono «questo appartiene
+# all'insieme» lo dicono con lo stesso colore.
+COLORE_FRATELLO = QColor(80, 220, 140)
 
 
 def _lato_ammesso(valore):
@@ -79,8 +84,8 @@ class DelegatoVolti(QStyledItemDelegate):
                     # accendere l'overlay diceva soltanto «una maschera
                     # c'e'» -- che chi ha appena chiesto le maschere sa
                     # gia'. La forma e' l'unica cosa per cui si guarda una
-                    # segmentazione. Stessa resa di `_Tela` nella finestra
-                    # di dettaglio (gui/faceset/dettaglio.py): due
+                    # segmentazione. Stessa resa della tela della finestra
+                    # di dettaglio (gui/dettaglio/tela.py): due
                     # superfici che mostrano la stessa cosa allo stesso
                     # modo. Il prezzo e' il colore -- la maschera e' in
                     # scala di grigi e schiarisce invece di tingere.
@@ -111,6 +116,15 @@ class DelegatoVolti(QStyledItemDelegate):
         if option.state & QStyle.State_Selected:
             painter.setPen(option.palette.highlight().color())
             painter.drawRect(cella.adjusted(0, 0, -1, -1))
+
+        if self._griglia.e_fratello(percorso):
+            # DENTRO la cornice di selezione, non al suo posto: «e' dello
+            # stesso frame» e «e' selezionato» sono due fatti diversi, e un
+            # volto puo' essere entrambi. Sovrascriverne uno con l'altro
+            # toglierebbe dallo schermo proprio l'informazione che si e'
+            # appena chiesta.
+            painter.setPen(QPen(COLORE_FRATELLO, 2))
+            painter.drawRect(cella.adjusted(1, 1, -2, -2))
         painter.restore()
 
 
@@ -124,6 +138,8 @@ _peso = peso_immagine
 class Griglia(QListView):
     volto_aperto = pyqtSignal(object)
     selezione_cambiata = pyqtSignal(list)
+    corrente_cambiato = pyqtSignal(object)
+    menu_richiesto = pyqtSignal(object, object)
 
     # Il tetto e' in BYTE, non in voci, e la ragione e' misurata: le
     # maschere del faceset di prova pesano 64,0 KiB l'una, ma sono
@@ -157,6 +173,9 @@ class Griglia(QListView):
         self.setItemDelegate(DelegatoVolti(self))
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.doubleClicked.connect(self._su_doppio_click)
+        self._fratelli = frozenset()
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._su_menu_richiesto)
         self._aggiorna_griglia()
 
     def lato(self):
@@ -228,10 +247,35 @@ class Griglia(QListView):
         if percorso is not None:
             self.volto_aperto.emit(percorso)
 
+    def imposta_fratelli(self, percorsi):
+        """I volti che vengono dallo stesso frame di quello corrente."""
+        self._fratelli = frozenset(percorsi or ())
+        self.viewport().update()
+
+    def e_fratello(self, percorso):
+        """Interrogato dal delegato una volta per cella dipinta: un
+        `in` su un frozenset, non la costruzione di un insieme."""
+        return percorso in self._fratelli
+
+    def _su_menu_richiesto(self, punto):
+        """Il percorso viene da `indexAt`, non dalla selezione: il menu
+        deve agire su cio' che l'utente ha premuto. Su uno spazio vuoto si
+        emette comunque, con None -- chi costruisce il menu decide cosa
+        offrire, e non deve dedurlo dal silenzio."""
+        index = self.indexAt(punto)
+        percorso = index.data(RUOLO_PERCORSO) if index.isValid() else None
+        self.menu_richiesto.emit(percorso, self.viewport().mapToGlobal(punto))
+
     #override
     def selectionChanged(self, selected, deselected):
         super().selectionChanged(selected, deselected)
         self.selezione_cambiata.emit(self.percorsi_selezionati())
+
+    #override
+    def currentChanged(self, current, previous):
+        super().currentChanged(current, previous)
+        self.corrente_cambiato.emit(
+            current.data(RUOLO_PERCORSO) if current.isValid() else None)
 
     def percorsi_selezionati(self):
         return [i.data(RUOLO_PERCORSO) for i in self.selectionModel().selectedIndexes()]

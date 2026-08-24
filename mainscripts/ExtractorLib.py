@@ -7,6 +7,7 @@ sui verbi del sorting, e per la stessa ragione: cio' che si estrae diventa
 cio' che si puo' provare senza aprire niente.
 """
 import math
+import os
 
 import cv2
 import numpy as np
@@ -17,6 +18,11 @@ from core.cv2ex import cv2_imwrite
 from DFLIMG import DFLJPG
 from facelib import FaceType, LandmarksProcessor
 from mainscripts import ExtractReport
+
+# La coda del file temporaneo del salvataggio: non e' fra le estensioni di
+# `core.pathex`, quindi un temporaneo rimasto orfano non viene raccolto da
+# nessuna strada a valle.
+SUFFISSO_TEMPORANEO = ".dfltmp"
 
 
 def landmarks_da_vettore(centro, punta):
@@ -105,6 +111,210 @@ def salva_volto(immagine, rect, image_landmarks, face_type, image_size,
     dflimg.set_image_to_face_mat(image_to_face_mat)
     dflimg.save()
     return output_filepath
+
+
+def _face_type_da(valore):
+    """Il face type come FaceType, accettando anche la stringa che DFLJPG
+    salva ('whole_face', 'head', ...).
+
+    Le due forme arrivano da due strade -- il codice di estrazione ha gia'
+    l'enum, il protocollo del servizio di dettaglio ha la stringa che ha
+    letto dal file -- e convertire in un posto solo evita che ognuna delle
+    due se lo converta a modo suo.
+    """
+    if isinstance(valore, str):
+        return FaceType.fromString(valore)
+    return valore
+
+
+def riallinea_volto(immagine, source_landmarks, face_type, image_size):
+    """(raster, matrice 2x3, landmark allineati) da un fotogramma e i suoi
+    landmark IN COORDINATE DEL FOTOGRAMMA.
+
+    E' la stessa catena di `salva_volto`, senza il disco e senza i
+    metadati: serve sia all'anteprima durante il trascinamento sia al
+    salvataggio, che di suo aggiunge solo la scrittura.
+
+    Il controllo di scarto di `salva_volto` NON si replica: quello ferma un
+    allineatore automatico andato fuori strada, e qui i punti li ha messi
+    una persona -- lo stesso motivo per cui `salva_volto` lo salta gia'
+    quando `manuale=True`.
+    """
+    face_type = _face_type_da(face_type)
+    punti = np.array(source_landmarks, dtype=np.float32)
+    mat = LandmarksProcessor.get_transform_mat(punti, image_size, face_type)
+    raster = cv2.warpAffine(immagine, mat, (image_size, image_size),
+                            cv2.INTER_LANCZOS4)
+    return raster, mat, LandmarksProcessor.transform_points(punti, mat)
+
+
+def composta_fra_allineamenti(mat_vecchia, mat_nuova):
+    """La 2x3 che porta dal VECCHIO spazio allineato al NUOVO.
+
+    Entrambe le matrici vanno da fotogramma ad allineato, quindi la
+    composizione e' `mat_nuova @ inversa(mat_vecchia)`. Si promuovono a 3x3
+    per moltiplicarle e si riprendono le prime due righe.
+
+    Solleva se la vecchia non e' invertibile: una matrice singolare non ha
+    un verso inverso, e restituire dei numeri comunque darebbe una maschera
+    trasportata in un posto plausibile e sbagliato -- il difetto peggiore
+    disponibile qui. `cv2.invertAffineTransform` non solleva da sola: su una
+    matrice degenere torna zeri finiti, non NaN/inf, quindi il controllo va
+    fatto prima e su due fronti -- il determinante della parte lineare (la
+    singolare vera) e la finitezza (i landmark tutti coincidenti, che
+    `get_transform_mat` puo' produrre, tornano una matrice tutta NaN senza
+    sollevare). La soglia sul determinante e' assoluta perche' la scala
+    tipica qui e' (image_size / estensione del volto)^2: sulla fixture di
+    prova vale ~0.02, e resta ordini di grandezza sopra 1e-12 anche per un
+    volto minuscolo su un frame 8K con image_size=64.
+    """
+    mat_vecchia = np.array(mat_vecchia, dtype=np.float32)
+    if (not np.all(np.isfinite(mat_vecchia))
+            or abs(np.linalg.det(mat_vecchia[:, :2])) < 1e-12):
+        raise ValueError("la matrice di partenza non e' invertibile")
+    inversa = cv2.invertAffineTransform(mat_vecchia)
+    def _a_3x3(m):
+        fuori = np.eye(3, dtype=np.float32)
+        fuori[:2, :] = np.array(m, dtype=np.float32)
+        return fuori
+    return (_a_3x3(mat_nuova) @ _a_3x3(inversa))[:2, :]
+
+
+def trasporta_maschera(dflimg, composta, lato_allineato):
+    """Riwarpa la maschera XSeg dal vecchio spazio allineato al nuovo.
+
+    Torna True se c'era una maschera e l'ha trasportata, False se non
+    c'era. I poligoni NON passano di qui: sono punti, e si trasformano in
+    modo esatto (vedi `riallinea_e_salva`).
+
+    Il lato del raster si LEGGE, non si assume. `DFLJPG.set_xseg_mask`
+    ricomprime ma non ridimensiona, quindi il lato e' quello di chi l'ha
+    scritta -- la risoluzione del modello XSeg, non quella dell'allineato.
+    mainscripts/FacesetResizer.py assume 256 e su una maschera di lato
+    diverso sposterebbe la segmentazione.
+
+    Assume la maschera quadrata (usa `maschera.shape[0]` per entrambi i
+    lati): `DFLJPG.get_xseg_mask` non lo garantisce, ma tutte le maschere
+    che questo ciclo scrive sono quadrate (XSegNet lavora su input
+    quadrati).
+    """
+    if not dflimg.has_xseg_mask():
+        return False
+    maschera = np.asarray(dflimg.get_xseg_mask())
+    lato_maschera = maschera.shape[0]
+    # La catena e' maschera -> allineato -> (composta) -> allineato ->
+    # maschera, con S = lato_allineato / lato_maschera all'andata e 1/S al
+    # ritorno. Facendo i conti su un punto p in coordinate della maschera:
+    #     (1/S) * ( A*(S*p) + b )  =  A*p + b/S
+    # cioe' la PARTE LINEARE resta identica (le due scale si elidono su di
+    # lei) e solo la TRASLAZIONE va divisa per S. Non e' una
+    # semplificazione estetica: scalare anche A darebbe una maschera
+    # ruotata in modo plausibile, che e' il difetto peggiore disponibile
+    # qui perche' non solleva niente.
+    giu = lato_maschera / float(lato_allineato)
+    mat = np.array(composta, dtype=np.float32).copy()
+    mat[:, 2] *= giu
+    fuori = cv2.warpAffine(maschera, mat, (lato_maschera, lato_maschera),
+                           flags=cv2.INTER_LANCZOS4)
+    # LANCZOS4 sovraoscilla: senza la soglia la maschera esce con valori
+    # sopra 1 e sotto 0, e non e' piu' binaria. Stessa riga di
+    # FacesetResizer.
+    fuori[fuori < 0.5] = 0
+    fuori[fuori >= 0.5] = 1
+    dflimg.set_xseg_mask(fuori)
+    return True
+
+
+def riallinea_e_salva(percorso_allineato, immagine_frame, source_landmarks):
+    """Riscrive un volto allineato coi landmark modificati, PORTANDOSI
+    DIETRO la maschera e i poligoni.
+
+    Torna {"mat": [[...]], "landmarks": [[x, y], ...],
+           "maschera": "trasportata"|"assente", "poligoni": <quanti>}.
+
+    NON passa da `salva_volto`, e non e' una svista: quella riscrive il
+    JPEG da zero e ricostruisce i metadati campo per campo, senza mai
+    chiamare set_xseg_mask ne' set_seg_ie_polys -- su un volto mascherato
+    cancella la maschera in silenzio. La ricetta giusta e' quella di
+    mainscripts/FacesetResizer.py: get_dict prima, set_dict dopo, e i
+    campi che cambiano sovrascritti sopra.
+    """
+    percorso_allineato = str(percorso_allineato)
+    dflimg = DFLJPG.load(percorso_allineato)
+    if dflimg is None:
+        raise ValueError("non e' un JPEG DFL: %s" % (percorso_allineato,))
+    mat_vecchia = dflimg.get_image_to_face_mat()
+    if mat_vecchia is None:
+        raise ValueError("questo volto non ha una matrice di allineamento")
+    face_type = dflimg.get_face_type()
+    lato = int(dflimg.get_shape()[0])
+    dfl_dict = dflimg.get_dict()
+
+    raster, mat_nuova, lmrks = riallinea_volto(
+        immagine_frame, source_landmarks, face_type, lato)
+    if not np.all(np.isfinite(mat_nuova)):
+        # composta_fra_allineamenti controlla solo mat_vecchia: landmark
+        # tutti coincidenti (l'utente trascina ogni punto sullo stesso
+        # pixel) fanno tornare a get_transform_mat una mat_nuova tutta NaN
+        # senza sollevare. Il controllo va fatto qui, PRIMA di scrivere
+        # qualunque cosa su disco: una composta NaN riscriverebbe il file
+        # del progetto con un raster e dei metadati insensati.
+        raise ValueError("i landmark forniti non producono un allineamento valido")
+    composta = composta_fra_allineamenti(mat_vecchia, mat_nuova)
+
+    # Scrittura atomica: tutto il lavoro (raster, poligoni, maschera,
+    # landmark) va su un file temporaneo accanto, e l'originale si
+    # sostituisce solo alla fine con os.replace. Fra il warp del raster e
+    # l'ultimo set_* il file e' incompleto -- niente landmark, niente
+    # image_to_face_mat, niente maschera -- e set_xseg_mask puo' sollevare
+    # di suo: scrivere in-place lascerebbe il volto allineato dell'utente
+    # (i cui source_landmarks non vivono altrove) irrecuperabile se il
+    # processo si interrompe in quella finestra.
+    # E il temporaneo NON finisce per un'estensione di `core.pathex`: un
+    # `00000.tmp.jpg` dentro `aligned/` e' un volto DFL che
+    # `get_image_paths` raccoglie, e un'interruzione fra `save()` e
+    # `os.replace` (SIGKILL, OOM, corrente) lo lascerebbe li' come
+    # duplicato silenzioso del volto vero, dentro l'addestramento.
+    percorso_tmp = percorso_allineato + SUFFISSO_TEMPORANEO
+    try:
+        # I byte si codificano a mano perche' `cv2_imwrite` deduce il
+        # formato dal suffisso del NOME: su `.dfltmp` `imencode` fallirebbe
+        # e la scrittura verrebbe saltata in silenzio. Il buffer e' lo
+        # stesso che scriveva prima, JPEG di qualita' 100.
+        riuscita, buffer = cv2.imencode(".jpg", raster,
+                                        [int(cv2.IMWRITE_JPEG_QUALITY), 100])
+        if not riuscita:
+            raise ValueError("il raster riallineato non si codifica in JPEG")
+        with open(percorso_tmp, "wb") as f:
+            f.write(buffer)
+        dflimg = DFLJPG.load(percorso_tmp)
+        dflimg.set_dict(dfl_dict)
+
+        polys = dflimg.get_seg_ie_polys()
+        quanti = 0
+        for poly in polys.get_polys():
+            # Punti, non pixel: la trasformazione e' ESATTA, e lo resta
+            # quante volte si voglia. E' l'unica parte del lavoro manuale
+            # sulle maschere che non si degrada mai.
+            poly.set_points(LandmarksProcessor.transform_points(poly.get_pts(), composta))
+            quanti += 1
+        dflimg.set_seg_ie_polys(polys)
+
+        trasportata = trasporta_maschera(dflimg, composta, lato)
+
+        dflimg.set_landmarks(np.asarray(lmrks).tolist())
+        dflimg.set_source_landmarks(np.asarray(source_landmarks, dtype=np.float32).tolist())
+        dflimg.set_image_to_face_mat(mat_nuova)
+        dflimg.save()
+        os.replace(percorso_tmp, percorso_allineato)
+    except Exception:
+        if os.path.exists(percorso_tmp):
+            os.remove(percorso_tmp)
+        raise
+    return {"mat": np.asarray(mat_nuova).astype(float).tolist(),
+            "landmarks": np.asarray(lmrks).astype(float).tolist(),
+            "maschera": "trasportata" if trasportata else "assente",
+            "poligoni": quanti}
 
 
 def voce_da_data(data, luminanza, motore=None):

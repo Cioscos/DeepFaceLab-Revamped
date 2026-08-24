@@ -11,18 +11,20 @@ sei filtri del rapporto e la `Pellicola`.
 import tempfile
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QImageReader, QPixmap
-from PyQt5.QtWidgets import (QButtonGroup, QCheckBox, QHBoxLayout,
-                             QLabel, QMessageBox, QPushButton, QVBoxLayout,
-                             QWidget)
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+from PyQt5.QtGui import QColor, QImage, QImageReader, QPixmap
+from PyQt5.QtWidgets import (QApplication, QButtonGroup, QCheckBox,
+                             QHBoxLayout, QLabel, QMessageBox, QPushButton,
+                             QVBoxLayout, QWidget)
 
 from gui import testi
 from gui import theme
 from gui.estrazione import avvio as avvio_mod
 from gui.estrazione import azioni as azioni_mod
 from gui.estrazione import indice as indice_mod
+from gui.estrazione import maschera as maschera_mod
 from gui.estrazione import servizio as servizio_mod
+from gui.estrazione import volti as volti_mod
 from gui.estrazione.comandi import CHIAVI_FRECCE, COMANDI, ColonnaComandi
 from gui.estrazione.modello import RUOLO_PERCORSO, ModelloFrame
 from gui.estrazione.pellicola import Pellicola
@@ -47,6 +49,12 @@ ESTENSIONI = (".png", ".jpg", ".jpeg")
 # uno dei LATI della pellicola (gui/faceset/decodifica.py), che sono
 # miniature -- qui serve leggere i dettagli di un frame 4K.
 LATO_ANTEPRIMA = 1024
+
+# Lo stesso verde con cui la finestra di dettaglio disegna i poligoni
+# "include" e con cui la griglia della cura evidenzia i fratelli: e' il
+# colore che in questa interfaccia vuol dire "questo pezzo di immagine e'
+# il volto".
+COLORE_MASCHERA = QColor(80, 220, 140)
 
 # Dove vive la cache del rapporto, fuori dal progetto: <radice_e>/extract-cache/<id>.
 # id_cartella() e' l'unica funzione che lo sa (gui/faceset/cache.py) -- si
@@ -215,6 +223,11 @@ def _dimensione_nativa(percorso, pixmap):
 
 
 class PaginaEstrazione(QWidget):
+    # Emesso dal bottone "Show faces from this frame": chi ospita questa
+    # pagina (la finestra principale) lo ascolta per portare la scheda di
+    # cura del faceset sui volti del fotogramma indicato.
+    richiesta_volti_del_frame = pyqtSignal(str, str)
+
     def __init__(self, radice_e=None, parent=None):
         super().__init__(parent)
         self._radice_e = Path(radice_e) if radice_e is not None else _radice_e_predefinita()
@@ -261,6 +274,12 @@ class PaginaEstrazione(QWidget):
         # cancellerebbe prima che l'utente la legga mai. _aggiorna_stato_manuale
         # la consuma una volta sola.
         self._nota_salvataggio = None
+        # Gemella di `_nota_salvataggio`, per l'avviso scritto da `apri()`
+        # quando ricaricare chiude una sessione manuale viva: senza questo,
+        # `_su_frame_scelto` -> `_mostra_anteprima` -- che `mostra_frame`
+        # chiama SEMPRE subito dopo -- lo sovrascrive prima che l'utente
+        # possa leggerlo. Consumata una volta sola da `_mostra_anteprima`.
+        self._nota_sessione_interrotta = None
         self._salvati_per_frame = {}
         self._ultima_mossa_debug = None
         # Quale OPERAZIONE (non quale passo -- "auto" e
@@ -302,6 +321,24 @@ class PaginaEstrazione(QWidget):
         self._timer_rapporto = QTimer(self)
         self._timer_rapporto.setInterval(1000)
         self._timer_rapporto.timeout.connect(self._pulsa_rapporto)
+        # I volti del fotogramma corrente, recuperati pigramente dal client
+        # di dettaglio -- solo quando una spunta di sovrapposizione li vuole
+        # davvero. `_volti_di` e' il fotogramma a cui `_volti_correnti`
+        # appartiene, `_frame_chiesto` quello dell'ultima richiesta in volo
+        # (per scartare le consegne in ritardo, come `_su_anteprima_pronta`).
+        self._volti_correnti = []
+        self._volti_di = None
+        self._frame_chiesto = None
+        # Vero solo DENTRO la nostra richiesta al client: vedi
+        # `_su_volti_pronti`, che ascolta un canale condiviso con la
+        # finestra di dettaglio.
+        self._in_attesa_volti = False
+        self._cartella_dettaglio = None
+        self._cliente = None
+        # La finestra di dettaglio aperta dal click sulla tela -- None
+        # finche' nessuno ha ancora cliccato un volto. Costruita al primo
+        # bisogno come `_cliente`, e per la stessa ragione.
+        self._finestra_dettaglio = None
 
         self.modello = ModelloFrame()
         self.tela = Tela()
@@ -335,6 +372,8 @@ class PaginaEstrazione(QWidget):
         self.bottone_annulla_riestrai.setToolTip(testi.ESTRAZIONE_ANNULLA_RIESTRAI_TIP)
         self.bottone_indice = QPushButton(testi.ESTRAZIONE_INDICIZZA)
         self.bottone_indice.setToolTip(testi.ESTRAZIONE_INDICIZZA_TIP)
+        self.bottone_volti = QPushButton(testi.ESTRAZIONE_VOLTI_DEL_FRAME)
+        self.bottone_volti.setToolTip(testi.ESTRAZIONE_VOLTI_DEL_FRAME_TIP)
         # I tre controlli dei motori: elenco, ordine, etichette e aiuti
         # vengono da MotoriCatalog, che ne e' la sorgente unica -- qui non
         # si riscrive nessuna voce. La tendina mostra la `label` e porta la
@@ -377,11 +416,18 @@ class PaginaEstrazione(QWidget):
             self._bottoni_filtro[chiave] = bottone
             riga_filtri.addWidget(bottone)
         riga_filtri.addStretch(1)
+        self.spunta_rect = QCheckBox(testi.ESTRAZIONE_SOVRAPP_RECT)
+        self.spunta_rect.setChecked(True)
+        self.spunta_landmarks = QCheckBox(testi.ESTRAZIONE_SOVRAPP_LANDMARKS)
+        self.spunta_maschera = QCheckBox(testi.ESTRAZIONE_SOVRAPP_MASCHERA)
+        for spunta in self._spunte_sovrapposizioni():
+            spunta.toggled.connect(self._su_sovrapposizioni)
+            riga_filtri.addWidget(spunta)
 
         barra = QHBoxLayout()
         for w in (self.bottone_src, self.bottone_dst, self.selettore_operazione,
                   self.bottone_avvia, self.bottone_manuale, self.bottone_riestrai,
-                  self.bottone_annulla_riestrai, self.bottone_indice):
+                  self.bottone_annulla_riestrai, self.bottone_indice, self.bottone_volti):
             barra.addWidget(w)
         barra.addStretch(1)
         barra.addWidget(self.etichetta_stato)
@@ -424,6 +470,7 @@ class PaginaEstrazione(QWidget):
         self.bottone_riestrai.clicked.connect(lambda: self.riestrai_selezione())
         self.bottone_annulla_riestrai.clicked.connect(lambda: self.annulla_riestrazione())
         self.bottone_indice.clicked.connect(lambda: self.aggiorna_indice())
+        self.bottone_volti.clicked.connect(self._su_volti_del_frame)
         # currentIndexChanged e non activated: `_applica_motori_ricordati`
         # scrive i selettori da codice a bordo sessione, e li' i segnali
         # sono bloccati apposta -- vedi la sua nota.
@@ -436,6 +483,7 @@ class PaginaEstrazione(QWidget):
         self.tela.vettore_tracciato.connect(self._su_vettore_tracciato)
         self.tela.rettangolo_cambiato.connect(self._su_rettangolo_cambiato)
         self.tela.blocco_cambiato.connect(self._su_blocco_cambiato)
+        self.tela.volto_scelto.connect(self._su_volto_scelto)
         self.colonna.scelto.connect(self._su_comando)
 
         # Qt.WidgetWithChildrenShortcut scatta quando ad avere il focus e' il
@@ -459,6 +507,8 @@ class PaginaEstrazione(QWidget):
 
         self._aggiorna_lato_bottoni()
         self._rigenera_comandi()
+        self._aggiorna_spunte_sovrapposizioni()
+        self._su_sovrapposizioni()
 
     # -- progetto e lato -------------------------------------------------
 
@@ -521,9 +571,15 @@ class PaginaEstrazione(QWidget):
         self._aggiorna_conteggi_filtro()
         self._aggiorna_messaggio_vuoto()
         if sessione_interrotta:
-            self.etichetta_stato.setText(
-                testi.estrazione_sessione_interrotta_dal_ricaricamento(len(percorsi)))
+            # Tenuta da parte, non solo scritta: se `mostra_frame` chiama
+            # subito dopo `_su_frame_scelto` -> `_mostra_anteprima`, quella
+            # deve COMPORLA nella propria riga invece di sovrascriverla --
+            # altrimenti l'avviso vive sullo schermo per zero secondi.
+            self._nota_sessione_interrotta = \
+                testi.estrazione_sessione_interrotta_dal_ricaricamento(len(percorsi))
+            self.etichetta_stato.setText(self._nota_sessione_interrotta)
         else:
+            self._nota_sessione_interrotta = None
             self.etichetta_stato.setText(testi.estrazione_stato(len(percorsi)))
         self._rigenera_comandi()
 
@@ -1055,6 +1111,19 @@ class PaginaEstrazione(QWidget):
             workdir = Path(tempfile.mkdtemp(prefix="dfl_estrazione_"))
             self._trasporto = TrasportoAsincrono(workdir)
             self.servizio = servizio_mod.Servizio(self._trasporto)
+        # I volti della revisione vengono dal disco: in sessione manuale
+        # rettangolo e landmark vengono dal motore, e le tre spunte si
+        # spengono di conseguenza.
+        self._dimentica_volti()
+        self._aggiorna_spunte_sovrapposizioni()
+        # `self.servizio` e' gia' valorizzato qui sopra: porta la tela allo
+        # stato neutro della sessione manuale (rettangolo vivo acceso,
+        # landmark e maschera spenti) qualunque fosse lo stato lasciato
+        # dalla revisione -- altrimenti una spunta "Rect" spenta prima di
+        # entrare lascerebbe il rettangolo vivo invisibile, con la spunta
+        # che lo prometterebbe indietro disabilitata e quindi non
+        # riaccendibile da qui dentro.
+        self._su_sovrapposizioni()
         # Il primo `rileva` costruisce i modelli veri e li porta in VRAM.
         # Stessa barra pulsante che `_lancia` mostra fra il click e la
         # prima riga di un job, per lo stesso motivo: qui pero' non c'e'
@@ -1150,6 +1219,13 @@ class PaginaEstrazione(QWidget):
         self._passo_manuale = None
         self._mostra_motori()
         self._nota_salvataggio = None
+        self._dimentica_volti()
+        self._aggiorna_spunte_sovrapposizioni()
+        # `self.servizio` e' gia' None qui sopra: riapplica alla tela le tre
+        # spunte come stavano prima della sessione manuale, che
+        # `_su_sovrapposizioni` non aveva mai potuto scrivere mentre il
+        # servizio era vivo.
+        self._su_sovrapposizioni()
         if self.bottone_manuale.isChecked():
             self.bottone_manuale.setChecked(False)
         self._rigenera_comandi()
@@ -1171,6 +1247,33 @@ class PaginaEstrazione(QWidget):
         che nessuno vedeva (vedi la guardia `self._scheda_aperta` in
         `_su_job_finito`). Idempotente come `ferma_servizio` stesso."""
         self.ferma_servizio()
+        # La finestra di dettaglio PRIMA del client, e il client solo se lei
+        # si e' chiusa davvero: `close()` chiede conferma quando ci sono
+        # modifiche non salvate e torna falso se l'utente risponde di no.
+        # Azzerare comunque lasciava la pagina senza la sua finestra e senza
+        # il suo client, e il click successivo ne costruiva un SECONDO --
+        # cioe' un secondo processo figlio che importa torch mentre il primo
+        # e' vivo, l'errore che questa pagina evita costruendo il client una
+        # volta sola. E fermare il servizio prima della domanda lo uccideva
+        # proprio mentre l'utente diceva di voler tenere il lavoro: la
+        # finestra che resta aperta deve poterlo ancora salvare.
+        if self._finestra_dettaglio is None or self._finestra_dettaglio.close():
+            self._finestra_dettaglio = None
+            # `ClienteDettaglio.ferma()` non aveva nessun chiamante di
+            # produzione: questa pagina gliene da' uno. Il sorvegliante
+            # d'inattivita' del servizio e' una rete di sicurezza, non una
+            # sostituzione -- chiudere qui e' piu' pulito che lasciare un
+            # processo appeso per cinque minuti.
+            if self._cliente is not None:
+                self._cliente.ferma()
+                self._cliente = None
+        # FUORI dall'if, e non per distrazione: questa bandierina dice se la
+        # scheda e' nel QTabWidget, non se la finestra di dettaglio si e'
+        # chiusa. La scheda se ne va comunque, e lasciarla a "aperta" perche'
+        # l'utente vuole tenere il suo trascinamento rimetterebbe in piedi
+        # proprio il buco che la guardia in `_su_job_finito` chiude: un job
+        # che finisce dopo entrerebbe da solo in sessione manuale su una
+        # pagina che nessuno vede piu'.
         self._scheda_aperta = False
 
     def su_apertura_scheda(self):
@@ -1183,6 +1286,232 @@ class PaginaEstrazione(QWidget):
         vista."""
         self._scheda_aperta = True
 
+    # -- le sovrapposizioni della revisione ---------------------------------
+
+    def _spunte_sovrapposizioni(self):
+        return (self.spunta_rect, self.spunta_landmarks, self.spunta_maschera)
+
+    def _su_sovrapposizioni(self):
+        """Le tre spunte valgono SOLO in revisione: e' l'unico posto che lo
+        controlla, chiamato anche dall'ingresso in sessione manuale e da
+        ogni cambio di fotogramma, cosi' la regola vale ovunque senza
+        ripetersi. In sessione manuale la tela torna allo stato neutro
+        (rettangolo vivo sempre acceso, landmark e maschera spenti perche'
+        vengono dal motore, non dal disco) senza toccare le spunte -- che
+        restano com'erano per quando si rientra in revisione -- e senza
+        chiedere niente al servizio di dettaglio."""
+        if self.servizio is not None:
+            self.tela.imposta_sovrapposizioni(True, False, False)
+            return
+        self.tela.imposta_sovrapposizioni(self.spunta_rect.isChecked(),
+                                          self.spunta_landmarks.isChecked(),
+                                          self.spunta_maschera.isChecked())
+        if self.spunta_landmarks.isChecked() or self.spunta_maschera.isChecked():
+            self._assicura_volti()
+
+    def _aggiorna_spunte_sovrapposizioni(self):
+        """Spente durante la sessione manuale: li' rettangolo e landmark
+        vengono dal MOTORE, non dal disco, e un comando che promette di
+        nasconderli mentre non li governa mente. Spente e VISIBILI, non
+        nascoste: una riga di comandi che cambia di lunghezza fra le due
+        modalita' sposta tutto quello che le sta accanto."""
+        in_revisione = self.servizio is None
+        suggerimenti = (testi.ESTRAZIONE_SOVRAPP_RECT_TIP,
+                        testi.ESTRAZIONE_SOVRAPP_LANDMARKS_TIP,
+                        testi.ESTRAZIONE_SOVRAPP_MASCHERA_TIP)
+        for spunta, suo in zip(self._spunte_sovrapposizioni(), suggerimenti):
+            spunta.setEnabled(in_revisione)
+            spunta.setToolTip(suo if in_revisione
+                              else testi.ESTRAZIONE_SOVRAPP_MANUALE_TIP)
+
+    def _dimentica_volti(self):
+        """Il fotogramma e' cambiato, o si e' entrati in sessione manuale:
+        un insieme stantio resterebbe cliccabile sotto un fotogramma
+        diverso, che e' la peggiore cosa che questa pagina possa fare."""
+        self._volti_correnti = []
+        self._volti_di = None
+        self._frame_chiesto = None
+        self.tela.imposta_volti([])
+
+    def _assicura_volti(self):
+        """I volti del fotogramma corrente, dalla cache o dal servizio.
+
+        Non avvia MAI il servizio da sola: la chiamano una spunta appena
+        accesa, un click sulla tela, o un cambio di fotogramma con una
+        spunta gia' accesa. Con la sola "Rect" accesa non viene chiamata,
+        e la pagina non fa partire nessun processo -- che e' il
+        comportamento di oggi, e il criterio da non perdere.
+        """
+        if self._frame_corrente is None or self._cartella is None:
+            return
+        if self._volti_di == self._frame_corrente:
+            return
+        cliente = self._cliente_dettaglio()
+        if cliente is None:
+            return
+        self._frame_chiesto = self._frame_corrente
+        # Il primo scambio col servizio costa l'import (~6 s): un cursore
+        # d'attesa e' l'unico modo di dire che l'interfaccia non e' morta.
+        # `finally` come in gui/faceset/pagina.py -- un cursore che non si
+        # ripristina e' peggio del congelamento che deve nascondere.
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        # Il client e' SINCRONO: la risposta arriva dentro questa chiamata,
+        # ed e' l'unica che `_su_volti_pronti` deve accettare.
+        self._in_attesa_volti = True
+        try:
+            cliente.volti_del_frame(self._cartella / "aligned",
+                                    self._frame_corrente.name)
+        finally:
+            self._in_attesa_volti = False
+            QApplication.restoreOverrideCursor()
+
+    def _su_volti_pronti(self, dati):
+        """Slot del client. Scarta le consegne che non riguardano il
+        fotogramma mostrato ORA: si scorre la pellicola piu' in fretta di
+        quanto un fotogramma si serva, e i landmark di due click fa sopra
+        il fotogramma di adesso sarebbero la cosa peggiore che questa
+        pagina possa disegnare -- lo stesso motivo per cui esiste il
+        controllo in cima a `_su_anteprima_pronta`.
+
+        ATTENZIONE: `volti_pronti` e' un segnale CONDIVISO. La finestra di
+        dettaglio chiede i fratelli sullo STESSO client, per il fotogramma
+        del volto che ha aperto -- che non e' detto sia questo: basta
+        scorrere la pellicola a finestra aperta. Senza filtro i suoi volti
+        finirebbero disegnati su questo fotogramma, in silenzio.
+        Si accetta la sola risposta arrivata dentro la nostra richiesta:
+        il client e' sincrono, quindi `_in_attesa_volti` e' vero esattamente
+        per quella. La finestra si difende in un altro modo -- accetta la
+        risposta che contiene il volto che ha aperto -- perche' li' la
+        richiesta e' sua e la nostra le arriverebbe comunque.
+
+        **Oggi regge la prima guardia, e la seconda e' difesa in
+        profondita'**: con un client sincrono una consegna in ritardo non
+        puo' arrivare affatto, quindi `_frame_chiesto != _frame_corrente`
+        non e' raggiungibile in produzione. Resta perche' e' esattamente
+        cio' che servirebbe il giorno che il client rispondesse fuori dalla
+        chiamata, e allora sarebbe l'unica difesa: non e' codice morto, e'
+        la difesa dell'altro caso.
+        """
+        if not self._in_attesa_volti:
+            return
+        if self._frame_chiesto != self._frame_corrente:
+            return
+        volti = [v._replace(maschera=self._maschera_colorata(v.nome_maschera))
+                 for v in volti_mod.volti_da_risposta(dati)]
+        self._volti_correnti = volti
+        self._volti_di = self._frame_corrente
+        self.tela.imposta_volti(volti)
+
+    def _maschera_colorata(self, nome):
+        """Il file annunciato dal servizio, aperto e tinto UNA VOLTA. None
+        per un file che non c'e' o non si apre: il volto resta cliccabile
+        e i suoi landmark disegnabili anche senza la sua maschera."""
+        if not nome:
+            return None
+        immagine = QImage(str(self._workdir_dettaglio() / nome))
+        return maschera_mod.pellicola_colorata(immagine, COLORE_MASCHERA)
+
+    def _workdir_dettaglio(self):
+        """Una cartella per PAGINA: due schede possono essere aperte su due
+        progetti diversi, e un workdir condiviso farebbe collidere i nomi
+        dei file delle maschere."""
+        if self._cartella_dettaglio is None:
+            self._cartella_dettaglio = Path(tempfile.mkdtemp(prefix="dfl_dettaglio_"))
+        return self._cartella_dettaglio
+
+    def _cliente_dettaglio(self):
+        """Costruito al primo bisogno: finche' nessuno accende una spunta
+        o clicca sulla tela, questa pagina non ha nessun client e non ha
+        avviato nessun processo."""
+        if self._cliente is None:
+            from gui.faceset.dettaglio import ClienteDettaglio
+            self._cliente = ClienteDettaglio(self._workdir_dettaglio(), parent=self)
+            self._cliente.volti_pronti.connect(self._su_volti_pronti)
+            self._cliente.fallito.connect(self._su_dettaglio_fallito)
+        return self._cliente
+
+    def _su_dettaglio_fallito(self, _motivo, _codice=None):
+        """Il servizio non ha risposto -- morto per inattivita', o un file
+        illeggibile.
+
+        Non fa NIENTE, di proposito, e le due meta' della ragione sono
+        diverse. Non scrive sulla riga di stato: la richiesta successiva
+        riavvia il servizio, e un avviso a ogni fotogramma scorso sarebbe
+        rumore. E non svuota i volti: questo segnale porta anche i
+        fallimenti dell'operazione `open` (la finestra di dettaglio), e
+        svuotare li' cancellerebbe i volti della revisione per un guasto
+        che non li riguarda. Un `frame` fallito lascia `_volti_di` fermo,
+        quindi `_assicura_volti` ritentera' da se'.
+        """
+
+    def _su_volto_scelto(self, percorso, punto):
+        """Il click sulla tela in revisione.
+
+        `percorso` None significa «la tela non aveva volti caricati e non
+        sapeva rispondere»: si recuperano e si RIPETE la ricerca su quel
+        punto, cosi' il click funziona con qualunque combinazione di
+        spunte -- la spunta decide cosa si disegna, non cosa esiste.
+
+        Ma prima si verifica che il punto cada dentro almeno uno dei
+        rettangoli del RAPPORTO: fuori da ognuno di loro il click e' un
+        gesto neutro (cliccare sul fondo del fotogramma) e non deve
+        scrivere niente ne' chiedere niente al servizio -- specialmente su
+        un progetto senza `aligned/`, dove ogni click pagherebbe altrimenti
+        l'avvio del client di dettaglio.
+        """
+        if percorso is None:
+            if not self.tela.punto_in_rapporto(punto):
+                return
+            self._assicura_volti()
+            volto = volti_mod.volto_al_punto(self._volti_correnti, *punto)
+            if volto is None:
+                if self._frame_corrente is not None:
+                    self.etichetta_stato.setText(
+                        testi.estrazione_rapporto_piu_vecchio(self._frame_corrente.name))
+                return
+            percorso = volto.percorso
+        self._apri_finestra_dettaglio(percorso)
+
+    def _apri_finestra_dettaglio(self, percorso):
+        if self._finestra_dettaglio is None:
+            from gui.dettaglio.finestra import FinestraDettaglio
+            # Il client si costruisce prima e si passa: la finestra non ne
+            # fa uno suo, o nascerebbe un secondo processo figlio che
+            # importa torch mentre il primo e' vivo. E `pronto` non si
+            # collega qui: la finestra ci si e' gia' collegata da se' alla
+            # costruzione, e un secondo ascoltatore che richiama `mostra`
+            # raddoppia il giro dei fratelli -- sincrono, e ogni giro
+            # rilegge dal disco i dati DFL di tutti.
+            cliente = self._cliente_dettaglio()
+            self._finestra_dettaglio = FinestraDettaglio(
+                self._workdir_dettaglio(), cliente=cliente)
+        # I fratelli dello STESSO fotogramma: le frecce sfogliano il
+        # gruppo invece di una lista vuota.
+        self._finestra_dettaglio.imposta_ordine(
+            volti_mod.percorsi(self._volti_correnti))
+        # `aligned/` sta DENTRO la cartella che si sta guardando, quindi i
+        # fotogrammi sono proprio lei. Si passa anche se non esiste -- chi
+        # decide se la modifica e' possibile e' la finestra, in un posto
+        # solo.
+        self._finestra_dettaglio.imposta_frame_dir(self._cartella)
+        self._finestra_dettaglio.show()
+        self._finestra_dettaglio.raise_()
+        self._finestra_dettaglio.activateWindow()
+        # Il cambio di volto sta tutto dentro `apri_volto`: la domanda
+        # sulle modifiche vive, il disegno e la richiesta al servizio. Da
+        # qui si disegnava e si chiedeva in due passi, e la domanda non la
+        # faceva nessuno. La finestra si mostra e si porta davanti
+        # comunque: se rifiuta, e' proprio quella che tiene il lavoro che
+        # l'utente ha appena deciso di non perdere.
+        # Stesso pattern di _assicura_volti: lo scambio col servizio e'
+        # sincrono e il primo costa l'import, e la finestra appena mostrata
+        # sembrerebbe morta senza un cursore che lo dica.
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            self._finestra_dettaglio.apri_volto(percorso)
+        finally:
+            QApplication.restoreOverrideCursor()
+
     def _percorsi_visibili(self):
         """I percorsi che la pellicola mostra ORA -- rispetta il filtro
         acceso, cosi' la navigazione manuale scorre la stessa fetta che
@@ -1190,11 +1519,76 @@ class PaginaEstrazione(QWidget):
         m = self.modello
         return [m.data(m.index(i, 0), RUOLO_PERCORSO) for i in range(m.rowCount())]
 
+    # -- ponte verso la cura del faceset ----------------------------------
+
+    def _su_volti_del_frame(self):
+        if self._frame_corrente is not None:
+            self.richiesta_volti_del_frame.emit(self._lato, self._frame_corrente.name)
+
+    def mostra_frame(self, lato, nome_frame):
+        """Porta la pagina sul frame `nome_frame` di data_<lato>.
+
+        Torna False -- MAI scrivendo la riga di stato di questa pagina, sul
+        rifiuto -- se il file non e' sul disco (o non ha un'estensione che
+        questa pagina raccoglie): la sonda guarda `data_<lato>` PRIMA di
+        spostare lato o cartella, cosi' quel rifiuto non lascia la pagina
+        spostata su un lato diverso -- e su questa pagina un cambio di lato
+        passa da `apri()`, che interrompe una sessione manuale in corso. Il
+        motivo del rifiuto non si scrive qui: come il suo gemello
+        `PaginaCuraFaceset.mostra_solo_frame`, lascia dirlo a chi ha
+        chiamato -- `MainWindow._vai_al_frame` lo scrive sulla pagina che
+        l'utente sta DAVVERO guardando, non su questa, che potrebbe essere
+        una scheda chiusa da nessuno.
+
+        Il cambio di lato, quando la sonda passa, passa da `_cambia_lato` e
+        non da `apri()` diretta: e' la strada che avverte quando una
+        sessione manuale in corso viene chiusa (`sessione_interrotta`), e
+        cambiarla in silenzio sotto un rettangolo gia' agganciato e'
+        esattamente il difetto gia' corretto li'.
+        """
+        if self._progetto is None:
+            return False
+        bersaglio = self._progetto / ("data_%s" % lato) / nome_frame
+        if bersaglio.suffix.lower() not in ESTENSIONI or not bersaglio.is_file():
+            return False
+        if lato != self._lato:
+            self._cambia_lato(lato)
+        if bersaglio not in self._percorsi_visibili():
+            # Un filtro acceso puo' nascondere proprio il frame chiesto.
+            # Il bottone si spunta a mano: `_su_filtro` applica il filtro al
+            # modello, ma chi lo chiama da codice non passa dal QButtonGroup.
+            self._bottoni_filtro["tutti"].setChecked(True)
+            self._su_filtro("tutti")
+        percorsi = self._percorsi_visibili()
+        if bersaglio not in percorsi:
+            return False
+        index = self.modello.index(percorsi.index(bersaglio), 0)
+        self.pellicola.setCurrentIndex(index)
+        self.pellicola.scrollTo(index)
+        self._su_frame_scelto(bersaglio)
+        self._rigenera_comandi()
+        return True
+
+    def mostra_messaggio(self, testo):
+        """La riga di stato scritta da fuori: e' dove finisce il motivo per
+        cui una navigazione incrociata si e' fermata."""
+        self.etichetta_stato.setText(testo)
+
     def _su_frame_scelto(self, percorso):
+        # Il fotogramma cambia: i volti del precedente non appartengono
+        # piu' a niente.
+        self._dimentica_volti()
         if self.servizio is not None:
             self._carica_frame(percorso)
         else:
             self._mostra_anteprima(percorso)
+        # `_frame_corrente` e' appena cambiato in entrambi i rami: senza
+        # questa riga il bottone "Show faces from this frame" restava
+        # spento fino al prossimo comando che ridisegna la barra per
+        # tutt'altra ragione -- un clic sulla pellicola non ne era uno.
+        self._rigenera_comandi()
+        # Una spunta gia' accesa richiede i volti del fotogramma nuovo.
+        self._su_sovrapposizioni()
 
     def _mostra_anteprima(self, percorso):
         """La revisione: il frame come sta su disco, con sopra i rettangoli
@@ -1212,8 +1606,14 @@ class PaginaEstrazione(QWidget):
             self.decodificatore_anteprima.richiedi(percorso, LATO_ANTEPRIMA)
         else:
             self._su_anteprima_pronta(percorso, LATO_ANTEPRIMA, immagine)
-        self.etichetta_stato.setText(
-            testi.estrazione_frame_scelto(percorso.name, len(self._rects_di(percorso))))
+        testo = testi.estrazione_frame_scelto(percorso.name, len(self._rects_di(percorso)))
+        if self._nota_sessione_interrotta is not None:
+            # `apri()` l'ha appena scritto, e mostrare il frame lo
+            # sovrascriverebbe: si compone, non si sostituisce -- lo
+            # stesso principio di `_aggiorna_stato_manuale`.
+            testo = testi.estrazione_componi_stato(self._nota_sessione_interrotta, testo)
+            self._nota_sessione_interrotta = None
+        self.etichetta_stato.setText(testo)
 
     def _su_anteprima_pronta(self, percorso, _lato, immagine):
         """Slot del decodificatore. Scarta le consegne in ritardo: si
@@ -1799,6 +2199,9 @@ class PaginaEstrazione(QWidget):
         # quella deroga esiste.
         self.bottone_indice.setEnabled(pronto and libera and not manuale_attiva
                                        and self._gestore is not None)
+        # Non `libera`: guardare i volti di un frame e' di sola lettura, e
+        # funziona anche mentre un job gira.
+        self.bottone_volti.setEnabled(self._frame_corrente is not None)
         # Fuori dalla sessione manuale la colonna resta visibile ma spenta:
         # si impara che i comandi esistono anche senza entrarci. Dentro,
         # tre famiglie dipendono da uno stato che non c'e' ancora appena

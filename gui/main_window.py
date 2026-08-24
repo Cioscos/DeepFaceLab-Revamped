@@ -1339,13 +1339,13 @@ class MainWindow(QMainWindow):
 
     # -- la pagina di cura del faceset ----------------------------------------
 
-    def apri_pagina_faceset(self):
-        """Mostra la scheda della pagina, costruendola la prima volta.
+    def _costruisci_pagina_faceset(self):
+        """La pagina, senza portarla in primo piano.
 
-        Una sola pagina per finestra, indicizzata per progetto e non per
-        job -- a differenza di TrainingPanel. `indexOf` prima di `addTab` e'
-        la stessa cautela di `open_panel`: QTabWidget seleziona da se' solo
-        la prima scheda di un contenitore vuoto (voce 3.21).
+        Separata da `apri_pagina_faceset` perche' una navigazione incrociata
+        deve poter chiedere alla pagina se ce la fa PRIMA di cambiare scheda:
+        portare avanti una scheda per mostrarci un rifiuto e' peggio del
+        rifiuto stesso.
         """
         if self._pagina_faceset is None:
             from gui.faceset import avvio
@@ -1357,18 +1357,29 @@ class MainWindow(QMainWindow):
             # libere, e imposta_workspace rigenera gia' la barra.
             self._pagina_faceset.imposta_job_manager(self.job_manager)
             self._pagina_faceset.imposta_workspace(self.workspace)
-        indice = self.central_tabs.indexOf(self._pagina_faceset)
-        if indice < 0:
-            indice = self.central_tabs.addTab(self._pagina_faceset, testi.TAB_FACESET)
-        self.central_tabs.setCurrentIndex(indice)
+            self._pagina_faceset.richiesta_frame_originale.connect(self._vai_al_frame)
         return self._pagina_faceset
+
+    def apri_pagina_faceset(self):
+        """Mostra la scheda della pagina, costruendola la prima volta.
+
+        Una sola pagina per finestra, indicizzata per progetto e non per
+        job -- a differenza di TrainingPanel. `indexOf` prima di `addTab` e'
+        la stessa cautela di `open_panel`: QTabWidget seleziona da se' solo
+        la prima scheda di un contenitore vuoto (voce 3.21).
+        """
+        pagina = self._costruisci_pagina_faceset()
+        indice = self.central_tabs.indexOf(pagina)
+        if indice < 0:
+            indice = self.central_tabs.addTab(pagina, testi.TAB_FACESET)
+        self.central_tabs.setCurrentIndex(indice)
+        return pagina
 
     # -- la pagina di estrazione ----------------------------------------
 
-    def apri_pagina_estrazione(self):
-        """Mostra la scheda della pagina di estrazione, costruendola la
-        prima volta. Stessa cautela di apri_pagina_faceset: `indexOf` prima
-        di `addTab` (voce 3.21), una sola pagina per finestra."""
+    def _costruisci_pagina_estrazione(self):
+        """La pagina, senza portarla in primo piano. Stessa ragione di
+        `_costruisci_pagina_faceset`."""
         if self._pagina_estrazione is None:
             from gui.estrazione import avvio
             from gui.estrazione.pagina import PaginaEstrazione
@@ -1376,22 +1387,56 @@ class MainWindow(QMainWindow):
             self._pagina_estrazione = PaginaEstrazione(self._dfl_root.parent / "_e")
             self._pagina_estrazione.imposta_job_manager(self.job_manager)
             self._pagina_estrazione.apri(self.workspace, "src")
-        indice = self.central_tabs.indexOf(self._pagina_estrazione)
+            self._pagina_estrazione.richiesta_volti_del_frame.connect(self._vai_ai_volti)
+        return self._pagina_estrazione
+
+    def apri_pagina_estrazione(self):
+        """Mostra la scheda della pagina di estrazione, costruendola la
+        prima volta. Stessa cautela di apri_pagina_faceset: `indexOf` prima
+        di `addTab` (voce 3.21), una sola pagina per finestra."""
+        pagina = self._costruisci_pagina_estrazione()
+        indice = self.central_tabs.indexOf(pagina)
         if indice < 0:
-            indice = self.central_tabs.addTab(self._pagina_estrazione, testi.TAB_ESTRAZIONE)
+            indice = self.central_tabs.addTab(pagina, testi.TAB_ESTRAZIONE)
             # I1/I2 della revisione finale: il gemello di
             # `su_chiusura_scheda()` sotto -- rimette a "aperta" una pagina
             # che era stata tolta dal QTabWidget (o la conferma tale alla
             # prima costruzione), cosi' `_su_job_finito` puo' tornare a
             # entrare da sola in sessione manuale su un job lanciato DOPO
             # questa riapertura.
-            self._pagina_estrazione.su_apertura_scheda()
+            pagina.su_apertura_scheda()
         self.central_tabs.setCurrentIndex(indice)
         # Col focus sulla linguetta le scorciatoie della pagina non
         # scattano (WidgetWithChildrenShortcut, misurato): darlo alla pagina
         # e' cio' che le rende raggiungibili subito dopo il clic sulla scheda.
-        self._pagina_estrazione.setFocus()
-        return self._pagina_estrazione
+        pagina.setFocus()
+        return pagina
+
+    # -- il ponte fra le due pagine ------------------------------------------
+
+    def _vai_al_frame(self, lato, nome_frame):
+        """Dalla cura del faceset al fotogramma originale.
+
+        Si chiede alla pagina PRIMA di portarla avanti: se il frame non e'
+        piu' sul disco si resta dove si e', e il motivo si scrive sulla
+        pagina che l'utente sta guardando -- non su quella che non ha
+        aperto.
+        """
+        pagina = self._costruisci_pagina_estrazione()
+        if pagina.mostra_frame(lato, nome_frame):
+            self.apri_pagina_estrazione()
+        elif self._pagina_faceset is not None:
+            self._pagina_faceset.mostra_messaggio(
+                testi.estrazione_frame_sparito(nome_frame))
+
+    def _vai_ai_volti(self, lato, nome_frame):
+        """Dal fotogramma ai volti che ne sono stati estratti."""
+        pagina = self._costruisci_pagina_faceset()
+        if pagina.mostra_solo_frame(lato, nome_frame):
+            self.apri_pagina_faceset()
+        elif self._pagina_estrazione is not None:
+            self._pagina_estrazione.mostra_messaggio(
+                testi.estrazione_nessun_volto_indicizzato(nome_frame))
 
     def _su_scheda_cambiata(self, indice):
         """Stessa ragione del setFocus() sopra, per ogni altro modo di
@@ -1753,7 +1798,15 @@ class MainWindow(QMainWindow):
         # Idempotente e innocuo se richiamato piu' volte: closeEvent puo'
         # rientrare mentre aspetta che i job finiscano (event.ignore() sotto).
         if self._pagina_estrazione is not None:
-            self._pagina_estrazione.ferma_servizio()
+            # su_chiusura_scheda(), non ferma_servizio() nudo: la
+            # FinestraDettaglio aperta dal click su un volto e' una
+            # Qt.Window SENZA genitore, e senza chiuderla esplicitamente
+            # lastWindowClosed non scatta mai -- l'applicazione resta viva
+            # anche a finestra principale chiusa. Idempotente come
+            # ferma_servizio, che continua a coprire anche il rientro qui
+            # mentre closeEvent aspetta la fine dei job (event.ignore()
+            # sotto).
+            self._pagina_estrazione.su_chiusura_scheda()
         if not self.job_manager.active_jobs():
             for tail in list(self._tails):
                 tail.stop()

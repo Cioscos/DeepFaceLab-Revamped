@@ -7,9 +7,9 @@ sola, e cambiare progetto cambia cio' che mostra.
 import tempfile
 from pathlib import Path
 
-from PyQt5.QtCore import QUrl, Qt
+from PyQt5.QtCore import QUrl, Qt, pyqtSignal
 from PyQt5.QtGui import QDesktopServices, QKeySequence
-from PyQt5.QtWidgets import (QApplication, QHBoxLayout, QLabel, QMenu,
+from PyQt5.QtWidgets import (QAction, QApplication, QHBoxLayout, QLabel, QMenu,
                              QMessageBox, QPushButton, QShortcut, QSlider,
                              QToolButton, QVBoxLayout, QWidget)
 
@@ -21,12 +21,14 @@ from gui.faceset import azioni as azioni_mod
 from gui.faceset import cache as cache_mod
 from gui.faceset import cestino as cestino_mod
 from gui.faceset import conflitti as conflitti_mod
+from gui.faceset import fratelli as fratelli_mod
 from gui.faceset import indice as indice_mod
 from gui.faceset.decodifica import LATI
 from gui.faceset.griglia import MODI_MASCHERA, Griglia
 from gui.faceset.heatmap import BIN_AMMESSI, WidgetHeatmap, bin_di_percorsi
-from gui.faceset.modello import ModelloVolti
+from gui.faceset.modello import RUOLO_PERCORSO, ModelloVolti
 from gui.faceset.progresso import PilaProgresso
+from gui.faceset.tacche import StrisciaTacche
 
 ESTENSIONI = (".jpg", ".jpeg", ".png")
 
@@ -73,6 +75,8 @@ def _ha_il_passo(operazione, dataset):
 
 
 class PaginaCuraFaceset(QWidget):
+    richiesta_frame_originale = pyqtSignal(str, str)
+
     def __init__(self, radice_e, impostazioni, parent=None):
         super().__init__(parent)
         self._radice_e = Path(radice_e)
@@ -81,6 +85,8 @@ class PaginaCuraFaceset(QWidget):
         self._cartella = None
         self._indice = indice_mod.Indice([])
         self._abbinati = {}
+        self._mappa_frame = {}
+        self._fratelli = []
         self._stato = indice_mod.STATO_ASSENTE
         self._cartella_dettaglio = None
         self._cliente = None
@@ -90,6 +96,12 @@ class PaginaCuraFaceset(QWidget):
         self._job_corrente = None
         self._nome_job_corrente = ""
         self._bin_accesi = set()
+        # Mutuamente esclusivo con `_bin_accesi`: un filtro alla volta, una
+        # pastiglia sola da leggere. Vive sul NOME DEL FRAME e non su un
+        # insieme di percorsi -- un sort rinomina i file, e un filtro fatto
+        # di percorsi si svuoterebbe (la stessa trappola gia' pagata dal
+        # filtro della heatmap, vedi `_riapplica_filtro`).
+        self._frame_filtrato = None
 
         self.modello = ModelloVolti()
         self.griglia = Griglia()
@@ -167,9 +179,28 @@ class PaginaCuraFaceset(QWidget):
         # abbia. Un collegamento e non un bottone perche' la pastiglia e'
         # una riga di testo, e un bottone accanto sarebbe un secondo
         # elemento in barra da spiegare.
-        self.pastiglia_filtro.linkActivated.connect(
-            lambda _href: self.heatmap.pulisci_selezione())
+        self.pastiglia_filtro.linkActivated.connect(lambda _href: self.pulisci_filtro())
         self.pastiglia_filtro.hide()
+
+        # La fascia dei fratelli compare solo quando ce ne sono: una riga
+        # vuota sopra ogni griglia sarebbe una promessa che non mantiene.
+        self.bottone_fratello_prec = QToolButton()
+        self.bottone_fratello_prec.setText(testi.FACESET_SIBLING_PREV)
+        self.bottone_fratello_prec.setToolTip(testi.FACESET_SIBLING_TIP)
+        self.bottone_fratello_succ = QToolButton()
+        self.bottone_fratello_succ.setText(testi.FACESET_SIBLING_NEXT)
+        self.bottone_fratello_succ.setToolTip(testi.FACESET_SIBLING_TIP)
+        self.etichetta_fratelli = QLabel("")
+        self.etichetta_fratelli.setProperty("ruolo", "minore")
+        self.fascia_fratelli = QWidget()
+        barra_fratelli = QHBoxLayout(self.fascia_fratelli)
+        barra_fratelli.setContentsMargins(0, 0, 0, 0)
+        for w in (self.bottone_fratello_prec, self.etichetta_fratelli,
+                  self.bottone_fratello_succ):
+            barra_fratelli.addWidget(w)
+        barra_fratelli.addStretch(1)
+        self.fascia_fratelli.hide()
+        self.striscia = StrisciaTacche()
 
         # Due righe: cio' che SCEGLIE e cio' che
         # AGISCE sopra, cio' che regola la VISTA sotto. Dieci widget su una
@@ -194,12 +225,16 @@ class PaginaCuraFaceset(QWidget):
         barra_heatmap.addWidget(self.legenda_heatmap)
         barra_heatmap.addWidget(self.pastiglia_filtro)
         barra_heatmap.addStretch(1)
+        centro = QHBoxLayout()
+        centro.addWidget(self.griglia, 1)
+        centro.addWidget(self.striscia)
         radice = QVBoxLayout(self)
         radice.addLayout(barra)
         radice.addLayout(barra_vista)
         radice.addLayout(barra_heatmap)
         radice.addWidget(self.heatmap)
-        radice.addWidget(self.griglia, 1)
+        radice.addWidget(self.fascia_fratelli)
+        radice.addLayout(centro, 1)
         radice.addWidget(self.pila)
         radice.addLayout(fascia_indice)
 
@@ -217,6 +252,13 @@ class PaginaCuraFaceset(QWidget):
         self.selettore_maschera.currentIndexChanged.connect(
             self._su_modo_maschera)
         self.griglia.volto_aperto.connect(self._su_volto_aperto)
+        self.griglia.corrente_cambiato.connect(self._su_corrente_cambiato)
+        self.griglia.menu_richiesto.connect(self._su_menu_griglia)
+        self.bottone_fratello_prec.clicked.connect(lambda: self.vai_al_fratello(-1))
+        self.bottone_fratello_succ.clicked.connect(lambda: self.vai_al_fratello(1))
+        self.striscia.riga_scelta.connect(self._su_tacca_scelta)
+        self.griglia.verticalScrollBar().valueChanged.connect(
+            lambda _v: self._aggiorna_banda())
         self.bottone_apri_cartella.clicked.connect(self.apri_nel_gestore_file)
         self.bottone_sort.clicked.connect(lambda: self.avvia_operazione(CHIAVE_SORT))
         self.bottone_cancella.clicked.connect(self.cancella_selezione)
@@ -262,12 +304,20 @@ class PaginaCuraFaceset(QWidget):
             self._cartella = None
             self._ultima_mossa = None
             self._abbinati = {}
+            self._fratelli = []
+            self._mappa_frame = {}
+            self._frame_filtrato = None
+            self.griglia.imposta_fratelli([])
             self._indice = indice_mod.Indice([])
             self._stato = indice_mod.STATO_ASSENTE
             self.modello.imposta([], {})
             self.heatmap.pulisci_selezione()
             self.heatmap.aggiorna([])
             self._aggiorna_fascia_heatmap()
+            # Senza questa riga la fascia dei fratelli resterebbe accesa col
+            # gruppo del dataset precedente: `_abbinati` e' gia' vuoto, ma
+            # nessuno lo aveva ancora detto alla fascia.
+            self._aggiorna_fascia_fratelli()
             self.etichetta_stato.setText(testi.faceset_index_state(self._stato, 0))
             self._rigenera_comandi()
 
@@ -302,6 +352,10 @@ class PaginaCuraFaceset(QWidget):
         # sta per annullare. Stessa riga, e stessa ragione, di
         # PaginaEstrazione.apri con `_ultima_mossa_debug`.
         self._ultima_mossa = None
+        self._fratelli = []
+        self._mappa_frame = {}
+        self._frame_filtrato = None
+        self.griglia.imposta_fratelli([])
         self._sincronizza_selettore()
         # La cache della decodifica e' indicizzata per percorso: le voci
         # della cartella di prima non saranno mai piu' richieste, e senza
@@ -358,6 +412,7 @@ class PaginaCuraFaceset(QWidget):
         cartella_cache = cache_mod.percorso_cache(self._radice_e, self._cartella)
         self._indice = indice_mod.Indice(indice_mod.leggi(cartella_cache))
         self._abbinati, mancanti = self._indice.abbina_letti(letti)
+        self._mappa_frame = fratelli_mod.mappa_per_frame(self._abbinati)
         self._stato = indice_mod.stato(self._abbinati, mancanti)
         self.modello.imposta(percorsi, self._abbinati)
         self.griglia.imposta_fornitore_maschere(
@@ -373,10 +428,16 @@ class PaginaCuraFaceset(QWidget):
         # piu'.
         if self._finestra_dettaglio is not None:
             self._finestra_dettaglio.imposta_ordine(self.modello.percorsi_visibili())
+            # Senza cartella non c'e' nemmeno una genitrice: si passa None,
+            # e la finestra si mette in sola lettura da se'. Sollevare qui
+            # costerebbe l'intero processo, con dentro ogni training aperto.
+            self._finestra_dettaglio.imposta_frame_dir(
+                None if self._cartella is None else self._cartella.parent)
         # Cambiare cartella cambia cosa e' applicabile, e finire un job
         # cambia cosa e' libero: senza questa riga un'azione resta grigia
         # dopo che il job che teneva la cartella e' finito.
         self._rigenera_comandi()
+        self._aggiorna_fratelli()
 
     def ricarica(self):
         self.ricalcola()
@@ -412,7 +473,12 @@ class PaginaCuraFaceset(QWidget):
         # Collassata, la legenda descrive una mappa che non si vede.
         self.legenda_heatmap.setVisible(bool(massimo or senza_posa)
                                         and not self.heatmap.collassata())
-        if self._bin_accesi:
+        if self._frame_filtrato is not None:
+            self.pastiglia_filtro.setText(testi.faceset_frame_filter_pill_html(
+                self.modello.rowCount(), self.modello.totali(),
+                self._frame_filtrato))
+            self.pastiglia_filtro.show()
+        elif self._bin_accesi:
             self.pastiglia_filtro.setText(testi.heatmap_filter_pill_html(
                 self.modello.rowCount(), self.modello.totali(),
                 len(self._bin_accesi)))
@@ -434,15 +500,31 @@ class PaginaCuraFaceset(QWidget):
         infatti non e' qui che si decide: li spegne `pulisci_selezione()`
         prima del ricalcolo, perche' si riferivano a un'altra
         distribuzione e riapplicarli sarebbe indovinare.
+
+        Col filtro frame acceso i percorsi vengono dalla mappa dei frame,
+        per la stessa ragione: e' il nome del frame a sopravvivere al sort.
         """
+        if self._frame_filtrato is not None:
+            self.modello.imposta_filtro(
+                fratelli_mod.percorsi_del_frame(self._mappa_frame, self._frame_filtrato))
+            return
         scelti = bin_di_percorsi(self._abbinati, self._bin_accesi,
                                  self.heatmap.bins())
         self.modello.imposta_filtro(scelti)
 
     def _su_filtro_bin(self, accesi):
+        # Un filtro alla volta: accendere un bin esce dal filtro frame.
+        if accesi:
+            self._frame_filtrato = None
         self._bin_accesi = set(accesi)
         self._riapplica_filtro()
         self._aggiorna_fascia_heatmap()
+        # Senza questa riga la fascia dei fratelli resta quella di PRIMA del
+        # filtro -- gli altri due cammini (`filtra_per_frame`,
+        # `pulisci_filtro`) la chiamano gia'; un bin acceso e' il terzo
+        # modo di cambiare cio' che la griglia mostra, e deve aggiornarla
+        # come loro.
+        self._aggiorna_fratelli()
         # L'ordine mostrato dalla finestra di dettaglio e' quello filtrato
         # della griglia: se il filtro cambia mentre la finestra e' aperta,
         # la navigazione non deve restare legata a un elenco superato.
@@ -463,6 +545,222 @@ class PaginaCuraFaceset(QWidget):
         n = self.selettore_bin.itemData(indice_voce)
         if n is not None:
             self.heatmap.imposta_bins(n)
+
+    # -- il filtro «stesso frame» ---------------------------------------------
+
+    def frame_filtrato(self):
+        return self._frame_filtrato
+
+    def filtra_per_frame(self, nome_frame):
+        """Mostra i soli volti di quel frame. Torna False -- senza toccare
+        niente -- se il frame non ha volti in questa cartella: una griglia
+        vuota si legge come una cartella vuota, e sarebbe la risposta
+        sbagliata a un comando che ha appena promesso dei volti."""
+        if not fratelli_mod.percorsi_del_frame(self._mappa_frame, nome_frame):
+            return False
+        # Prima i bin, poi il frame: `pulisci_selezione` fa scattare
+        # `_su_filtro_bin`, che azzererebbe il frame appena impostato.
+        self.heatmap.pulisci_selezione()
+        self._bin_accesi = set()
+        self._frame_filtrato = nome_frame
+        self._riapplica_filtro()
+        self._aggiorna_fascia_heatmap()
+        self._aggiorna_fratelli()
+        if self._finestra_dettaglio is not None:
+            self._finestra_dettaglio.imposta_ordine(self.modello.percorsi_visibili())
+        return True
+
+    def pulisci_filtro(self):
+        """Il `[Clear]` della pastiglia: spegne quello dei due che e'
+        acceso, senza che chi lo preme debba sapere quale."""
+        self._frame_filtrato = None
+        self.heatmap.pulisci_selezione()
+        self._riapplica_filtro()
+        self._aggiorna_fascia_heatmap()
+        self._aggiorna_fratelli()
+
+    # -- il menu del tasto destro ---------------------------------------------
+
+    def costruisci_menu_volto(self, percorso):
+        """Il menu del tasto destro su un volto, o None sullo spazio vuoto.
+
+        Costruito e restituito invece di essere aperto qui dentro: un menu
+        che si apre da solo si prova soltanto simulando un clic, e le due
+        voci hanno da dire piu' di quanto un clic possa verificare.
+        """
+        if percorso is None:
+            return None
+        nome = fratelli_mod.nome_frame_di(self._abbinati, percorso)
+        menu = QMenu(self)
+        # Senza questa riga Qt non disegna MAI il suggerimento delle voci
+        # disabilitate (il default e' False): le due voci spente
+        # comparivano senza dire perche', il dato di `toolTip()` restava
+        # scritto ma invisibile.
+        menu.setToolTipsVisible(True)
+        stesso = QAction(testi.FACESET_MENU_SAME_FRAME, menu)
+        stesso.setToolTip(testi.FACESET_MENU_SAME_FRAME_TIP if nome
+                          else testi.FACESET_NO_INDEX_FOR_SIBLINGS)
+        stesso.setEnabled(nome is not None)
+        stesso.triggered.connect(lambda _c=False, n=nome: self.filtra_per_frame(n))
+        originale = QAction(testi.FACESET_MENU_ORIGINAL_FRAME, menu)
+        originale.setToolTip(testi.FACESET_MENU_ORIGINAL_FRAME_TIP if nome
+                             else testi.FACESET_NO_INDEX_FOR_SIBLINGS)
+        originale.setEnabled(nome is not None)
+        originale.triggered.connect(
+            lambda _c=False, n=nome: self.richiesta_frame_originale.emit(self._dataset, n))
+        menu.addAction(stesso)
+        menu.addAction(originale)
+        return menu
+
+    def _su_menu_griglia(self, percorso, punto):
+        menu = self.costruisci_menu_volto(percorso)
+        if menu is not None:
+            menu.exec_(punto)
+
+    def mostra_messaggio(self, testo):
+        """La riga di stato della pagina, scritta da fuori: e' dove finisce
+        il motivo per cui una navigazione incrociata si e' fermata, e deve
+        stare sulla pagina che l'utente sta guardando."""
+        self.etichetta_stato.setText(testo)
+
+    def _frame_presente_in(self, cartella, nome_frame):
+        """Sonda se `cartella` porta volti di `nome_frame`, SENZA renderla
+        corrente: le stesse primitive di `ricalcola()` (`indice_mod.elenca`,
+        la cache, `abbina_letti`, `mappa_per_frame`), usate su una lettura a
+        parte invece che su `self._cartella`. Regge una cartella che non si
+        elenca e una cache assente: entrambe tornano gia' liste vuote, senza
+        sollevare.
+        """
+        letti = indice_mod.elenca(cartella, ESTENSIONI)
+        cartella_cache = cache_mod.percorso_cache(self._radice_e, cartella)
+        indice = indice_mod.Indice(indice_mod.leggi(cartella_cache))
+        abbinati, _mancanti = indice.abbina_letti(letti)
+        mappa = fratelli_mod.mappa_per_frame(abbinati)
+        return bool(fratelli_mod.percorsi_del_frame(mappa, nome_frame))
+
+    def mostra_solo_frame(self, lato, nome_frame):
+        """L'ingresso dalla pagina di estrazione: porta il dataset su
+        `lato`, la cartella su data_<lato>/aligned e filtra su quel frame.
+
+        Torna False se non c'e' niente da mostrare -- cartella inesistente,
+        o nessun volto di quel frame nella cartella bersaglio -- SENZA
+        cambiare stato: la sonda (`_frame_presente_in`) legge la cartella
+        bersaglio PRIMA di spostare dataset o cartella, cosi' un rifiuto non
+        lascia la pagina spostata su un'altra cartella con la griglia non
+        filtrata -- proprio quello che chi chiama deve poter escludere.
+        """
+        if self._workspace is None:
+            return False
+        cartella = self._workspace / ("data_%s" % lato) / "aligned"
+        if not cartella.is_dir():
+            return False
+        if not self._frame_presente_in(cartella, nome_frame):
+            return False
+        if lato != self._dataset:
+            self.imposta_dataset(lato)
+        if self._cartella != cartella:
+            self.imposta_cartella(cartella)
+        return self.filtra_per_frame(nome_frame)
+
+    # -- i fratelli dello stesso frame ---------------------------------------
+
+    def fratelli(self):
+        """I volti evidenziati ora: gli ALTRI dello stesso frame."""
+        return list(self._fratelli)
+
+    def _volto_corrente(self):
+        index = self.griglia.currentIndex()
+        return index.data(RUOLO_PERCORSO) if index.isValid() else None
+
+    def _su_corrente_cambiato(self, _percorso):
+        self._aggiorna_fratelli()
+
+    def _aggiorna_fratelli(self):
+        """Chi e' fratello di chi si ricalcola a ogni cambio di volto
+        corrente, di cartella e di filtro: e' un giro di dizionario, non una
+        passata su disco, e tenerlo aggiornato costa meno che spiegare
+        perche' e' vecchio."""
+        percorso = self._volto_corrente()
+        self._fratelli = fratelli_mod.fratelli_di(
+            self._mappa_frame, self._abbinati, percorso) if percorso else []
+        self.griglia.imposta_fratelli(self._fratelli)
+        self._aggiorna_fascia_fratelli()
+
+    def _gruppo_corrente(self):
+        """Il gruppo intero, volto corrente compreso, e il nome del frame."""
+        percorso = self._volto_corrente()
+        nome = fratelli_mod.nome_frame_di(self._abbinati, percorso) if percorso else None
+        if nome is None:
+            return [], None
+        return fratelli_mod.percorsi_del_frame(self._mappa_frame, nome), nome
+
+    def _gruppo_visibile_corrente(self):
+        """Il gruppo ristretto a cio' che il filtro corrente lascia sulla
+        griglia: con un filtro acceso la striscia puo' segnare solo righe
+        VISIBILI, quindi contatore e frecce devono contare e camminare lo
+        stesso sottoinsieme -- un fratello nascosto non deve ne' pesare sul
+        conteggio ne' essere raggiungibile in silenzio da una freccia.
+        Senza filtro coincide con `_gruppo_corrente`: ogni membro del
+        gruppo e' visibile."""
+        gruppo, nome = self._gruppo_corrente()
+        visibili = set(self.modello.percorsi_visibili())
+        return [p for p in gruppo if p in visibili], nome
+
+    def _aggiorna_fascia_fratelli(self):
+        gruppo, nome = self._gruppo_visibile_corrente()
+        mostra = len(gruppo) > 1 and self._frame_filtrato is None
+        self.fascia_fratelli.setVisible(mostra)
+        self.striscia.setVisible(mostra)
+        if not mostra:
+            self.striscia.imposta(0, [])
+            return
+        corrente = self._volto_corrente()
+        posizione = gruppo.index(corrente) + 1 if corrente in gruppo else 1
+        self.etichetta_fratelli.setText(
+            testi.faceset_sibling_counter(posizione, len(gruppo), nome))
+        self.striscia.imposta(self.modello.rowCount(),
+                              self.modello.righe_di(gruppo))
+        self._aggiorna_banda()
+
+    def _aggiorna_banda(self):
+        """La porzione a schermo, letta dalla vista e non calcolata: con
+        celle a dimensione uniforme `indexAt` sui due angoli e' la risposta
+        esatta, e non va rifatta quando cambia lo zoom."""
+        viewport = self.griglia.viewport().rect()
+        prima = self.griglia.indexAt(viewport.topLeft())
+        ultima = self.griglia.indexAt(viewport.bottomLeft())
+        if not prima.isValid():
+            return
+        fine = ultima.row() if ultima.isValid() else self.modello.rowCount() - 1
+        self.striscia.imposta_banda(prima.row(), fine)
+
+    def vai_al_fratello(self, passo):
+        """Rende corrente il fratello precedente o successivo dentro il
+        gruppo VISIBILE, e ce lo porta. Non esce dal gruppo: agli estremi
+        non fa niente, invece di saltare a un volto di un altro frame -- e
+        con un filtro acceso non salta nemmeno su un fratello che il
+        filtro nasconde, o "non farebbe niente in silenzio" su di lui."""
+        gruppo, _nome = self._gruppo_visibile_corrente()
+        corrente = self._volto_corrente()
+        if corrente not in gruppo:
+            return
+        i = gruppo.index(corrente) + passo
+        if not (0 <= i < len(gruppo)):
+            return
+        self._porta_a(gruppo[i])
+
+    def _su_tacca_scelta(self, riga):
+        percorsi = self.modello.percorsi_visibili()
+        if 0 <= riga < len(percorsi):
+            self._porta_a(percorsi[riga])
+
+    def _porta_a(self, percorso):
+        righe = self.modello.righe_di([percorso])
+        if not righe:
+            return
+        index = self.modello.index(righe[0], 0)
+        self.griglia.setCurrentIndex(index)
+        self.griglia.scrollTo(index)
 
     # -- cosa e' permesso ora ------------------------------------------------
 
@@ -730,16 +1028,33 @@ class PaginaCuraFaceset(QWidget):
 
     def _su_volto_aperto(self, percorso):
         if self._cliente is None:
-            from gui.faceset.dettaglio import ClienteDettaglio, FinestraDettaglio
+            from gui.dettaglio.finestra import FinestraDettaglio
+            from gui.faceset.dettaglio import ClienteDettaglio
+            # Il client PRIMA della finestra, e passato a lei: costruirne
+            # un secondo vorrebbe dire un secondo processo figlio che
+            # importa torch mentre il primo e' vivo.
             self._cliente = ClienteDettaglio(self._workdir_dettaglio())
-            self._finestra_dettaglio = FinestraDettaglio(self._workdir_dettaglio())
-            self._cliente.pronto.connect(self._su_dettaglio_pronto)
+            self._finestra_dettaglio = FinestraDettaglio(
+                self._workdir_dettaglio(), cliente=self._cliente)
+            # `pronto` NON si collega qui: la finestra ci si e' gia'
+            # collegata da se' alla costruzione, e un secondo ascoltatore
+            # che richiama `mostra` raddoppia il giro dei fratelli --
+            # sincrono, e ogni giro rilegge dal disco i dati DFL di tutti.
             self._cliente.fallito.connect(self._su_dettaglio_fallito)
         self._finestra_dettaglio.imposta_ordine(self.modello.percorsi_visibili())
-        self._finestra_dettaglio.mostra(percorso, None)
+        # I fotogrammi stanno un livello sopra la cartella che si guarda: si
+        # lavora su `aligned`, `aligned_resized` o `aligned_enhanced`. Si
+        # passa anche se non esiste -- chi decide se la modifica e'
+        # possibile e' la finestra, in un posto solo.
+        self._finestra_dettaglio.imposta_frame_dir(self._cartella.parent)
         self._finestra_dettaglio.show()
         self._finestra_dettaglio.raise_()
         self._finestra_dettaglio.activateWindow()
+        # Il cambio di volto sta tutto dentro `apri_volto`: la domanda
+        # sulle modifiche vive, il disegno e la richiesta al servizio. Da
+        # qui si disegnava e si chiedeva in due passi, e la domanda non la
+        # faceva nessuno. La finestra si mostra comunque: se rifiuta, e'
+        # proprio quella che tiene il lavoro appena salvato dall'utente.
         # L'attesa e' sincrona (il client blocca sul primo scambio col
         # servizio, fino a 6 s per l'import al primo doppio click della
         # sessione): il cursore a clessidra e' l'unico modo di dire
@@ -747,15 +1062,35 @@ class PaginaCuraFaceset(QWidget):
         # perche' `apri()` emette i suoi segnali in modo sincrono --
         # un gestore agganciato a `pronto`/`fallito` che sollevasse
         # lascerebbe altrimenti il cursore a clessidra per sempre.
+        # Il volto che la finestra mostra ORA: e' li' che la griglia deve
+        # tornare se l'abbandono viene rifiutato.
+        rimasto = self._finestra_dettaglio.percorso()
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            self._cliente.apri(percorso)
+            aperto = self._finestra_dettaglio.apri_volto(percorso)
         finally:
             QApplication.restoreOverrideCursor()
+        if not aperto and rimasto is not None:
+            # Qt sposta `currentIndex` gia' sul mousePress, PRIMA che
+            # `doubleClicked` parta: senza questo la griglia evidenzierebbe
+            # il volto B -- e ne mostrerebbe i fratelli -- mentre la
+            # finestra mostra A. La striscia della finestra si difende gia'
+            # da se', dentro `apri_volto`.
+            self._porta_a(rimasto)
 
-    def _su_dettaglio_pronto(self, dati):
-        if self._finestra_dettaglio is not None:
-            self._finestra_dettaglio.mostra(self._finestra_dettaglio.percorso(), dati)
+    def _su_dettaglio_fallito(self, motivo, codice=None):
+        """Il guasto del servizio, detto in inglese come tutto il resto.
 
-    def _su_dettaglio_fallito(self, motivo):
-        self.etichetta_stato.setText(testi.FACESET_DETAIL_NO_DFL)
+        Qui si scriveva «questo file non porta dati DFL» per OGNI guasto --
+        un `.npy` che manca, il fotogramma assente, il servizio morto per
+        inattivita' -- cioe' una diagnosi falsa su un file sano, e la
+        reazione naturale a quella frase e' cancellare il volto. Poi si e'
+        mostrato il motivo del servizio tale e quale, che quella diagnosi
+        la corregge ma e' italiano d'implementazione dentro una finestra
+        inglese. La frase la sceglie il CODICE che il guasto porta con
+        se'; il motivo resta il ripiego per i guasti senza codice.
+
+        Stessa chiamata della finestra, che ascolta lo stesso segnale: una
+        diagnosi sola, non due che si contraddicono.
+        """
+        self.etichetta_stato.setText(testi.dettaglio_guasto(codice, motivo))
