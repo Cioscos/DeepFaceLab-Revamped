@@ -161,8 +161,33 @@ class ClienteDettaglio(QObject):
         timer.timeout.connect(lambda: self._su_timeout(id_))
         timer.start(TIMEOUT_MS)
         self._timer_di[id_] = timer
-        self._invia_al_processo(riga)
+        try:
+            self._invia_al_processo(riga)
+        except Exception as e:
+            # L'avvio del processo sta a VALLE della promessa in cima a
+            # questo docstring, ed e' l'unico pezzo del giro che puo'
+            # ancora sollevare: `comando_servizio` su un modulo `avvio`
+            # non configurato, un eseguibile che non c'e'. Risalendo,
+            # l'eccezione arrivava dentro lo slot Qt del chiamante --
+            # per PyQt5 un `qFatal`, cioe' la finestra che sparisce.
+            # Nessun codice del catalogo descrive un servizio che non
+            # parte: si emette col ripiego generico, che mostra comunque
+            # il motivo.
+            self._dimentica_richiesta(id_)
+            self.fallito.emit(e, None)
+            return None
         return id_
+
+    def _dimentica_richiesta(self, id_):
+        """Toglie di mezzo una richiesta che non e' mai partita: senza,
+        il suo timer scadrebbe fra TIMEOUT_MS annunciando un secondo
+        guasto -- «servizio muto» -- per una domanda che nessuno ha mai
+        fatto."""
+        timer = self._timer_di.pop(id_, None)
+        if timer is not None:
+            timer.stop()
+            timer.deleteLater()
+        self._richieste.pop(id_, None)
 
     def _chiedi_sincrono(self, riga, id_, op_attesa, segnale):
         """Il ramo del `trasporto` iniettato: risponde SUBITO, nello stesso

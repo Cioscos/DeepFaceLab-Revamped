@@ -414,6 +414,20 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(testi.WINDOW_TITLE)
         self._python_exe = python_exe
         self._dfl_root = Path(dfl_root)
+        # I due servizi in sottoprocesso (dettaglio del volto, estrazione
+        # manuale) tengono interprete e radice come stato di MODULO, e li
+        # leggono al primo scambio -- che non e' detto avvenga sulla pagina
+        # che li ha configurati: la pagina di estrazione chiede i volti al
+        # servizio di dettaglio, che vive sotto gui/faceset/. Configurarli
+        # qui, dove i due dati esistono e prima che qualunque pagina si
+        # apra, toglie di mezzo l'ordine di apertura: appesa alla
+        # costruzione della pagina, la spunta dei landmark su «Extraction»
+        # aperta per prima sollevava RuntimeError dentro uno slot Qt, e la
+        # finestra moriva.
+        from gui.faceset import avvio as avvio_faceset
+        from gui.estrazione import avvio as avvio_estrazione
+        avvio_faceset.configura(self._python_exe, self._dfl_root)
+        avvio_estrazione.configura(self._python_exe, self._dfl_root)
         self.archivio = ArchivioProgetti(radice_progetti(self._dfl_root))
         self.workspace = Path(workspace) if workspace is not None else self._workspace_iniziale()
         if settings is None:
@@ -1399,9 +1413,7 @@ class MainWindow(QMainWindow):
         rifiuto stesso.
         """
         if self._pagina_faceset is None:
-            from gui.faceset import avvio
             from gui.faceset.pagina import PaginaCuraFaceset
-            avvio.configura(self._python_exe, self._dfl_root)
             self._pagina_faceset = PaginaCuraFaceset(
                 self._dfl_root.parent / "_e", self._settings)
             # Prima del workspace: e' il gestore a dire quali azioni sono
@@ -1432,9 +1444,7 @@ class MainWindow(QMainWindow):
         """La pagina, senza portarla in primo piano. Stessa ragione di
         `_costruisci_pagina_faceset`."""
         if self._pagina_estrazione is None:
-            from gui.estrazione import avvio
             from gui.estrazione.pagina import PaginaEstrazione
-            avvio.configura(self._python_exe, self._dfl_root)
             self._pagina_estrazione = PaginaEstrazione(self._dfl_root.parent / "_e")
             self._pagina_estrazione.imposta_job_manager(self.job_manager)
             self._pagina_estrazione.apri(self.workspace, "src")
