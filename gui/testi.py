@@ -734,6 +734,41 @@ def action_not_applicable(etichetta, nome_cartella):
         etichetta, nome_cartella)
 
 
+def action_needs_unpack(etichetta):
+    """Perche' un'operazione e' grigia su una cartella impacchettata.
+
+    Dice il rimedio per nome ed esteso -- il menu in cui sta e la voce da
+    cliccare -- perche' e' la stessa frase che l'utente legge nel
+    suggerimento della voce grigia e nel messaggio al centro della griglia:
+    chi arriva dall'uno o dall'altro deve trovare la stessa istruzione.
+    """
+    return ("%s cannot run while the faces are packed into %s. "
+            "Unpack them first: Tools ▸ %s." % (etichetta, PACCHETTO_NOME,
+                                                FACESET_UNPACK_LABEL))
+
+
+# Il nome del file e l'etichetta della voce di menu vivono qui perche' due
+# testi diversi (il suggerimento e il messaggio della griglia) li nominano
+# entrambi: scritti due volte, si sarebbero riformulati una volta sola.
+PACCHETTO_NOME = "faceset.pak"
+FACESET_UNPACK_LABEL = "Faceset unpack"
+
+FACESET_PACKED = ("The faces in this folder are packed into %s, so there is "
+                  "nothing to show.\n\n"
+                  "Unpack them to see them again: Tools ▸ %s."
+                  % (PACCHETTO_NOME, FACESET_UNPACK_LABEL))
+
+
+def faceset_cartella_vuota(nome_cartella):
+    """L'altro vuoto: la cartella non ha volti, e non e' colpa del
+    pacchetto. Due vuoti diversi, due frasi diverse -- la stessa scelta
+    gia' fatta da `estrazione_cartella_vuota`."""
+    return "No faces in %s yet." % nome_cartella
+
+
+FACESET_FILTRO_VUOTO = "No faces match this filter."
+
+
 def job_holds(nome_passo, artefatto):
     """Perche' un'azione della pagina e' grigia: chi sta scrivendo.
 

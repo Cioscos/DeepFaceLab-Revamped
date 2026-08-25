@@ -74,6 +74,21 @@ def _ha_il_passo(operazione, dataset):
     return not (dataset == "dst" and not operazione.passo_dst)
 
 
+def _testo_del_motivo(motivo, etichetta, cartella):
+    """Il codice che `azioni.applicabile` restituisce, tradotto nella frase
+    che l'utente legge nel suggerimento della voce grigia.
+
+    Il codice viaggia, la frase si sceglie qui: e' la stessa divisione di
+    mainscripts/DettaglioGuasti.py e gui/testi.py, e serve a che nessuno
+    riconosca un rifiuto dal suo testo.
+    """
+    if not motivo:
+        return ""
+    if motivo == azioni_mod.MOTIVO_IMPACCHETTATA:
+        return testi.action_needs_unpack(etichetta)
+    return testi.action_not_applicable(etichetta, cartella.name)
+
+
 class PaginaCuraFaceset(QWidget):
     richiesta_frame_originale = pyqtSignal(str, str)
 
@@ -85,6 +100,12 @@ class PaginaCuraFaceset(QWidget):
         self._cartella = None
         self._indice = indice_mod.Indice([])
         self._abbinati = {}
+        # «Il pacchetto c'e' e non c'e' nessun volto sciolto»: non e' una
+        # proprieta' del percorso ma di cio' che la cartella contiene
+        # ADESSO, quindi si ricalcola a ogni lettura invece di dedurla dal
+        # nome. Fuori da `ricalcola` resta False: senza cartella non c'e'
+        # nessun pacchetto da rispettare.
+        self._impacchettata = False
         self._mappa_frame = {}
         self._fratelli = []
         self._stato = indice_mod.STATO_ASSENTE
@@ -138,6 +159,11 @@ class PaginaCuraFaceset(QWidget):
         self.bottone_strumenti = QPushButton(testi.FACESET_TOOLS)
         self.bottone_strumenti.setToolTip(testi.FACESET_TOOLS_TIP)
         self.menu_strumenti = QMenu(self.bottone_strumenti)
+        # Senza questo Qt non mostra il suggerimento delle voci di un menu,
+        # e il motivo del rifiuto -- scritto, tradotto e messo li' -- non
+        # arriva a nessuno: restano voci grigie e basta. Lo stesso che fa
+        # gia' il menu del tasto destro (`costruisci_menu_volto`).
+        self.menu_strumenti.setToolTipsVisible(True)
         self.bottone_strumenti.setMenu(self.menu_strumenti)
         self.bottone_cancella = QPushButton(testi.FACESET_DELETE)
         self.bottone_cancella.setToolTip(testi.FACESET_DELETE_TIP)
@@ -304,6 +330,7 @@ class PaginaCuraFaceset(QWidget):
             self._cartella = None
             self._ultima_mossa = None
             self._abbinati = {}
+            self._impacchettata = False
             self._fratelli = []
             self._mappa_frame = {}
             self._frame_filtrato = None
@@ -318,6 +345,7 @@ class PaginaCuraFaceset(QWidget):
             # gruppo del dataset precedente: `_abbinati` e' gia' vuoto, ma
             # nessuno lo aveva ancora detto alla fascia.
             self._aggiorna_fascia_fratelli()
+            self._aggiorna_messaggio_vuoto()
             self.etichetta_stato.setText(testi.faceset_index_state(self._stato, 0))
             self._rigenera_comandi()
 
@@ -409,6 +437,11 @@ class PaginaCuraFaceset(QWidget):
     def ricalcola(self):
         letti = self._elenco()
         percorsi = [p for p, _dimensione, _mtime in letti]
+        # Un solo `is_file()` per ricalcolo, e solo quando la cartella non
+        # elenca volti: e' l'unico caso in cui la risposta cambia qualcosa,
+        # e la lettura della cartella e' gia' stata pagata sopra.
+        self._impacchettata = (not percorsi
+                               and azioni_mod.ha_pacchetto(self._cartella))
         cartella_cache = cache_mod.percorso_cache(self._radice_e, self._cartella)
         self._indice = indice_mod.Indice(indice_mod.leggi(cartella_cache))
         self._abbinati, mancanti = self._indice.abbina_letti(letti)
@@ -486,6 +519,27 @@ class PaginaCuraFaceset(QWidget):
         else:
             self.pastiglia_filtro.hide()
 
+    def _aggiorna_messaggio_vuoto(self):
+        """Tre vuoti diversi, tre frasi diverse.
+
+        Il pacchetto manda a Tools ▸ Faceset unpack, la cartella senza
+        volti no -- li' non c'e' niente da disfare -- e un filtro senza
+        risultati nemmeno: i volti ci sono, e la pastiglia accanto alla
+        heatmap dice gia' quanti ne nasconde. Con righe da mostrare il
+        messaggio si spegne, perche' la griglia parla da se'.
+        """
+        if self._cartella is None:
+            self.griglia.imposta_messaggio(testi.FACESET_NO_FOLDER)
+        elif self.modello.rowCount():
+            self.griglia.imposta_messaggio("")
+        elif self._impacchettata:
+            self.griglia.imposta_messaggio(testi.FACESET_PACKED)
+        elif self.modello.totali():
+            self.griglia.imposta_messaggio(testi.FACESET_FILTRO_VUOTO)
+        else:
+            self.griglia.imposta_messaggio(
+                testi.faceset_cartella_vuota(self._cartella.name))
+
     def _riapplica_filtro(self):
         """I bin accesi restano, i percorsi si rifanno.
 
@@ -507,10 +561,15 @@ class PaginaCuraFaceset(QWidget):
         if self._frame_filtrato is not None:
             self.modello.imposta_filtro(
                 fratelli_mod.percorsi_del_frame(self._mappa_frame, self._frame_filtrato))
-            return
-        scelti = bin_di_percorsi(self._abbinati, self._bin_accesi,
-                                 self.heatmap.bins())
-        self.modello.imposta_filtro(scelti)
+        else:
+            scelti = bin_di_percorsi(self._abbinati, self._bin_accesi,
+                                     self.heatmap.bins())
+            self.modello.imposta_filtro(scelti)
+        # Il passaggio obbligato: ci passano `ricalcola` e tutti e tre i
+        # cammini del filtro, e il messaggio al centro della griglia dipende
+        # da entrambi -- da cosa c'e' nella cartella e da quanto il filtro ne
+        # lascia vedere.
+        self._aggiorna_messaggio_vuoto()
 
     def _su_filtro_bin(self, accesi):
         # Un filtro alla volta: accendere un bin esce dal filtro frame.
@@ -808,11 +867,10 @@ class PaginaCuraFaceset(QWidget):
             if occupata is not None:
                 disponibili[op.chiave] = (False, testi.job_holds(occupata[0], occupata[1]))
                 continue
-            ammessa, _motivo = azioni_mod.applicabile(op, self._cartella)
-            disponibili[op.chiave] = (
-                ammessa,
-                "" if ammessa else testi.action_not_applicable(op.etichetta,
-                                                               self._cartella.name))
+            ammessa, motivo = azioni_mod.applicabile(op, self._cartella,
+                                                     self._impacchettata)
+            disponibili[op.chiave] = (ammessa, _testo_del_motivo(
+                motivo, op.etichetta, self._cartella))
         return disponibili
 
     def cancellazione_disponibile(self):
@@ -900,8 +958,19 @@ class PaginaCuraFaceset(QWidget):
 
     def _chiedi_risposte(self, passo):
         """Il form del catalogo in un dialogo. La semantica _touched resta:
-        solo i campi toccati vengono spediti (l'invariante della voce 3.14)."""
-        from gui.faceset.dialogo import DialogoOperazione
+        solo i campi toccati vengono spediti (l'invariante della voce 3.14).
+
+        Un passo senza nessun campo non apre niente e torna `{}`: cinque
+        dei diciassette (unpack e recover original filename, coi gemelli
+        dst) sono PROCESS_BATCH senza `fields`, e su quelli il dialogo
+        nasceva vuoto -- una finestra con dentro solo Ok e Cancel, che non
+        chiede niente e non spiega niente. `{}` e non `None`: annullato e
+        «niente da chiedere» sono due esiti diversi, e solo il primo deve
+        fermare il lancio.
+        """
+        from gui.faceset.dialogo import DialogoOperazione, serve_il_dialogo
+        if not serve_il_dialogo(passo):
+            return {}
         dialogo = DialogoOperazione(passo, self)
         if not dialogo.exec_():
             return None

@@ -9,7 +9,7 @@ sfondo, immagine, cornice di selezione.
 from collections import OrderedDict
 
 from PyQt5.QtCore import QRect, QSize, Qt, pyqtSignal
-from PyQt5.QtGui import QColor, QImage, QPen
+from PyQt5.QtGui import QColor, QImage, QPainter, QPen
 from PyQt5.QtWidgets import (QAbstractItemView, QListView, QStyle,
                              QStyledItemDelegate)
 
@@ -174,9 +174,39 @@ class Griglia(QListView):
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.doubleClicked.connect(self._su_doppio_click)
         self._fratelli = frozenset()
+        self._messaggio = ""
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._su_menu_richiesto)
         self._aggiorna_griglia()
+
+    def imposta_messaggio(self, testo):
+        """Il testo dipinto al centro quando la griglia e' vuota.
+
+        Stringa vuota per spegnerlo. Gemello di `Tela.imposta_messaggio`
+        della pagina di estrazione, e per la stessa ragione: una griglia
+        vuota senza una riga che dica perche' e' indistinguibile da una
+        pagina rotta. Non ha un gemello `messaggio()` -- chi lo imposta e'
+        la pagina, che sa gia' cosa gli ha dato.
+        """
+        testo = str(testo or "")
+        if testo == self._messaggio:
+            return
+        self._messaggio = testo
+        self.viewport().update()
+
+    def paintEvent(self, evento):
+        # Prima la vista, poi il messaggio: con righe da mostrare il
+        # messaggio non c'e' (lo spegne la pagina), e disegnarlo sopra i
+        # volti sarebbe peggio del vuoto che rimpiazza.
+        super().paintEvent(evento)
+        modello = self.model()
+        if not self._messaggio or (modello is not None and modello.rowCount()):
+            return
+        pittore = QPainter(self.viewport())
+        pittore.setPen(QPen(self.palette().windowText().color()))
+        pittore.drawText(self.viewport().rect(),
+                         Qt.AlignCenter | Qt.TextWordWrap, self._messaggio)
+        pittore.end()
 
     def lato(self):
         return self._lato

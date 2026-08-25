@@ -15,6 +15,24 @@ from PyQt5.QtWidgets import QDialog, QDialogButtonBox, QScrollArea, QVBoxLayout
 from gui.forms import StepForm
 
 
+def serve_il_dialogo(passo):
+    """Se questo passo ha qualcosa da chiedere.
+
+    Le tre righe che StepForm puo' costruire sono i campi, il selettore di
+    file di `passthrough` e il nome del modello di `needs_model_name`:
+    senza nessuna delle tre il dialogo nasce con dentro solo Ok e Cancel,
+    una finestra che non chiede niente e che l'utente deve confermare per
+    far partire cio' che aveva gia' cliccato. Cinque dei diciassette passi
+    di questa famiglia sono cosi' (unpack e recover original filename, coi
+    gemelli dst).
+
+    Si guarda il DATO del passo, non `process`: un PROCESS_PROMPT senza
+    campi resterebbe comunque un dialogo vuoto, ed e' il form a decidere
+    cosa disegna.
+    """
+    return bool(passo.fields or passo.passthrough or passo.needs_model_name)
+
+
 class DialogoOperazione(QDialog):
     def __init__(self, passo, parent=None):
         super().__init__(parent)

@@ -106,6 +106,28 @@ OPERAZIONI = (
 # da cui non ha impacchettato niente.
 BASI_FACESET = ("aligned", "aligned_resized", "aligned_enhanced")
 
+# Il nome che samplelib/PackedFaceset.py scrive (`packed_faceset_filename`).
+# Ripetuto qui e non importato: `gui/` non importa MAI samplelib -- parla coi
+# verbi di main.py in sottoprocesso e basta. La guardia in tests_gui/ legge la
+# costante dal sorgente di samplelib e la confronta con questa, cosi' la
+# ripetizione non puo' divergere in silenzio.
+NOME_PACCHETTO = "faceset.pak"
+
+# I motivi del rifiuto sono CODICI, non frasi: la frase inglese la sceglie
+# gui/testi.py. Stessa scelta di mainscripts/DettaglioGuasti.py, e per la
+# stessa ragione -- riconoscere un rifiuto dal testo si romperebbe in
+# silenzio alla prima riformulazione.
+MOTIVO_NON_ALLINEATA = "aligned-only"
+MOTIVO_IMPACCHETTATA = "packed"
+
+# L'unica operazione che ha ancora senso su una cartella impacchettata: e'
+# quella che la disfa. Tutte le altre girerebbero su zero file -- pack
+# chiederebbe di sovrascrivere il .pak con niente, sort e resize
+# concluderebbero in un attimo senza toccare un volto -- e un lavoro che
+# finisce bene senza aver fatto niente e' peggio di un'azione grigia con la
+# sua ragione scritta accanto.
+CHIAVE_UNPACK = "unpack"
+
 
 def _senza_input_dir(args):
     """Gli argomenti tolto --input-dir e il suo valore, per il confronto
@@ -135,8 +157,30 @@ def e_allineata(cartella):
     return base in BASI_FACESET
 
 
-def applicabile(operazione, cartella):
-    """(ammessa, motivo). Il motivo e' vuoto quando e' ammessa."""
+def ha_pacchetto(cartella):
+    """Se la cartella porta un `faceset.pak`.
+
+    Solo il disco, nessun contenuto letto: aprire il pacchetto per contare
+    cosa c'e' dentro vorrebbe dire caricare samplelib, che qui non si puo'
+    e non si deve.
+    """
+    if cartella is None:
+        return False
+    return (Path(cartella) / NOME_PACCHETTO).is_file()
+
+
+def applicabile(operazione, cartella, impacchettata=False):
+    """(ammessa, motivo). Il motivo e' vuoto quando e' ammessa.
+
+    `impacchettata` non e' `ha_pacchetto(cartella)`: e' «il pacchetto c'e' E
+    non c'e' nessun volto sciolto». Chi risponde «no» a «Delete original
+    files?» tiene i due insiemi affiancati, e li' la griglia mostra i volti e
+    ogni operazione ha ancora un senso -- rifiutarle sarebbe un falso
+    positivo. Il calcolo lo fa la pagina, che la cartella l'ha gia' letta una
+    volta e non deve rileggerla.
+    """
     if operazione.solo_allineate and not e_allineata(cartella):
-        return False, "aligned-only"
+        return False, MOTIVO_NON_ALLINEATA
+    if impacchettata and operazione.chiave != CHIAVE_UNPACK:
+        return False, MOTIVO_IMPACCHETTATA
     return True, ""
