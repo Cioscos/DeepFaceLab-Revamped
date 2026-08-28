@@ -308,7 +308,7 @@ def saehd_src_dst_loss(target_src, target_srcm, target_srcm_em, pred_src_src, pr
     return src_loss, dst_loss, target_srcm_blur
 
 
-def saehd_train_step(nets, opt, trainable_weights, batch, cfg, gpu_count):
+def saehd_train_step(nets, opt, trainable_weights, batch, cfg, gpu_count, loss_extra=None):
     """
     Il primo dei tre passi di onTrainOneIter: forward, loss, gradienti, update
     delle reti src_dst. Ritorna (src_loss, dst_loss), le due loss per campione
@@ -323,6 +323,10 @@ def saehd_train_step(nets, opt, trainable_weights, batch, cfg, gpu_count):
     I due discriminatori entrano qui solo in *avanti*: i gradienti si prendono
     sui soli trainable_weights, e i pesi di `code_discriminator` e `D_src` li
     aggiornano i due passi seguenti, ciascuno col proprio ottimizzatore.
+
+    `loss_extra`, se dato, riceve i pezzi del passo e ritorna un termine per
+    campione sommato a G_loss: e' l'innesto di Model_H1, e con None il passo
+    e' quello di sempre.
     """
     warped_src, target_src, target_srcm, target_srcm_em, \
     warped_dst, target_dst, target_dstm, target_dstm_em = batch
@@ -345,6 +349,14 @@ def saehd_train_step(nets, opt, trainable_weights, batch, cfg, gpu_count):
         cfg['face_style_power'], cfg['bg_style_power'], cfg['pretrain'])
 
     G_loss = src_loss + dst_loss
+
+    if loss_extra is not None:
+        G_loss = G_loss + loss_extra(dict(
+            pred_src_src=pred_src_src, pred_dst_dst=pred_dst_dst,
+            pred_src_dst=pred_src_dst, pred_src_dstm=pred_src_dstm,
+            target_src=target_src, target_dst=target_dst,
+            target_srcm=target_srcm, target_dstm=target_dstm,
+            target_srcm_blur=target_srcm_blur))
 
     if cfg['true_face_power'] != 0:                                   # Model.py:502-508
         src_code_d = nets['code_discriminator']( src_code )

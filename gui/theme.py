@@ -192,6 +192,15 @@ QCheckBox::indicator {
 QCheckBox:disabled {
     color: %(testo_lieve)s;
 }
+/* L'etichetta di una riga di form spenta da `enabled_if`: la tavolozza
+   assegna WindowText a tutti i gruppi di colore insieme, quindi un QLabel
+   disabilitato non ha mai avuto un colore suo. Misurato il 2026-08-28 sul
+   form di «6) train H2» con un sorgente d'innesto scritto: i sei controlli
+   delle dimensioni si smorzavano, le sei etichette accanto restavano
+   accese. Vale per ogni riga condizionata di ogni form. */
+QLabel:disabled {
+    color: %(testo_lieve)s;
+}
 QListWidget::item {
     padding: 4px 6px;
 }

@@ -1,8 +1,8 @@
-"""Family fusione: the three "7) merge *" steps (AMP, SAEHD, SAEHDX).
+"""Family fusione: the five "7) merge *" steps (AMP, SAEHD, SAEHDX, H1, H2).
 
-All three are `needs_model_name=True`, same reasoning as `training.py`: the
+All five are `needs_model_name=True`, same reasoning as `training.py`: the
 "choose one of saved models" block of `models/ModelBase.py` is shared,
-unmodified code, always active (none of the three command lines passes
+unmodified code, always active (none of the five command lines passes
 `--force-model-name`), and the GUI supplies the name as `--force-model-name`
 instead. The GPU-index prompt right after it stays a field.
 
@@ -73,13 +73,21 @@ left by a previous interactive session that exited with Esc,
 filesystem part is not, the same split already used for "Choose image for
 the preview history" in `training.py`.
 
-AMP alone asks "Morph factor" (`models/Model_AMP/Model.py:1249-1250`, no
-trailing period, unlike the same-named option asked and persisted during
-training) between the GPU-index prompt and "Use interactive merger?": a
-local blend factor for this merge session only, never written to
-`self.options`, always defaulting to 1.0 regardless of what was chosen
-during training. `Model_SAEHD.get_MergerConfig` (`Model_SAEHD/Model.py:
-1264-1266`) and the inherited-unmodified `Model_SAEHDX` never ask it.
+AMP **and H2** ask "Morph factor" (`models/Model_AMP/Model.py:1249-1250`,
+`models/Model_H2/Model.py`: same text, same 1.0 default, not persisted)
+between the GPU-index prompt and "Use interactive merger?": a local blend
+factor for this merge session only, never written to `self.options`, always
+defaulting to 1.0 regardless of what was chosen during training.
+`Model_SAEHD.get_MergerConfig` (`Model_SAEHD/Model.py:1264-1266`) and the
+inherited-unmodified `Model_SAEHDX` never ask it -- and neither does H1,
+which inherits the same unmodified method through `Model_SAEHDX`.
+
+**H1's fields are `Model_SAEHDX`'s, unchanged**: `H1Model` never overrides
+`get_MergerConfig`, so a merge session sees exactly what "7) merge SAEHDX"
+does, and the seven supervisor prompts of training never appear here --
+`ModelBase.ask_override` is false for an already-trained model constructed
+with `is_training=False`, the same structural argument already made above
+for SAEHD/SAEHDX/AMP's own first-run batteries.
 """
 from gui.catalog.model import (
     FIELD_BOOL, FIELD_CHOICE, FIELD_FLOAT, FIELD_INT, FIELD_TEXT, KIND_MAIN,
@@ -397,6 +405,50 @@ STEPS = (
                 "--aligned-dir", "{WORKSPACE}/data_dst/aligned",
                 "--model-dir", "{WORKSPACE}/model",
                 "--model", "AMP",
+            )),
+        ),
+        fields=_AMP_MERGE_FIELDS,
+        sections=_SEZIONI_MERGE_AMP,
+        consumes=("frame_dst", "faceset_dst", "modello"),
+        produces=("merged", "merged_mask"),
+        needs_model_name=True,
+    ),
+    StepDef(
+        name="7) merge H1",
+        summary="Pastes the trained H1 face back onto every frame -- merges through SAEHD's path, the supervisors play no part here.",
+        family="fusione",
+        kind=KIND_MAIN,
+        process=PROCESS_SESSION,
+        invocations=(
+            Invocation(verb=("merge",), args=(
+                "--input-dir", "{WORKSPACE}/data_dst",
+                "--output-dir", "{WORKSPACE}/data_dst/merged",
+                "--output-mask-dir", "{WORKSPACE}/data_dst/merged_mask",
+                "--aligned-dir", "{WORKSPACE}/data_dst/aligned",
+                "--model-dir", "{WORKSPACE}/model",
+                "--model", "H1",
+            )),
+        ),
+        fields=_SAEHD_MERGE_FIELDS,
+        sections=_SEZIONI_MERGE_SAEHD,
+        consumes=("frame_dst", "faceset_dst", "modello"),
+        produces=("merged", "merged_mask"),
+        needs_model_name=True,
+    ),
+    StepDef(
+        name="7) merge H2",
+        summary="Pastes the trained H2 face back onto every frame, with its own morph factor prompt: 1 = the src identity vector.",
+        family="fusione",
+        kind=KIND_MAIN,
+        process=PROCESS_SESSION,
+        invocations=(
+            Invocation(verb=("merge",), args=(
+                "--input-dir", "{WORKSPACE}/data_dst",
+                "--output-dir", "{WORKSPACE}/data_dst/merged",
+                "--output-mask-dir", "{WORKSPACE}/data_dst/merged_mask",
+                "--aligned-dir", "{WORKSPACE}/data_dst/aligned",
+                "--model-dir", "{WORKSPACE}/model",
+                "--model", "H2",
             )),
         ),
         fields=_AMP_MERGE_FIELDS,

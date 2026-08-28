@@ -74,7 +74,11 @@ def condition_met(cond, values):
     else:
         op, key = "=", cond[:eq]
     rhs = cond[eq + 1:]
-    field_value = _norm(values.get(key))
+    raw = values.get(key)
+    # A blank text field yields None; a condition with an empty right-hand
+    # side ("key=" / "key!=") asks whether the field is empty, so None must
+    # read as "" here, not as the word "none".
+    field_value = "" if raw is None else _norm(raw)
     if op == "~=":
         return _norm(rhs) in field_value
     matches = field_value in {_norm(alt) for alt in rhs.split("|")}

@@ -1,9 +1,9 @@
-"""Family addestramento: the four "6) train *" steps (SAEHD, SAEHDX, AMP, AMP SRC-SRC).
+"""Family addestramento: the six "6) train *" steps (SAEHD, SAEHDX, AMP, AMP SRC-SRC, H1, H2).
 
-All four are `needs_model_name=True`: `models.ModelBase.__init__`'s "choose one
+All six are `needs_model_name=True`: `models.ModelBase.__init__`'s "choose one
 of saved models, or enter a name" block (prompt key `""`, and its
 "No saved models found..." sibling) is always active for these steps -- none
-of the four command lines passes `--force-model-name` -- but the GUI supplies
+of the six command lines passes `--force-model-name` -- but the GUI supplies
 the name as `--force-model-name` instead of driving that console block, the
 same treatment `export.py` gives the identical prompt shared with "6) export
 * as dfm". The GPU-index prompt right after it is a different story: it is
@@ -53,6 +53,29 @@ pretraining mode this model does not have).
 prompt that would use it are commented out in `Model_SAEHD/Model.py`
 (lines 612 and 651) -- the option has never been ported and the prompt never
 fires.
+
+**H1 is SAEHDX plus seven supervisor prompts, nothing removed.**
+`H1Model.on_initialize_options` calls `super().on_initialize_options()` first
+(`models/Model_H1/Model.py`), so "6) train H1" carries every SAEHDX field
+unchanged, then its own seven, all first-run-only. At zero power on all
+seven, H1 *is* SAEHDX -- same weight files, same `.dfm`.
+
+**H2 does not call `super().on_initialize_options()`: its prompt sequence is
+its own**, built from scratch rather than shared. No "AE architecture" (it is
+always liae-udt), no GAN/style/pretrain fields. The first two prompts are the
+graft: "Graft from model" is a free-text field, not a fixed-choice one --
+the list of valid sources is computed at runtime from the `*_data.dat` files
+already in the chosen model dir, which a design-time catalog cannot
+enumerate. A name that resolves to nothing stops the run with the list of
+what is actually there (`models/Model_H2/Model.py`), rather than silently
+falling back to "train from scratch" the way an answers-file `valid_list`
+would. With a graft source given, the six size fields (resolution, face
+type, the four dimension counts) are fixed by the source's own weights and
+never asked -- `enabled_if=("graft-from-model=",)` models exactly that:
+enabled only while the field above it is empty. The seven supervisor prompts
+are shared with H1's, textually, but not by default: H1 zeroes them, H2
+defaults to a recipe measured on a real run -- two distinct `FieldDef`s per
+prompt, since a catalog `FieldDef` carries one default.
 """
 from gui.catalog.model import (
     FIELD_BOOL, FIELD_CHOICE, FIELD_FLOAT, FIELD_INT, FIELD_TEXT, KIND_MAIN,
@@ -606,6 +629,162 @@ _SEZIONI_AMP = (
                      "enable-gradient-clipping")),
 )
 
+# ---- H1/H2: the supervisors ----------------------------------------------
+#
+# The same seven prompts in models/Model_H1/Model.py and models/Model_H2/
+# Model.py, with different defaults: H1 at zero *is* SAEHDX (its
+# definition); H2 defaults to a recipe measured on a real run. Distinct
+# FieldDefs where the default differs, shared ones where it does not.
+
+_HELP_ID_POWER = "Cosine loss between the AdaFace embedding of the swapped face and the mean embedding of the src faceset. 0 disables it. Turning any supervisor on downloads its weights on first use and switches CUDA graph capture off. Shown only on the first run."
+_ID_POWER_H1 = FieldDef(key="identity-power", option="id_power", label="Identity power", kind=FIELD_FLOAT,
+                        default=0.0, valid_range=(0.0, 10.0), help=_HELP_ID_POWER)
+_ID_POWER_H2 = FieldDef(key="identity-power", option="id_power", label="Identity power", kind=FIELD_FLOAT,
+                        default=2.0, valid_range=(0.0, 10.0),
+                        help=_HELP_ID_POWER + " 2.0 is the measured recipe for H2.")
+_HELP_IFSR = "L1 between AdaFace intermediate features of the swapped face and of the dst face: keeps pose, lighting and occlusions of dst. Alone it collapses the swap onto dst -- it is the companion of Identity power, not a lever of its own. 0 disables it. Shown only on the first run."
+_IFSR_POWER_H1 = FieldDef(key="ifsr-power", option="ifsr_power", label="IFSR power", kind=FIELD_FLOAT,
+                          default=0.0, valid_range=(0.0, 10.0), help=_HELP_IFSR)
+_IFSR_POWER_H2 = FieldDef(key="ifsr-power", option="ifsr_power", label="IFSR power", kind=FIELD_FLOAT,
+                          default=0.08, valid_range=(0.0, 10.0), help=_HELP_IFSR + " 0.08 is the measured recipe for H2.")
+_HELP_BLEED = "Penalizes the swap when its AdaFace embedding drifts toward the mean embedding of the dst faceset beyond a fixed cosine margin. 0 disables it. Shown only on the first run."
+_BLEED_POWER_H1 = FieldDef(key="bleed-power", option="bleed_power", label="Bleed power", kind=FIELD_FLOAT,
+                           default=0.0, valid_range=(0.0, 10.0), help=_HELP_BLEED)
+_BLEED_POWER_H2 = FieldDef(key="bleed-power", option="bleed_power", label="Bleed power", kind=FIELD_FLOAT,
+                           default=1.0, valid_range=(0.0, 10.0), help=_HELP_BLEED + " 1.0 is the measured recipe for H2.")
+_BLEED_PER_SAMPLE = FieldDef(key="bleed-per-sample", option="bleed_campione", label="Bleed per sample", kind=FIELD_BOOL,
+                             default=False,
+                             help="Bleed repels the swap from its own sample's dst embedding instead of the dst faceset mean. Only effective when Bleed power is not 0. Shown only on the first run.",
+                             enabled_if=("bleed-power!=0.0",))
+_DINO_POWER = FieldDef(key="dinov2-perceptual-power", option="dino_power", label="DINOv2 perceptual power", kind=FIELD_FLOAT,
+                       default=0.0, valid_range=(0.0, 10.0),
+                       help="L1 between DINOv2-S tokens of the masked reconstructions and their targets. 0 disables it. The most expensive supervisor per iteration. Shown only on the first run.")
+_HELP_DINO_STRIDE = "Applies the DINOv2 term every N iterations instead of every one, scaled by N so the average gradient is unchanged (lazy regularization). 1 disables the stride. Shown only if DINOv2 perceptual power is not 0, on the first run."
+_DINO_STRIDE_H1 = FieldDef(key="dinov2-stride", option="dino_ogni", label="DINOv2 stride", kind=FIELD_INT,
+                           default=1, valid_range=(1, 100), help=_HELP_DINO_STRIDE,
+                           enabled_if=("dinov2-perceptual-power!=0.0",))
+_DINO_STRIDE_H2 = FieldDef(key="dinov2-stride", option="dino_ogni", label="DINOv2 stride", kind=FIELD_INT,
+                           default=4, valid_range=(1, 100), help=_HELP_DINO_STRIDE + " 4 is the measured setting for H2.",
+                           enabled_if=("dinov2-perceptual-power!=0.0",))
+_FFL_POWER = FieldDef(key="focal-frequency-power", option="ffl_power", label="Focal frequency power", kind=FIELD_FLOAT,
+                      default=0.0, valid_range=(0.0, 10.0),
+                      help="Focal Frequency Loss on the masked reconstructions. 0 disables it. Shown only on the first run.")
+
+_SUPERVISORS_H1 = (_ID_POWER_H1, _IFSR_POWER_H1, _BLEED_POWER_H1, _BLEED_PER_SAMPLE, _DINO_POWER, _DINO_STRIDE_H1, _FFL_POWER)
+_SUPERVISORS_H2 = (_ID_POWER_H2, _IFSR_POWER_H2, _BLEED_POWER_H2, _BLEED_PER_SAMPLE, _DINO_POWER, _DINO_STRIDE_H2, _FFL_POWER)
+_CHIAVI_SUPERVISORS = ("identity-power", "ifsr-power", "bleed-power", "bleed-per-sample",
+                       "dinov2-perceptual-power", "dinov2-stride", "focal-frequency-power")
+
+# ---- H2-only fields --------------------------------------------------------
+
+_GRAFT = FieldDef(
+    key="graft-from-model",
+    option="innesto",   # models/Model_H2/Model.py, load_or_def_option('innesto', '')
+    label="Graft from model",
+    kind=FIELD_TEXT,
+    default="",
+    help="The name of a trained liae-udt SAEHD or SAEHDX model in this model dir (a pretrained RTM works), exactly as it appears in the Model name list: its encoder and decoder weights are copied at the first start, the identity vectors and the optimizer start from zero. The six size fields below are then fixed by those weights and not asked. Empty = train from scratch, never measured. A name that matches no such model stops the run and lists what is actually there. Shown only on the first run.",
+)
+
+_GRAFT_INTER = FieldDef(
+    key="copy-the-inter-from-the-source",
+    option="innesto_inter",
+    label="Copy the inter from the source",
+    kind=FIELD_BOOL,
+    default=False,
+    help="Warm inter: faster reconstruction at the start. Without supervisors it stops the identity vectors from separating (measured); with the supervisors on it is safe. Shown only with a graft source, on the first run.",
+    enabled_if=("graft-from-model!=",),
+)
+
+_IDENTITY_VECTORS = FieldDef(
+    key="identity-vectors",
+    option="identita",
+    label="Identity vectors",
+    kind=FIELD_CHOICE,
+    default="learned",
+    choices=("learned", "adaface"),
+    choice_help=(
+        "Two free vectors trained with the rest of the net. The measured choice: they carry identity on their own (morph margin 0.73).",
+        "The mean AdaFace embedding of each faceset, computed once at the first start and frozen. Measured: alone, the identity stays in the code, not in the vector.",
+    ),
+    help="Where the two identity vectors of the modulated decoder come from. Shown only on the first run.",
+)
+
+_MASK_TRUNK = FieldDef(
+    key="mask-reads-the-identity-modulated-trunk",
+    option="maschera_tronco",
+    label="Mask reads the identity-modulated trunk",
+    kind=FIELD_BOOL,
+    default=False,
+    help="Adds a zero-initialized 1x1 bridge from the identity-modulated trunk into the mask branch, so the mask can depend on the identity vector. Off: the mask depends on the code only, as in SAEHD. Fixed at the first start.",
+)
+
+_FISSATE_DAI_PESI = ("graft-from-model=",)     # enabled only while no graft source is written
+
+_RESOLUTION_H2 = FieldDef(
+    key="resolution", option="resolution", label="Resolution", kind=FIELD_INT,
+    default=224, valid_range=(64, 640),
+    help="More resolution requires more VRAM and time to train. H2 always uses the -t encoder and the -d output: the value is rounded to a multiple of 32. Fixed by the graft source when one is given. Shown only on the first run.",
+    enabled_if=_FISSATE_DAI_PESI,
+)
+_FACE_TYPE_H2 = FieldDef(
+    key="face-type", option="face_type", label="Face type", kind=FIELD_CHOICE,
+    default="wf", choices=_FACE_TYPE_SAEHD.choices, choice_help=_FACE_TYPE_SAEHD.choice_help,
+    help="Half / mid face / full face / whole face / head. Fixed by the graft source when one is given. Shown only on the first run.",
+    enabled_if=_FISSATE_DAI_PESI,
+)
+_AE_DIMS_H2 = FieldDef(
+    key="autoencoder-dimensions", option="ae_dims", label="AutoEncoder dimensions", kind=FIELD_INT,
+    default=512, valid_range=(32, 1024),
+    help="Size of the code. The decoder receives twice this many channels, as liae does. Fixed by the graft source when one is given. Shown only on the first run.",
+    enabled_if=_FISSATE_DAI_PESI,
+)
+_ENCODER_DIMS_H2 = FieldDef(key="encoder-dimensions", option="e_dims", label="Encoder dimensions", kind=FIELD_INT,
+                            default=64, valid_range=(16, 256), help=_ENCODER_DIMS.help + " Fixed by the graft source when one is given.",
+                            enabled_if=_FISSATE_DAI_PESI)
+_DECODER_DIMS_H2 = FieldDef(key="decoder-dimensions", option="d_dims", label="Decoder dimensions", kind=FIELD_INT,
+                            default=64, valid_range=(16, 256), help=_DECODER_DIMS.help + " Fixed by the graft source when one is given.",
+                            enabled_if=_FISSATE_DAI_PESI)
+_DECODER_MASK_DIMS_H2 = FieldDef(key="decoder-mask-dimensions", option="d_mask_dims", label="Decoder mask dimensions", kind=FIELD_INT,
+                                 default=22, valid_range=(16, 256), help=_DECODER_MASK_DIMS.help + " Fixed by the graft source when one is given.",
+                                 enabled_if=_FISSATE_DAI_PESI)
+
+_H1_FIELDS = _SAEHDX_FIELDS + _SUPERVISORS_H1
+
+_H2_FIELDS = (
+    _GPU_INDEXES, _AUTOBACKUP_HOUR, _WRITE_PREVIEW_HISTORY, _CHOOSE_PREVIEW_IMAGE,
+    _TARGET_ITERATION, _FLIP_SRC, _FLIP_DST, _BATCH_SIZE_SAEHD,
+    _GRAFT, _GRAFT_INTER,
+    _RESOLUTION_H2, _FACE_TYPE_H2, _AE_DIMS_H2, _ENCODER_DIMS_H2, _DECODER_DIMS_H2, _DECODER_MASK_DIMS_H2,
+    _MASK_TRUNK, _IDENTITY_VECTORS,
+) + _SUPERVISORS_H2 + (
+    _MASKED_TRAINING, _EYES_MOUTH_PRIO, _UNIFORM_YAW, _BLUR_OUT_MASK,
+    _MODELS_OPT_ON_GPU_SAEHD, _ADABELIEF, _LR_DROPOUT, _RANDOM_WARP,
+    _RANDOM_HSV_POWER, _CT_MODE_SAEHD, _CLIPGRAD,
+    _CUDNN_BENCHMARK, _CUDA_GRAPH, _TORCH_COMPILE,
+)
+
+_SEZIONI_H1 = _SEZIONI_SAEHDX + (("Supervisors", _CHIAVI_SUPERVISORS),)
+
+_SEZIONI_H2 = (
+    ("Model", ("which-gpu-indexes-to-choose", "autobackup-every-n-hour",
+               "write-preview-history", "choose-image-for-the-preview-history",
+               "target-iteration", "batch_size",
+               "resolution", "face-type", "autoencoder-dimensions", "encoder-dimensions",
+               "decoder-dimensions", "decoder-mask-dimensions")),
+    ("Graft", ("graft-from-model", "copy-the-inter-from-the-source")),
+    ("Identity", ("identity-vectors",)),
+    ("Supervisors", _CHIAVI_SUPERVISORS),
+    ("Mask", ("masked-training", "blur-out-mask", "mask-reads-the-identity-modulated-trunk")),
+    ("Augmentation", ("flip-src-faces-randomly", "flip-dst-faces-randomly",
+                      "uniform-yaw-distribution-of-samples", "eyes-and-mouth-priority",
+                      "enable-random-warp-of-samples", "random-huesaturationlight-intensity",
+                      "color-transfer-for-src-faceset")),
+    ("Performance", ("place-models-and-optimizer-on-gpu", "use-adabelief-optimizer",
+                     "use-learning-rate-dropout", "enable-gradient-clipping",
+                     "enable-cudnnbenchmark", "enable-cuda-graph-capture", "enable-torchcompile")),
+)
+
 STEPS = (
     StepDef(
         name="6) train AMP SRC-SRC",
@@ -646,6 +825,48 @@ STEPS = (
         ),
         fields=_AMP_FIELDS,
         sections=_SEZIONI_AMP,
+        consumes=("faceset_src", "faceset_dst"),
+        produces=("modello",),
+        needs_model_name=True,
+    ),
+    StepDef(
+        name="6) train H1",
+        summary="SAEHDX plus frozen supervisors in the loss (identity, IFSR, DINOv2, focal frequency, bleed). All at zero, it is SAEHDX.",
+        family="addestramento",
+        kind=KIND_MAIN,
+        process=PROCESS_SESSION,
+        invocations=(
+            Invocation(verb=("train",), args=(
+                "--training-data-src-dir", "{WORKSPACE}/data_src/aligned",
+                "--training-data-dst-dir", "{WORKSPACE}/data_dst/aligned",
+                "--pretraining-data-dir", "{INTERNAL}/pretrain_faces",
+                "--model-dir", "{WORKSPACE}/model",
+                "--model", "H1",
+            )),
+        ),
+        fields=_H1_FIELDS,
+        sections=_SEZIONI_H1,
+        consumes=("faceset_src", "faceset_dst", "pretrain"),
+        produces=("modello",),
+        needs_model_name=True,
+    ),
+    StepDef(
+        name="6) train H2",
+        summary="Identity-modulated decoder grafted from a trained liae-udt model in this model dir; defaults are the measured recipe.",
+        family="addestramento",
+        kind=KIND_MAIN,
+        process=PROCESS_SESSION,
+        invocations=(
+            Invocation(verb=("train",), args=(
+                "--training-data-src-dir", "{WORKSPACE}/data_src/aligned",
+                "--training-data-dst-dir", "{WORKSPACE}/data_dst/aligned",
+                "--pretraining-data-dir", "{INTERNAL}/pretrain_faces",
+                "--model-dir", "{WORKSPACE}/model",
+                "--model", "H2",
+            )),
+        ),
+        fields=_H2_FIELDS,
+        sections=_SEZIONI_H2,
         consumes=("faceset_src", "faceset_dst"),
         produces=("modello",),
         needs_model_name=True,

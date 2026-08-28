@@ -261,6 +261,8 @@ class DeepFakeArchi(nn.ArchiBase):
 
                     return x, m
 
+        self.Upscale = Upscale
+        self.ResidualBlock = ResidualBlock
         self.Encoder = Encoder
         self.Inter = Inter
         self.Decoder = Decoder

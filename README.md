@@ -46,6 +46,8 @@ These models are ported and available:
 | **SAEHD** | the main face-swapping model, `df` and `liae` architectures | `model.dfm` (ONNX opset 12) |
 | **SAEHDX** | same architecture and weight files as SAEHD, with the training step rewritten to run faster and use less memory | `model.dfm` (ONNX opset 12) |
 | **AMP** | morphable model, adjustable morph factor at merge time | `model.dfm` (ONNX opset 12) |
+| **H1** | SAEHDX with frozen supervisors in the loss (AdaFace identity, IFSR, DINOv2, focal frequency): same weight files as SAEHD, better identity at a higher cost per iteration; supervisor weights download on first use | `model.dfm` (ONNX opset 12) |
+| **H2** | a single decoder modulated by two explicit identity vectors, grafted at the first start from a trained `liae-udt` SAEHD/SAEHDX model (a pretrained RTM works); same supervisors as H1, morph factor at merge time | `model.dfm` (ONNX opset 12, `morph_value` input) |
 | **XSeg** | learned face segmentation / masking | `model.onnx` (ONNX opset 13) |
 
 > **Quick96 is not part of this fork.** It was removed by the maintainer. For

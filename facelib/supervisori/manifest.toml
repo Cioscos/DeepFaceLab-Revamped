@@ -1,0 +1,139 @@
+# Manifest dei pesi esterni del banco di misura: url, sha256, licenza.
+# Nessun peso e' committato: `pesi.scarica` lo scrive sotto
+# `_internal/modelli-esterni/<nome>/`, fuori dal repo git.
+
+[dinov2-vits14]
+url = "https://dl.fbaipublicfiles.com/dinov2/dinov2_vits14/dinov2_vits14_pretrain.pth"
+sha256 = "b938bf1bc15cd2ec0feacfe3a1bb553fe8ea9ca46a7e1d8d00217f29aef60cd9"
+file = "dinov2_vits14_pretrain.pth"
+licenza = "Apache 2.0"
+avviso = """
+Copyright (c) Meta Platforms, Inc. and affiliates.
+Licensed under the Apache License, Version 2.0 (the "License"); you may not
+use this file except in compliance with the License. You may obtain a copy
+of the License at http://www.apache.org/licenses/LICENSE-2.0. Testo
+completo: https://raw.githubusercontent.com/facebookresearch/dinov2/main/LICENSE
+"""
+
+[alexnet-torchvision]
+url = "https://download.pytorch.org/models/alexnet-owt-7be5be79.pth"
+sha256 = "7be5be791159472b1fbf3c69796f7cb30dca7ad8466c2df70058c37116cdee02"
+file = "alexnet-owt-7be5be79.pth"
+licenza = "BSD-3-Clause"
+avviso = """
+BSD 3-Clause License
+
+Copyright (c) Soumith Chintala 2016,
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice, this
+  list of conditions and the following disclaimer.
+
+* Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation
+  and/or other materials provided with the distribution.
+
+* Neither the name of the copyright holder nor the names of its
+  contributors may be used to endorse or promote products derived from
+  this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+"""
+
+[lpips-alex]
+url = "https://github.com/richzhang/PerceptualSimilarity/raw/master/lpips/weights/v0.1/alex.pth"
+sha256 = "df73285e35b22355a2df87cdb6b70b343713b667eddbda73e1977e0c860835c0"
+file = "alex.pth"
+licenza = "BSD-2-Clause"
+avviso = """
+Copyright (c) 2018, Richard Zhang, Phillip Isola, Alexei A. Efros, Eli Shechtman, Oliver Wang
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice, this
+  list of conditions and the following disclaimer.
+
+* Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation
+  and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+"""
+
+[sd-vae-ft-mse]
+url = "https://huggingface.co/stabilityai/sd-vae-ft-mse/resolve/main/diffusion_pytorch_model.safetensors"
+sha256 = "a1d993488569e928462932c8c38a0760b874d166399b14414135bd9c42df5815"
+file = "diffusion_pytorch_model.safetensors"
+licenza = "MIT"
+avviso = """
+Stability AI, sd-vae-ft-mse. La scheda del modello su Hugging Face dichiara
+`license: mit` (non piu' CreativeML Open RAIL-M come i checkpoint completi di
+Stable Diffusion: qui c'e' solo il VAE, senza U-Net). Nessun file LICENSE
+separato nel repository; la dichiarazione sta nel front-matter di
+https://huggingface.co/stabilityai/sd-vae-ft-mse/blob/main/README.md.
+"""
+
+[insightface-buffalo_l]
+url = "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip"
+sha256 = "80ffe37d8a5940d59a7384c201a2a38d4741f2f3c51eef46ebb28218a7b0ca2f"
+file = "buffalo_l.zip"
+licenza = "MIT (codice) + solo ricerca non commerciale (pesi) + contatto per buffalo_l"
+avviso = """
+The code of InsightFace is released under the MIT License. There is no
+limitation for both academic and commercial usage.
+
+The training data containing the annotation (and the models trained with
+these data) are available for non-commercial research purposes only.
+
+Both manual-downloading models from our github repo and auto-downloading
+models with our python-library follow the above license policy(which is
+for non-commercial research purposes only).
+
+`2025-11-24 Update:`
+
+1. For inswapper series face swap models (e.g., inswapper_128.onnx/[inswapper-512-live](https://github.com/deepinsight/inswapper-512-live)), please contact [contact@insightface.ai](mailto:contact@insightface.ai) for licensing and additional support.
+2. For open-sourced face recognition models (e.g., buffalo_l package), please contact [recognition-oss-pack@insightface.ai](mailto:recognition-oss-pack@insightface.ai) for licensing.
+3. For advanced face recognition SDK and models (e.g., InspireFace SDK), please contact [contact@insightface.ai](mailto:contact@insightface.ai) for licensing and additional support.
+
+Fonte: https://raw.githubusercontent.com/deepinsight/insightface/master/README.md
+"""
+
+[adaface-ir101-webface12m]
+# L'URL e' la forma diretta del link Google Drive del README di
+# mk-minchul/AdaFace (id 1dswnavflETcnAuplZj1IOKKP0eM8ITgT, riga "R100 |
+# WebFace12M"): scaricabile da script, niente conferma manuale del browser.
+url = "https://drive.usercontent.google.com/download?id=1dswnavflETcnAuplZj1IOKKP0eM8ITgT&export=download&confirm=t"
+sha256 = "0e7a3238d2a50f3fe3860782534928ac7cb2598977cf897f6869fd5ac2493fd0"
+file = "adaface_ir101_webface12m.ckpt"
+licenza = "MIT (codice) + solo ricerca non commerciale (pesi, WebFace12M)"
+avviso = """
+Codice: MIT License, Copyright (c) 2022 Minchul Kim (mk-minchul/AdaFace).
+
+I pesi di questo checkpoint sono addestrati sul dataset WebFace12M, distribuito
+per soli scopi di ricerca non commerciale: lo stesso vincolo che il progetto
+InsightFace dichiara per i propri sottoinsiemi WebFace. Non redistribuire per
+uso commerciale.
+"""

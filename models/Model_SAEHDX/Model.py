@@ -140,7 +140,10 @@ class SAEHDXModel(SAEHDModel):
     #override
     def on_initialize_options(self):
         super().on_initialize_options()
+        self._opzioni_esecuzione()
 
+    def _opzioni_esecuzione(self):
+        """I tre prompt di esecuzione di SAEHDX; anche Model_H2 li chiede."""
         # Solo al primo avvio, come resolution/archi (Model_SAEHD/Model.py):
         # e' una scelta strutturale di questa corsa, non un iperparametro che
         # ha senso ridiscutere ogni volta che si riprende il training -- e non
@@ -211,7 +214,14 @@ class SAEHDXModel(SAEHDModel):
             super().on_initialize()
         finally:
             SampleGeneratorFace.default_return_filenames = False
+        self._accelera()
 
+    def _accelera(self):
+        """Il cablaggio veloce sopra un modello gia' costruito: backend, channels_last,
+        _train_cfg, prefetch, grafo, il passo in autocast. Separato da on_initialize
+        perche' un figlio con reti proprie (Model_H2) costruisce le sue e poi chiama
+        questo. Legge self.archi_type, self.resolution, self.gan_power, self.pretrain,
+        self.options, self.src_dst_train e self.model_filename_list."""
         # `is_training` e non solo il device: tutto quello che segue avvolge il
         # passo di addestramento, e nel ramo di merge quel passo non esiste --
         # SAEHDModel definisce src_dst_train solo dentro il proprio
@@ -223,55 +233,56 @@ class SAEHDXModel(SAEHDModel):
         # comportamento misurato: la convergenza del cablaggio veloce e'
         # verificata sull'addestramento, l'inferenza non e' mai stata confrontata
         # bit a bit con quella del genitore, e allow_tf32 la cambierebbe.
-        if self.is_training and nn.device is not None and nn.device.type == "cuda":
-            self.abilita_backend_veloce(self.options['cudnn_benchmark'])
+        if not (self.is_training and nn.device is not None and nn.device.type == "cuda"):
+            return
+        self.abilita_backend_veloce(self.options['cudnn_benchmark'])
 
-            for rete, _ in self.model_filename_list:
-                if isinstance(rete, torch.nn.Module):
-                    rete.to(memory_format=torch.channels_last)
-                    rete.register_forward_hook(self._risali_a_fp32)
+        for rete, _ in self.model_filename_list:
+            if isinstance(rete, torch.nn.Module):
+                rete.to(memory_format=torch.channels_last)
+                rete.register_forward_hook(self._risali_a_fp32)
 
-            # train_cfg di SAEHDModel.on_initialize e' una variabile locale
-            # (Model_SAEHD/Model.py:990-999), non un attributo: qui va
-            # ricostruito leggendo self.options e i pochi attributi che
-            # SAEHDModel.on_initialize salva su self (archi_type, resolution,
-            # gan_power, pretrain -- gia' scontato il caso pretrain per
-            # gan_power, che il genitore azzera alla riga 821). Stessi dieci
-            # campi, stessi valori dell'originale.
-            self._train_cfg = {'archi_type'      : self.archi_type,
-                               'resolution'      : self.resolution,
-                               'masked_training' : self.options['masked_training'],
-                               'eyes_mouth_prio' : self.options['eyes_mouth_prio'],
-                               'blur_out_mask'   : self.options['blur_out_mask'],
-                               'gan_power'       : self.gan_power,
-                               'true_face_power' : self.options['true_face_power'],
-                               'face_style_power': self.options['face_style_power'],
-                               'bg_style_power'  : self.options['bg_style_power'],
-                               'pretrain'        : self.pretrain}
+        # train_cfg di SAEHDModel.on_initialize e' una variabile locale
+        # (Model_SAEHD/Model.py:990-999), non un attributo: qui va
+        # ricostruito leggendo self.options e i pochi attributi che
+        # SAEHDModel.on_initialize salva su self (archi_type, resolution,
+        # gan_power, pretrain -- gia' scontato il caso pretrain per
+        # gan_power, che il genitore azzera alla riga 821). Stessi dieci
+        # campi, stessi valori dell'originale.
+        self._train_cfg = {'archi_type'      : self.archi_type,
+                           'resolution'      : self.resolution,
+                           'masked_training' : self.options['masked_training'],
+                           'eyes_mouth_prio' : self.options['eyes_mouth_prio'],
+                           'blur_out_mask'   : self.options['blur_out_mask'],
+                           'gan_power'       : self.gan_power,
+                           'true_face_power' : self.options['true_face_power'],
+                           'face_style_power': self.options['face_style_power'],
+                           'bg_style_power'  : self.options['bg_style_power'],
+                           'pretrain'        : self.pretrain}
 
-            self.inizializza_prefetch()
-            self.inizializza_grafo()
-            self.CUDA_GRAPH = self.options['cuda_graph']
-            self.TORCH_COMPILE = self.options['torch_compile']
+        self.inizializza_prefetch()
+        self.inizializza_grafo()
+        self.CUDA_GRAPH = self.options['cuda_graph']
+        self.TORCH_COMPILE = self.options['torch_compile']
 
-            def src_dst_train_su_device(*batch):
-                """Copie e passo sullo stesso stream, senza sovrapposizione.
+        def src_dst_train_su_device(*batch):
+            """Copie e passo sullo stesso stream, senza sovrapposizione.
 
-                E' il percorso di prima del precaricamento, e resta raggiungibile
-                con PREFETCH spento: serve a misurare la leva contro se stessa.
-                """
-                return self._passo_su_tensori(
-                    [self._in_pinned(x, (i, 0)) for i, x in enumerate(batch)])
+            E' il percorso di prima del precaricamento, e resta raggiungibile
+            con PREFETCH spento: serve a misurare la leva contro se stessa.
+            """
+            return self._passo_su_tensori(
+                [self._in_pinned(x, (i, 0)) for i, x in enumerate(batch)])
 
-            self.src_dst_train_su_device = src_dst_train_su_device
+        self.src_dst_train_su_device = src_dst_train_su_device
 
-            passo_originale = self.src_dst_train
+        passo_originale = self.src_dst_train
 
-            def src_dst_train_veloce(*batch):
-                with torch.autocast("cuda", dtype=self.DTYPE_AUTOCAST):
-                    return passo_originale(*batch)
+        def src_dst_train_veloce(*batch):
+            with torch.autocast("cuda", dtype=self.DTYPE_AUTOCAST):
+                return passo_originale(*batch)
 
-            self.src_dst_train = src_dst_train_veloce
+        self.src_dst_train = src_dst_train_veloce
 
     def inizializza_prefetch(self):
         """
@@ -624,7 +635,7 @@ class SAEHDXModel(SAEHDModel):
             self._rinuncia_alla_compilazione(motivo)
             return
 
-        self._passo_compilato = torch.compile(saehd_train_step, dynamic=False)
+        self._passo_compilato = torch.compile(self._passo(), dynamic=False)
         self._compilazione_collaudata = False
         io.log_info("torch_compile: passo compilato. La prima iterazione "
                     "paga la generazione dei kernel, circa mezzo minuto.")
@@ -640,6 +651,12 @@ class SAEHDXModel(SAEHDModel):
         self.TORCH_COMPILE = False
         io.log_info(f"torch_compile: {motivo}. "
                     f"L'addestramento prosegue senza compilazione.")
+
+    def _passo(self):
+        """Il passo di addestramento di questa classe. Letto dal modulo a ogni
+        chiamata, non congelato in un attributo: i test lo sostituiscono
+        sul modulo, e un figlio con reti diverse (Model_H2) lo ridefinisce."""
+        return saehd_train_step
 
     def _esegui_il_passo(self, passo, tensori):
         """Il passo, quale che sia, nel contesto in cui va eseguito.
@@ -678,7 +695,7 @@ class SAEHDXModel(SAEHDModel):
         percorso caldo torna a essere una chiamata secca.
         """
         if self._passo_compilato is None:
-            return self._esegui_il_passo(saehd_train_step, tensori)
+            return self._esegui_il_passo(self._passo(), tensori)
 
         if self._compilazione_collaudata:
             return self._esegui_il_passo(self._passo_compilato, tensori)
@@ -689,7 +706,7 @@ class SAEHDXModel(SAEHDModel):
             self._rinuncia_alla_compilazione(
                 "la prima esecuzione del passo compilato e' fallita -- "
                 f"{type(errore).__name__}: {errore}")
-            return self._esegui_il_passo(saehd_train_step, tensori)
+            return self._esegui_il_passo(self._passo(), tensori)
 
         self._compilazione_collaudata = True
         return uscita

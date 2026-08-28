@@ -75,6 +75,9 @@ class FieldDef:
     # true when v is a substring of the field's value -- for a free-text
     # field whose real gating condition is itself a substring test, e.g.
     # 'df' in self.options['archi'], not expressible as exact equality).
+    # "key=" (empty right-hand side) is true when the field is empty or
+    # unset, "key!=" when it holds anything -- for a free-text field that
+    # gates others, e.g. the graft source of 6) train H2.
     enabled_if: tuple = ()
 
 

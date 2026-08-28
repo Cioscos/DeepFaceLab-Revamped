@@ -1,6 +1,6 @@
-"""Family esportazione: the three "6) export * as dfm" steps.
+"""Family esportazione: the five "6) export * as dfm" steps.
 
-All three resolve to `main.py exportdfm`, constructing the model with
+All five resolve to `main.py exportdfm`, constructing the model with
 `cpu_only=True` hardwired (`mainscripts/ExportDFM.py:22`) -- unlike train and
 merge, `exportdfm` never asks a device-choice prompt, because
 `ModelBase.__init__` only calls `nn.ask_choose_device_idxs` on the
@@ -22,6 +22,12 @@ scheda already spells out for merge). None of that battery is modeled as
 fields here; only "Export quantized?", the one prompt specific to exporting,
 gated solely on `self.is_exporting` and therefore always shown regardless of
 override/first-run state.
+
+**H1 inherits this unmodified from SAEHD** (through SAEHDX): same prompt,
+same fields. **H2 overrides `on_initialize` wholesale and never reaches
+SAEHD's "Export quantized?" prompt**; its own `export_dfm`
+(`models/Model_H2/Model.py`) writes opset 12 with a second input
+`morph_value:0`. So "6) export H2 as dfm" has **no fields**.
 """
 from gui.catalog.model import FIELD_BOOL, KIND_MAIN, PROCESS_PROMPT, FieldDef, Invocation, StepDef
 
@@ -47,6 +53,42 @@ STEPS = (
             )),
         ),
         fields=(_EXPORT_QUANTIZED,),
+        consumes=("modello",),
+        modifies=("modello",),
+        optional=True,
+        needs_model_name=True,
+    ),
+    StepDef(
+        name="6) export H1 as dfm",
+        summary="Exports the trained H1 model as a .dfm file, through the same unmodified export SAEHD uses.",
+        family="esportazione",
+        kind=KIND_MAIN,
+        process=PROCESS_PROMPT,
+        invocations=(
+            Invocation(verb=("exportdfm",), args=(
+                "--model-dir", "{WORKSPACE}/model",
+                "--model", "H1",
+            )),
+        ),
+        fields=(_EXPORT_QUANTIZED,),
+        consumes=("modello",),
+        modifies=("modello",),
+        optional=True,
+        needs_model_name=True,
+    ),
+    StepDef(
+        name="6) export H2 as dfm",
+        summary="Exports the trained H2 model as a .dfm file with a morph_value input, for DeepFaceLive model_type 2.",
+        family="esportazione",
+        kind=KIND_MAIN,
+        process=PROCESS_PROMPT,
+        invocations=(
+            Invocation(verb=("exportdfm",), args=(
+                "--model-dir", "{WORKSPACE}/model",
+                "--model", "H2",
+            )),
+        ),
+        fields=(),
         consumes=("modello",),
         modifies=("modello",),
         optional=True,

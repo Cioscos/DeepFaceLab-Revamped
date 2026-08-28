@@ -448,6 +448,31 @@ pause = "always"
     "--model",     "AMP",
   ]
 
+# H1 esporta col codice ereditato da SAEHD (stessi pesi, stesso .dfm);
+# H2 ha il proprio export_dfm con l'ingresso morph_value:0 (DeepFaceLive
+# model_type 2) e non chiede "Export quantized?".
+[[command]]
+name = "6) export H1 as dfm"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["exportdfm"]
+  args = [
+    "--model-dir", "{WORKSPACE}/model",
+    "--model",     "H1",
+  ]
+
+[[command]]
+name = "6) export H2 as dfm"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["exportdfm"]
+  args = [
+    "--model-dir", "{WORKSPACE}/model",
+    "--model",     "H2",
+  ]
+
 [[command]]
 name = "6) export SAEHD as dfm"
 kind = "main"
@@ -506,6 +531,37 @@ pause = "always"
     "--model",                 "AMP",
   ]
 
+# H1 = SAEHDX piu' i supervisori congelati nella loss.
+[[command]]
+name = "6) train H1"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["train"]
+  args = [
+    "--training-data-src-dir", "{WORKSPACE}/data_src/aligned",
+    "--training-data-dst-dir", "{WORKSPACE}/data_dst/aligned",
+    "--pretraining-data-dir",  "{INTERNAL}/pretrain_faces",
+    "--model-dir",             "{WORKSPACE}/model",
+    "--model",                 "H1",
+  ]
+
+# H2 = decoder a identita' modulata; si innesta al primo avvio da un
+# liae-udt gia' presente in questa cartella.
+[[command]]
+name = "6) train H2"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["train"]
+  args = [
+    "--training-data-src-dir", "{WORKSPACE}/data_src/aligned",
+    "--training-data-dst-dir", "{WORKSPACE}/data_dst/aligned",
+    "--pretraining-data-dir",  "{INTERNAL}/pretrain_faces",
+    "--model-dir",             "{WORKSPACE}/model",
+    "--model",                 "H2",
+  ]
+
 # Scorciatoia (SHORTCUTS): depositata anche nella root dell'installazione.
 [[command]]
 name = "6) train SAEHD"
@@ -548,6 +604,38 @@ pause = "always"
     "--aligned-dir",     "{WORKSPACE}/data_dst/aligned",
     "--model-dir",       "{WORKSPACE}/model",
     "--model",           "AMP",
+  ]
+
+# H1 fonde col codice ereditato da SAEHD: i supervisori non c'entrano in fusione.
+[[command]]
+name = "7) merge H1"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["merge"]
+  args = [
+    "--input-dir",       "{WORKSPACE}/data_dst",
+    "--output-dir",      "{WORKSPACE}/data_dst/merged",
+    "--output-mask-dir", "{WORKSPACE}/data_dst/merged_mask",
+    "--aligned-dir",     "{WORKSPACE}/data_dst/aligned",
+    "--model-dir",       "{WORKSPACE}/model",
+    "--model",           "H1",
+  ]
+
+# H2 chiede "Morph factor" come AMP.
+[[command]]
+name = "7) merge H2"
+kind = "main"
+pause = "always"
+  [[command.invocation]]
+  verb = ["merge"]
+  args = [
+    "--input-dir",       "{WORKSPACE}/data_dst",
+    "--output-dir",      "{WORKSPACE}/data_dst/merged",
+    "--output-mask-dir", "{WORKSPACE}/data_dst/merged_mask",
+    "--aligned-dir",     "{WORKSPACE}/data_dst/aligned",
+    "--model-dir",       "{WORKSPACE}/model",
+    "--model",           "H2",
   ]
 
 # Scorciatoia (SHORTCUTS): depositata anche nella root dell'installazione.
