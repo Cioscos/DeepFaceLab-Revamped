@@ -122,12 +122,17 @@ Fonte: https://raw.githubusercontent.com/deepinsight/insightface/master/README.m
 """
 
 [adaface-ir101-webface12m]
-# L'URL e' la forma diretta del link Google Drive del README di
-# mk-minchul/AdaFace (id 1dswnavflETcnAuplZj1IOKKP0eM8ITgT, riga "R100 |
-# WebFace12M"): scaricabile da script, niente conferma manuale del browser.
-url = "https://drive.usercontent.google.com/download?id=1dswnavflETcnAuplZj1IOKKP0eM8ITgT&export=download&confirm=t"
-sha256 = "0e7a3238d2a50f3fe3860782534928ac7cb2598977cf897f6869fd5ac2493fd0"
-file = "adaface_ir101_webface12m.ckpt"
+# Copia sulla release 0.0.3 del repo pubblico del checkpoint del README di
+# mk-minchul/AdaFace (Google Drive id 1dswnavflETcnAuplZj1IOKKP0eM8ITgT,
+# riga "R100 | WebFace12M", sha256 dell'originale
+# 0e7a3238d2a50f3fe3860782534928ac7cb2598977cf897f6869fd5ac2493fd0),
+# ridotto alle sole chiavi `model.*` dello state_dict: il backbone IR101 che
+# `carica_adaface_rete` legge (261 MB invece di 1,53 GB; la testa `head.*`
+# non ha lettori). Ogni tensore tenuto e' identico all'originale. Il link
+# Drive e' fragile (conferma, quota): una release non lo e'.
+url = "https://github.com/Cioscos/DeepFaceLab-Revamped/releases/download/0.0.3/adaface_ir101_webface12m_backbone.ckpt"
+sha256 = "7d106b687a5ae32b962260787ea4681984c81511573e5d6f0accdda1c4c85ebb"
+file = "adaface_ir101_webface12m_backbone.ckpt"
 licenza = "MIT (codice) + solo ricerca non commerciale (pesi, WebFace12M)"
 avviso = """
 Codice: MIT License, Copyright (c) 2022 Minchul Kim (mk-minchul/AdaFace).
