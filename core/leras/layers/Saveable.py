@@ -6,7 +6,8 @@ import torch
 from core.leras import nn
 from core.leras.weight_io import (MissingWeightsError, apply_layout, invert_layout,
                                   read_weights_file, resolve_path_component,
-                                  torch_name_to_disk_key, write_weights_file)
+                                  scrittore_corrente, torch_name_to_disk_key,
+                                  write_weights_file)
 
 
 def _squeeze_shape(shape):
@@ -195,15 +196,24 @@ class Saveable(torch.nn.Module):
                     else param.detach().cpu().numpy()
             if force_dtype is not None:
                 w_val = w_val.astype(force_dtype)
-            # .copy(): when perm is None (weight_layouts() has no entry for
-            # this leaf) and force_dtype is None, w_val is a view straight
-            # into the live parameter's memory (numpy() on a CPU tensor
-            # shares storage). Harmless here since `d` is pickled immediately
-            # below, but leaving an alias in a dict a caller might hold onto
-            # would be a trap — same as the TF version's explicit .copy().
-            d[torch_name_to_disk_key(self, path)] = np.ascontiguousarray(w_val).copy()
+            w_val = np.ascontiguousarray(w_val)
+            # Una copia sola, e solo quando serve. Da una GPU `.cpu()` ha gia'
+            # creato un tensore nuovo che nessun altro tocca: l'array che ne
+            # viene e' lo snapshot, e copiarlo di nuovo era la seconda copia
+            # intera che il salvataggio pagava (+0,8 GB su un H2 a 224). Su
+            # CPU invece `numpy()` condivide la memoria del parametro vivo
+            # (OWNDATA falso e nessuna trasposizione in mezzo): li' la copia
+            # e' obbligatoria, perche' `d` puo' essere scritto in sfondo
+            # mentre il training continua ad aggiornare quel parametro.
+            if not w_val.flags['OWNDATA'] and param.device.type == 'cpu':
+                w_val = w_val.copy()
+            d[torch_name_to_disk_key(self, path)] = w_val
 
-        write_weights_file(filename, d)
+        scrittore = scrittore_corrente()
+        if scrittore is not None:
+            scrittore.accoda(filename, d)
+        else:
+            write_weights_file(filename, d)
 
     def load_weights(self, filename):
         """

@@ -593,6 +593,10 @@ class SAEHDExportModule(torch.nn.Module):
 
 
 class SAEHDModel(ModelBase):
+    #Il nome con cui le anteprime si presentano (finestra cv2, tendina della
+    #GUI, cartelle dello storico). Le sottoclassi che sono un altro modello
+    #lo ridefiniscono: H1 e H2 dicevano ancora "SAEHD".
+    NOME_ANTEPRIMA = 'SAEHD'
 
     #override
     def on_initialize_options(self):
@@ -1206,7 +1210,7 @@ Examples: df, liae, df-d, df-ud, liae-ud, ...
             for i in range(n_samples):
                 ar = S[i], SS[i], D[i], DD[i], SD[i]
                 st.append ( np.concatenate ( ar, axis=1) )
-            result += [ ('SAEHD', np.concatenate (st, axis=0 )), ]
+            result += [ (self.NOME_ANTEPRIMA, np.concatenate (st, axis=0 )), ]
 
 
             st_m = []
@@ -1216,7 +1220,7 @@ Examples: df, liae, df-d, df-ud, liae-ud, ...
                 ar = S[i]*target_srcm[i], SS[i], D[i]*target_dstm[i], DD[i]*DDM[i], SD[i]*SD_mask
                 st_m.append ( np.concatenate ( ar, axis=1) )
 
-            result += [ ('SAEHD masked', np.concatenate (st_m, axis=0 )), ]
+            result += [ (self.NOME_ANTEPRIMA + ' masked', np.concatenate (st_m, axis=0 )), ]
         else:
             result = []
 
@@ -1224,39 +1228,39 @@ Examples: df, liae, df-d, df-ud, liae-ud, ...
             for i in range(n_samples):
                 ar = S[i], SS[i]
                 st.append ( np.concatenate ( ar, axis=1) )
-            result += [ ('SAEHD src-src', np.concatenate (st, axis=0 )), ]
+            result += [ (self.NOME_ANTEPRIMA + ' src-src', np.concatenate (st, axis=0 )), ]
 
             st = []
             for i in range(n_samples):
                 ar = D[i], DD[i]
                 st.append ( np.concatenate ( ar, axis=1) )
-            result += [ ('SAEHD dst-dst', np.concatenate (st, axis=0 )), ]
+            result += [ (self.NOME_ANTEPRIMA + ' dst-dst', np.concatenate (st, axis=0 )), ]
 
             st = []
             for i in range(n_samples):
                 ar = D[i], SD[i]
                 st.append ( np.concatenate ( ar, axis=1) )
-            result += [ ('SAEHD pred', np.concatenate (st, axis=0 )), ]
+            result += [ (self.NOME_ANTEPRIMA + ' pred', np.concatenate (st, axis=0 )), ]
 
 
             st_m = []
             for i in range(n_samples):
                 ar = S[i]*target_srcm[i], SS[i]
                 st_m.append ( np.concatenate ( ar, axis=1) )
-            result += [ ('SAEHD masked src-src', np.concatenate (st_m, axis=0 )), ]
+            result += [ (self.NOME_ANTEPRIMA + ' masked src-src', np.concatenate (st_m, axis=0 )), ]
 
             st_m = []
             for i in range(n_samples):
                 ar = D[i]*target_dstm[i], DD[i]*DDM[i]
                 st_m.append ( np.concatenate ( ar, axis=1) )
-            result += [ ('SAEHD masked dst-dst', np.concatenate (st_m, axis=0 )), ]
+            result += [ (self.NOME_ANTEPRIMA + ' masked dst-dst', np.concatenate (st_m, axis=0 )), ]
 
             st_m = []
             for i in range(n_samples):
                 SD_mask = DDM[i]*SDM[i] if self.face_type < FaceType.HEAD else SDM[i]
                 ar = D[i]*target_dstm[i], SD[i]*SD_mask
                 st_m.append ( np.concatenate ( ar, axis=1) )
-            result += [ ('SAEHD masked pred', np.concatenate (st_m, axis=0 )), ]
+            result += [ (self.NOME_ANTEPRIMA + ' masked pred', np.concatenate (st_m, axis=0 )), ]
 
         return result
 
@@ -1273,17 +1277,18 @@ Examples: df, liae, df-d, df-ud, liae-ud, ...
                      "risultato": [0, colonne.index(risultato)],
                      "righe_sono_campioni": True }
 
+        nome = self.NOME_ANTEPRIMA
         if self.resolution <= 256:
             colonne = ['src', 'src->src', 'dst', 'dst->dst', 'dst->src']
-            return { 'SAEHD':        griglia(colonne, 'dst->src'),
-                     'SAEHD masked': griglia(colonne, 'dst->src') }
+            return { nome:             griglia(colonne, 'dst->src'),
+                     nome + ' masked': griglia(colonne, 'dst->src') }
 
-        return { 'SAEHD src-src':        griglia(['src', 'src->src'], 'src->src'),
-                 'SAEHD dst-dst':        griglia(['dst', 'dst->dst'], 'dst->dst'),
-                 'SAEHD pred':           griglia(['dst', 'dst->src'], 'dst->src'),
-                 'SAEHD masked src-src': griglia(['src', 'src->src'], 'src->src'),
-                 'SAEHD masked dst-dst': griglia(['dst', 'dst->dst'], 'dst->dst'),
-                 'SAEHD masked pred':    griglia(['dst', 'dst->src'], 'dst->src') }
+        return { nome + ' src-src':        griglia(['src', 'src->src'], 'src->src'),
+                 nome + ' dst-dst':        griglia(['dst', 'dst->dst'], 'dst->dst'),
+                 nome + ' pred':           griglia(['dst', 'dst->src'], 'dst->src'),
+                 nome + ' masked src-src': griglia(['src', 'src->src'], 'src->src'),
+                 nome + ' masked dst-dst': griglia(['dst', 'dst->dst'], 'dst->dst'),
+                 nome + ' masked pred':    griglia(['dst', 'dst->src'], 'dst->src') }
 
     def predictor_func (self, face=None):
         face = nn.to_data_format(face[None,...], self.model_data_format, "NHWC")

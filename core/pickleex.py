@@ -44,5 +44,18 @@ def dumps(obj):
     dell'interprete e' libero di salire, questo no.
     """
     f = io.BytesIO()
-    _Numpy1Pickler(f, 4).dump(obj)
+    dump(obj, f)
     return f.getvalue()
+
+
+def dump(obj, f):
+    """
+    Come `dumps`, ma scrive direttamente su `f` (aperto in binario).
+
+    E' la via dei pesi: con `dumps` un file da 1,2 GB passava da un
+    BytesIO che cresce a raddoppi e da un `getvalue()` -- due copie intere
+    in RAM prima di toccare il disco (+1,1 GB di picco misurati sul file
+    dell'ottimizzatore di un H2 a 224). A
+    flusso resta la sola copia transitoria di `tobytes()` per array.
+    """
+    _Numpy1Pickler(f, 4).dump(obj)

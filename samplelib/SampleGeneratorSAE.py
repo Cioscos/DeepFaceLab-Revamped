@@ -12,8 +12,8 @@ from core.interact import interact as io
 from core.joblib import SubprocessGenerator, ThisThreadGenerator
 from core import mathlib
 from facelib import LandmarksProcessor, FaceType
-from samplelib import (SampleGeneratorBase, SampleLoader, SampleProcessor,
-                       SampleType)
+from samplelib import (PosaCampioni, SampleGeneratorBase, SampleLoader,
+                       SampleProcessor, SampleType)
 
 class SampleGeneratorSAE(SampleGeneratorBase):
     def __init__ (self, src_samples_path, dst_samples_path,
@@ -55,8 +55,8 @@ class SampleGeneratorSAE(SampleGeneratorBase):
             raise ValueError(f'No samples in {dst_samples_path}')
 
         if uniform_yaw_distribution:
-            src_index_host = self._filter_uniform_yaw(src_samples)
-            dst_index_host = self._filter_uniform_yaw(dst_samples)
+            src_index_host = self._filter_uniform_yaw(src_samples_path, src_samples)
+            dst_index_host = self._filter_uniform_yaw(dst_samples_path, dst_samples)
         else:
             src_index_host = mplib.IndexHost(src_samples_len)
             dst_index_host = mplib.IndexHost(dst_samples_len)
@@ -79,31 +79,8 @@ class SampleGeneratorSAE(SampleGeneratorBase):
         if not self.debug:
             SubprocessGenerator.start_in_parallel( self.generators )
 
-    def _filter_uniform_yaw(self, samples):
-        samples_pyr = [ ( idx, sample.get_pitch_yaw_roll() ) for idx, sample in enumerate(samples) ]
-
-        grads = 128
-        #instead of math.pi / 2, using -1.2,+1.2 because actually maximum yaw for 2DFAN landmarks are -1.2+1.2
-        grads_space = np.linspace (-1.2, 1.2,grads)
-
-        yaws_sample_list = [None]*grads
-        for g in io.progress_bar_generator ( range(grads), "Sort by yaw"):
-            yaw = grads_space[g]
-            next_yaw = grads_space[g+1] if g < grads-1 else yaw
-
-            yaw_samples = []
-            for idx, pyr in samples_pyr:
-                s_yaw = -pyr[1]
-                if (g == 0          and s_yaw < next_yaw) or \
-                (g < grads-1     and s_yaw >= yaw and s_yaw < next_yaw) or \
-                (g == grads-1    and s_yaw >= yaw):
-                    yaw_samples += [ idx ]
-            if len(yaw_samples) > 0:
-                yaws_sample_list[g] = yaw_samples
-
-        yaws_sample_list = [ y for y in yaws_sample_list if y is not None ]
-
-        return mplib.Index2DHost( yaws_sample_list )
+    def _filter_uniform_yaw(self, samples_path, samples):
+        return mplib.Index2DHost( PosaCampioni.gruppi_per_yaw( -SampleLoader.posa_di(samples_path, samples)[:, 1] ) )
         
     def set_face_scale(self, scale):
         for comm_q in self.comm_qs:

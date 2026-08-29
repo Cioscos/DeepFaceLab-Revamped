@@ -9,8 +9,8 @@ from core import mplib
 from core.interact import interact as io
 from core.joblib import SubprocessGenerator, ThisThreadGenerator
 from facelib import LandmarksProcessor
-from samplelib import (SampleGeneratorBase, SampleLoader, SampleProcessor,
-                       SampleType)
+from samplelib import (PosaCampioni, SampleGeneratorBase, SampleLoader,
+                       SampleProcessor, SampleType)
 
 
 '''
@@ -57,30 +57,7 @@ class SampleGeneratorFace(SampleGeneratorBase):
                 return
                 
         if uniform_yaw_distribution:
-            samples_pyr = [ ( idx, sample.get_pitch_yaw_roll() ) for idx, sample in enumerate(samples) ]
-            
-            grads = 128
-            #instead of math.pi / 2, using -1.2,+1.2 because actually maximum yaw for 2DFAN landmarks are -1.2+1.2
-            grads_space = np.linspace (-1.2, 1.2,grads)
-
-            yaws_sample_list = [None]*grads
-            for g in io.progress_bar_generator ( range(grads), "Sort by yaw"):
-                yaw = grads_space[g]
-                next_yaw = grads_space[g+1] if g < grads-1 else yaw
-
-                yaw_samples = []
-                for idx, pyr in samples_pyr:
-                    s_yaw = -pyr[1]
-                    if (g == 0          and s_yaw < next_yaw) or \
-                    (g < grads-1     and s_yaw >= yaw and s_yaw < next_yaw) or \
-                    (g == grads-1    and s_yaw >= yaw):
-                        yaw_samples += [ idx ]
-                if len(yaw_samples) > 0:
-                    yaws_sample_list[g] = yaw_samples
-            
-            yaws_sample_list = [ y for y in yaws_sample_list if y is not None ]
-            
-            index_host = mplib.Index2DHost( yaws_sample_list )
+            index_host = mplib.Index2DHost( PosaCampioni.gruppi_per_yaw( -SampleLoader.posa_di(samples_path, samples)[:, 1] ) )
         else:
             index_host = mplib.IndexHost(self.samples_len)
 

@@ -12,6 +12,7 @@ from models.Model_SAEHDX.Model import SAEHDXModel
 
 
 class H1Model(Supervisori, SAEHDXModel):
+    NOME_ANTEPRIMA = 'H1'
     #override
     def on_initialize_options(self):
         super().on_initialize_options()

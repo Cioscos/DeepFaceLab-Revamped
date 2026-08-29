@@ -7,13 +7,24 @@ si vede a colpo d'occhio, una riga di dodici parole in corsivo grigio no.
 Nessuna regola vive qui: `valori_di_stato` decide cosa mostrare e come
 formattarlo, questo modulo si limita a disegnarlo.
 
-Niente Qt astruso: un `QHBoxLayout` che si ricostruisce per intero a ogni
-`aggiorna`. Sono al massimo cinque tessere, non e' un costo -- ed e' l'unico
-modo per non lasciare a schermo il valore di una tessera che l'evento nuovo
-non porta piu' (l'obiettivo raggiunto fa sparire l'ETA, un ciclo senza VRAM
-annunciata fa sparire la sua tessera): "aggiorno solo quelle che ci sono"
-lascerebbe l'ultima buona congelata, ed e' proprio il difetto che questo
-modulo esiste per non avere.
+`aggiorna` lavora **sul posto** finche' il numero di tessere non cambia:
+un `setText` per valore cambiato, niente widget nuovi. Fino al 2026-08-29
+ricostruiva i cinque riquadri a ogni chiamata -- e viene chiamata due volte
+al secondo dagli eventi `iter` e a ogni pixel di trascinamento del cursore
+dello storico -- ed era lo sfarfallio che l'utente vedeva in cima alla
+scheda. L'invariante che la ricostruzione garantiva ("una tessera che
+l'evento nuovo non porta piu' sparisce") regge lo stesso: quando cambia il
+numero di coppie si ricostruisce tutto, e quando non cambia ogni riquadro
+riceve chiave, etichetta e valore della coppia nuova nella sua posizione,
+quindi niente resta a schermo col valore di prima.
+
+Due cose tengono ferme le tessere fra un evento e l'altro. L'allungo in
+coda al layout: senza, `QHBoxLayout` spartiva la larghezza in parti uguali
+e la comparsa dell'ETA spostava **tutte** le tessere (misurato fino a 208
+px). E la larghezza minima del valore, che cresce con il testo piu' largo
+mai mostrato e non si restringe mai: le cifre che cambiano non muovono
+niente. Viene dalle metriche del font a runtime, non da pixel fissi, cosi'
+vale con qualunque font Windows o Linux scelgano.
 """
 from PyQt5.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
@@ -22,7 +33,7 @@ from gui.rimozione import svuota
 
 
 class TessereStato(QWidget):
-    """Un riquadro per coppia (etichetta, valore), ricostruiti a ogni giro.
+    """Un riquadro per coppia (etichetta, valore).
 
     `aggiorna` e `valori` sono l'unica API pubblica: chi la usa passa le
     coppie di `status_line.valori_di_stato` cosi' come sono, senza sapere
@@ -33,25 +44,18 @@ class TessereStato(QWidget):
         super().__init__(parent)
         self._layout = QHBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
+        self._layout.addStretch(1)
+        self._riquadri = []
 
     def aggiorna(self, coppie):
-        """Ricostruisce le tessere dalle coppie date.
-
-        Ricostruire invece di aggiornare sul posto e' la scelta che tiene
-        vero l'invariante: se una coppia di prima non c'e' piu' in quelle
-        nuove, la sua tessera sparisce -- non resta a schermo col valore
-        vecchio, che sarebbe una bugia silenziosa (un training che ha
-        raggiunto l'obiettivo, con l'ETA di un minuto fa ancora li').
-
-        Lo smontaggio passa da `gui.rimozione`, non da un `setParent(None)`
-        scritto qui: staccare un widget senza nasconderlo prima lo lascia
-        diventare una finestra di primo livello che Qt ri-mostra da sola --
-        ed e' proprio questo il punto del programma dove il difetto si
-        vedeva di piu', perche' e' quello che ricostruisce piu' spesso.
-        """
-        svuota(self._layout)
-        for etichetta, valore in coppie:
-            self._layout.addWidget(self._tessera(etichetta, valore))
+        """Porta le tessere alle coppie date: sul posto se sono tante quante
+        prima, ricostruite se no (vedi il docstring del modulo)."""
+        coppie = list(coppie)
+        if len(coppie) != len(self._riquadri):
+            self._ricostruisci(coppie)
+            return
+        for riquadro, (etichetta, valore) in zip(self._riquadri, coppie):
+            self._imposta(riquadro, etichetta, valore)
 
     def valori(self):
         """Le coppie mostrate adesso, lette dai riquadri veri.
@@ -71,24 +75,46 @@ class TessereStato(QWidget):
             coppie.append((riquadro.property("chiave"), valore))
         return coppie
 
-    def _tessera(self, etichetta, valore):
+    def _ricostruisci(self, coppie):
+        #Lo smontaggio passa da `gui.rimozione`, non da un `setParent(None)`
+        #scritto qui: staccare un widget senza nasconderlo prima lo lascia
+        #diventare una finestra di primo livello che Qt ri-mostra da sola.
+        svuota(self._layout)
+        self._riquadri = []
+        for etichetta, valore in coppie:
+            riquadro = self._tessera()
+            self._imposta(riquadro, etichetta, valore)
+            self._riquadri.append(riquadro)
+            self._layout.addWidget(riquadro)
+        self._layout.addStretch(1)
+
+    def _tessera(self):
         riquadro = QWidget()
         riquadro.setProperty("ruolo", "tessera-riquadro")
-        #La chiave resta sul riquadro -- non sull'etichetta visibile, che
-        #e' gia' tradotta da `testi.tile_label` e non si potrebbe tornare
-        #indietro senza ambiguita' -- cosi' anche `valori()` la legge dal
-        #widget vero, non da una seconda copia.
-        riquadro.setProperty("chiave", etichetta)
-        #Sul riquadro, non sulle due etichette dentro: cosi' il suggerimento
-        #compare ovunque il mouse si fermi sulla tessera, nome o numero che
-        #sia. Un numero grande senza una frase che dica cos'e' e' proprio
-        #cio' che questa scheda non deve avere.
-        riquadro.setToolTip(testi.tile_tip(etichetta))
         colonna = QVBoxLayout(riquadro)
-        nome = QLabel(testi.tile_label(etichetta))
+        nome = QLabel()
         nome.setProperty("ruolo", "sezione")
-        numero = QLabel(valore)
+        numero = QLabel()
         numero.setProperty("ruolo", "tessera")
         colonna.addWidget(nome)
         colonna.addWidget(numero)
         return riquadro
+
+    def _imposta(self, riquadro, etichetta, valore):
+        colonna = riquadro.layout()
+        nome, numero = colonna.itemAt(0).widget(), colonna.itemAt(1).widget()
+        if riquadro.property("chiave") != etichetta:
+            #La chiave resta sul riquadro -- non sull'etichetta visibile,
+            #che e' gia' tradotta da `testi.tile_label` e non si potrebbe
+            #tornare indietro senza ambiguita' -- cosi' anche `valori()` la
+            #legge dal widget vero, non da una seconda copia.
+            riquadro.setProperty("chiave", etichetta)
+            nome.setText(testi.tile_label(etichetta))
+            #Sul riquadro, non sulle due etichette dentro: cosi' il
+            #suggerimento compare ovunque il mouse si fermi sulla tessera.
+            riquadro.setToolTip(testi.tile_tip(etichetta))
+        if numero.text() != valore:
+            numero.setText(valore)
+            larghezza = numero.fontMetrics().horizontalAdvance(valore)
+            if larghezza > numero.minimumWidth():
+                numero.setMinimumWidth(larghezza)

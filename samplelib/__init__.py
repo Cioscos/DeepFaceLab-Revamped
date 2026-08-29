@@ -12,3 +12,4 @@ from .SampleGeneratorFaceCelebAMaskHQ import SampleGeneratorFaceCelebAMaskHQ
 from .SampleGeneratorFaceXSeg import SampleGeneratorFaceXSeg
 from .PackedFaceset import PackedFaceset
 from . import VoltiAllineati
+from . import PosaCampioni

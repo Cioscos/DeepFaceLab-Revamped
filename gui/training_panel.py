@@ -35,6 +35,7 @@ from gui.status_line import (
 from gui.tessere_stato import TessereStato
 
 RITARDO_CURSORE_MS = 120     # coalizza un trascinamento veloce
+VICINI_STORICO = 6           # scatti provati attorno a uno illeggibile
 LATO_CONTORNO = 96
 LATO_MINIATURA = 64
 
@@ -94,10 +95,18 @@ class _CellaLaterale(QWidget):
 
     #override
     def mousePressEvent(self, event):
+        #Solo il sinistro: destro e centrale promuovevano la cella come un
+        #click, e senza `super()` non c'era posto per un menu contestuale.
+        if event.button() != Qt.LeftButton:
+            super().mousePressEvent(event)
+            return
         self._pannello.mostra_cella(self._colonna)
 
     #override
     def mouseDoubleClickEvent(self, event):
+        if event.button() != Qt.LeftButton:
+            super().mouseDoubleClickEvent(event)
+            return
         self._pannello.apri_a_dimensione_naturale(self._riga, self._colonna)
 
 
@@ -328,12 +337,12 @@ class TrainingPanel(QWidget):
         self.contorno_widget.setLayout(self.contorno)
         centro.addWidget(self.contorno_widget, 0)
         centro.addStretch(1)
-        layout.addLayout(centro, 1)
+        layout.addLayout(centro, 3)
 
         self.striscia = QHBoxLayout()      # miniature dei campioni
-        striscia_widget = QWidget()
-        striscia_widget.setLayout(self.striscia)
-        layout.addWidget(striscia_widget)
+        self.striscia_widget = QWidget()
+        self.striscia_widget.setLayout(self.striscia)
+        layout.addWidget(self.striscia_widget)
 
         #La barra del grafico: nome, l'intervallo che lo comanda -- prima
         #era in cima alla scheda, lontanissimo da cio' che comanda, ed era
@@ -355,12 +364,17 @@ class TrainingPanel(QWidget):
             lambda _i: self.plot.imposta_intervallo(self.intervallo.currentData()))
         riga_grafico.addWidget(self.intervallo)
         self.legenda = QLabel(testi.loss_legend_html(COLORI[0], COLORI[1]))
+        self.legenda.setToolTip(testi.LOSS_LEGEND_TIP)
         riga_grafico.addWidget(self.legenda)
         riga_grafico.addStretch(1)
         layout.addWidget(self.barra_grafico)
 
         self.plot = LossPlot()
-        layout.addWidget(self.plot)
+        self.plot.setToolTip(testi.LOSS_CHART_TIP)
+        #Con un fattore di allungamento: senza, tutta l'altezza in piu' della
+        #finestra andava al blocco delle anteprime e il grafico restava ai
+        #suoi 120 px anche su uno schermo da 1600 (misurato: 8 %).
+        layout.addWidget(self.plot, 1)
 
         riga_cursore = QHBoxLayout()
         self.cursore = QSlider(Qt.Horizontal)
@@ -376,6 +390,7 @@ class TrainingPanel(QWidget):
         layout.addLayout(riga_cursore)
 
         self.stato = QLabel("")
+        self.stato.setToolTip(testi.STATUS_LINE_TIP)
         self.stato.setWordWrap(True)
         self.stato.setVisible(False)     # niente da dire finche' non arriva un avviso
         layout.addWidget(self.stato)
@@ -459,6 +474,12 @@ class TrainingPanel(QWidget):
             self._su_preview(event)
         elif tipo == "iter":
             self._su_iter(event)
+        #Un evento buono chiude l'avviso di quello storto che l'ha
+        #preceduto: prima restava a schermo per tutta la corsa, unico
+        #produttore della riga a non ripulirsi mai.
+        if tipo in ("hello", "preview", "iter", "save") and self._avviso_evento:
+            self._avviso_evento = ""
+            self._aggiorna_stato()
         elif tipo == "save":
             #Il CSV appena riscritto rimpiazza i punti vivi con quelli veri,
             #fin dove il salvataggio dice di essere arrivato -- ma non
@@ -500,6 +521,16 @@ class TrainingPanel(QWidget):
         self._vivi = []
         self._generazione += 1
         generazione = self._generazione
+        #Subito una sorgente vuota se il percorso e' un altro: fino alla
+        #consegna il grafico mostrava la corsa *precedente* (0,7 s su un CSV
+        #da mezzo milione di righe), e i punti vivi di questa finivano in
+        #coda a lei. Vuota e sul file che non esistera' mai, come quella del
+        #costruttore -- non sul CSV nuovo: quello lo adotta solo una lettura
+        #riuscita, o ogni `save` andrebbe a bussare su un file che non si
+        #apre. Stesso percorso -- il figlio che si ripresenta -- e la
+        #sorgente resta: sono gli stessi dati.
+        if self.loss.path != Path(percorso):
+            self.loss = LossSource(self.previews_dir / "loss_history.csv")
 
         def lavora():
             sorgente = LossSource(percorso)
@@ -867,12 +898,14 @@ class TrainingPanel(QWidget):
         Riletti a ogni anteprima nuova: la cartella cresce mentre il
         pannello e' aperto.
         """
+        #Solo la cartella dell'anteprima selezionata: ripiegare sulla prima
+        #cartella disponibile accendeva il cursore con gli scatti di
+        #un'altra anteprima, e fermarsi li' lasciava tessere, etichetta e
+        #grafico su un'iterazione mentre l'immagine restava quella viva --
+        #senza un avviso, e senza piu' aggiornarsi.
         nome = self.anteprima_selezionata
-        if self.storico is not None and self.storico.disponibile():
-            if nome is None or nome not in self.storico.anteprime():
-                anteprime = self.storico.anteprime()
-                nome = anteprime[0] if anteprime else None
-            self._iterazioni = self.storico.iterazioni(nome) if nome else []
+        if nome is not None and self.storico is not None and self.storico.disponibile():
+            self._iterazioni = self.storico.iterazioni(nome)
         else:
             self._iterazioni = []
         self.cursore.setEnabled(bool(self._iterazioni))
@@ -929,16 +962,22 @@ class TrainingPanel(QWidget):
         immagine = self.storico.immagine(nome, self.iterazione_mostrata)
         if immagine is None:
             #Jpg troncato o sparito: si va allo scatto valido piu' vicino
-            #invece di lasciare l'utente davanti a un buco.
-            for iterazione in sorted(self._iterazioni,
-                                     key=lambda v: abs(v - self.iterazione_mostrata)):
+            #invece di lasciare l'utente davanti a un buco -- fra i pochi
+            #vicini, non su tutta la cartella: aprire ogni scatto sul thread
+            #dell'interfaccia costava 48 ms a 2000 scatti, e a 50 000 sarebbe
+            #stato oltre un secondo per ogni fermata del cursore.
+            vicini = sorted(self._iterazioni, key=lambda v: abs(v - self.iterazione_mostrata))
+            for iterazione in vicini[:VICINI_STORICO]:
                 immagine = self.storico.immagine(nome, iterazione)
                 if immagine is not None:
                     self.iterazione_mostrata = iterazione
                     self.plot.imposta_cursore(iterazione)
-                    self._aggiorna_grafico()
                     break
         if immagine is None:
+            #Nessuno dei vicini si legge: l'utente lo deve sapere, o vede
+            #il cursore muoversi e l'immagine restare ferma senza motivo.
+            self._avviso_anteprima = testi.history_frame_unreadable(self.iterazione_mostrata)
+            self._aggiorna_stato()
             return
         self._immagine_storico = immagine
         self._ridisegna()
@@ -1072,6 +1111,11 @@ class TrainingPanel(QWidget):
                                           etichetta(descrittore, riga, colonna),
                                           riga, colonna, self)
                 self.contorno.addWidget(laterale)
+        #La striscia esiste solo quando le righe sono campioni: con le
+        #viste (AMP) si riempiva di etichette inerti che ripetevano la
+        #tendina in cima, nella fascia dove un attimo prima c'erano le
+        #miniature.
+        self.striscia_widget.setVisible(descrittore["righe_sono_campioni"])
         if descrittore["righe_sono_campioni"]:
             #La colonna mostrata, non risultato[1]: sotto al volto che si
             #sta guardando ci sono gli altri campioni della stessa cosa,
@@ -1081,9 +1125,6 @@ class TrainingPanel(QWidget):
                 self.striscia.addWidget(self._miniatura(griglia[indice][colonna_grande],
                                                         indice, indice == riga,
                                                         indice, colonna_grande))
-        else:
-            for nome in self.anteprime_disponibili():
-                self.striscia.addWidget(QLabel(nome))
         #Senza, le miniature (gia' a misura fissa) restano allineate a
         #sinistra ma lo spazio avanzato si spalma comunque nella riga
         #attraverso il layout stesso; con lo stretch in coda finisce tutto

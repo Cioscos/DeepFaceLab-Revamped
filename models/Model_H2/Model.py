@@ -22,6 +22,7 @@ from samplelib import SampleGeneratorFace, SampleProcessor
 
 
 class H2Model(Supervisori, SAEHDXModel):
+    NOME_ANTEPRIMA = 'H2'
     archi_type = 'h2'       # _accelera lo scrive in _train_cfg; il banco riconosce H2 dalla classe, non da qui
     E_DIM = innesto.E_DIM   # stesso valore di models.Model_H2.innesto: un solo posto lo definisce
 

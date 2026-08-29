@@ -34,29 +34,37 @@ Questo widget e' l'unica cosa nella scheda che cresce con la lunghezza
 dell'allenamento, e per un po' e' cresciuta addosso all'utente: a 75 500
 iterazioni un evento `iter` costava **150 ms** di interfaccia ferma (12,6 ms
 per ripubblicare tutta la storia piu' 70 ms di ridisegno), e gli eventi
-arrivano fino a due al secondo. Non era una regressione di nessun ciclo --
-misurato identico un ciclo prima, 147,5 ms contro 151,1 -- era il numero di
-iterazioni che era cresciuto. Tre scelte tengono il costo legato a cio' che
-si vede invece che a cio' che si e' allenato:
+arrivano fino a due al secondo. Le prime tre scelte -- `aggiungi_punto` per
+l'evento normale, la finestra trovata con una ricerca binaria, la riduzione
+in una passata per tutte le serie -- non bastavano: la passata era Python
+puro su ogni punto della finestra, e con l'intervallo di default ("All
+iterations") la finestra e' tutta la storia. Misurato il 2026-08-29: un
+evento `iter` costava 52 ms a 75 500 iterazioni, 121 a 200 000, **374 a
+500 000**; un tick del cursore dello storico 70 ms; un ridimensionamento
+fino a 232 ms.
 
-* `aggiungi_punto` per l'evento normale: un punto in coda, non tutta la
-  storia da capo. `imposta_dati` resta per le sostituzioni vere (il CSV
-  riletto, un `hello`), che sono rare.
-* la finestra mostrata si trova con una ricerca binaria, non con una
-  scansione: "Last 5 000" ridisegna cinquemila punti anche quando la storia
-  ne ha mezzo milione.
-* la riduzione si fa in **una** passata per tutte le serie insieme, e il
-  risultato si tiene finche' non cambia niente di cio' che lo determina --
-  ridimensionare la finestra, muovere il cursore o cambiare scheda non la
-  rifanno.
+Adesso la riduzione e' numpy: i punti stanno in array (`_x`, `_y`, `_w`,
+con capienza che raddoppia, cosi' `aggiungi_punto` resta un'assegnazione),
+l'indice di colonna si calcola in blocco e minimo e massimo per colonna
+vengono da `reduceat` sulle colonne gia' ordinate -- le iterazioni crescono,
+quindi le colonne anche. Le liste `_iters`/`_serie` restano per chi le legge
+(i test, `_colonne`), gli array sono cio' che il disegno usa. La cache
+sull'ultima riduzione resta, per i ridisegni che non cambiano niente.
+
+La scala verticale va dal minimo al massimo della finestra, non da zero:
+ancorata a zero, una loss che scende da 0,50 a 0,28 occupava meno di meta'
+dell'altezza e a training maturo diventava una linea piatta in alto. Le tre
+linee di griglia portano il loro valore, senza il quale non si distingue
+0,5 da 0,05.
 """
 import bisect
 
+import numpy as np
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor, QPainter, QPen
 from PyQt5.QtWidgets import QWidget
 
-from gui.numeri import iterazione_utilizzabile, numero_finito
+from gui.numeri import MASSIMA_ITERAZIONE, iterazione_utilizzabile, numero_finito
 
 # Gli stessi cinque del tasto 'l' della finestra cv2 (mainscripts/Trainer.py).
 # 0 vuol dire "tutto".
@@ -66,16 +74,49 @@ INTERVALLI = (0, 5000, 10000, 50000, 100000)
 COLORI = ("#7fb4ff", "#ffb37f", "#8fd18f", "#d18fd1")
 SFONDO = "#232629"
 GRIGLIA = "#3a3f44"
+ETICHETTA = "#9aa0a6"
 CURSORE = "#e0e0e0"
 
+#Frazione dell'altezza lasciata sopra il massimo e sotto il minimo, cosi'
+#la curva non tocca i bordi.
+MARGINE = 0.06
 
-def bande_multi(iters, serie, quante, larghezza, primo, ultimo):
-    """Per ogni serie, per ogni colonna di pixel, (minimo, massimo) o None.
 
-    Una passata sola su tutte le serie: `bande` qui sotto e' il caso a una
-    serie, non una seconda implementazione. Con due serie e settantacinquemila
-    punti la differenza fra una passata e quattro non e' un'eleganza, e'
-    l'interfaccia che risponde o non risponde.
+def _in_array(iters, serie):
+    """(x, y, w) da liste o array: iterazioni float64, valori float64 con
+    NaN nei buchi, larghezza di ogni riga.
+
+    Le righe possono avere lunghezze diverse (un cambio di modello sulla
+    stessa cartella): la matrice e' larga quanto la riga piu' lunga e `w`
+    dice fin dove ogni riga vale. Il caso comune -- tutte uguali -- passa da
+    un solo `np.array`, i `None` dei buchi diventano NaN in blocco.
+    """
+    n = len(iters)
+    x = np.asarray(iters, dtype=np.float64)
+    if n == 0:
+        return x, np.zeros((0, 0), dtype=np.float64), np.zeros(0, dtype=np.int64)
+    if isinstance(serie, np.ndarray) and serie.dtype == np.float64 and serie.ndim == 2:
+        return x, serie, np.full(n, serie.shape[1], dtype=np.int64)
+    larghezze = np.fromiter((len(r) for r in serie), dtype=np.int64, count=n)
+    massima = int(larghezze.max()) if n else 0
+    if massima and larghezze.min() == massima:
+        try:
+            #Nessun buco: una conversione sola, in C. Con mezzo milione di
+            #righe la via degli oggetti qui sotto costava 278 ms.
+            y = np.array(serie, dtype=np.float64)
+        except (TypeError, ValueError):
+            grezzo = np.array(serie, dtype=object)
+            y = np.where(grezzo == None, np.nan, grezzo).astype(np.float64)   # noqa: E711
+    else:
+        y = np.full((n, massima), np.nan, dtype=np.float64)
+        for indice, riga in enumerate(serie):
+            for c, v in enumerate(riga):
+                y[indice, c] = np.nan if v is None else v
+    return x, y, larghezze
+
+
+def _riduzione_np(x, y, w, quante, larghezza, primo, ultimo):
+    """Per ogni serie, minimo e massimo per colonna (NaN dove non c'e' niente).
 
     Due regimi, perche' sono due problemi diversi. Quando le posizioni
     possibili (`span`) sono almeno quante le colonne, si ripartisce la
@@ -89,40 +130,65 @@ def bande_multi(iters, serie, quante, larghezza, primo, ultimo):
     iterazione ha spazio per una colonna propria e ancorare gli estremi non
     reintroduce la disuniformita' che era il difetto della formula ad
     ancoraggio applicata al caso opposto.
+
+    Torna (minimi, massimi), matrici [quante, larghezza].
     """
-    if larghezza <= 0 or quante <= 0:
-        return [[] for _ in range(max(0, quante))]
-    risultato = [[None] * larghezza for _ in range(quante)]
-    if not iters:
-        return risultato
+    minimi = np.full((quante, larghezza), np.nan)
+    massimi = np.full((quante, larghezza), np.nan)
+    if len(x) == 0 or quante == 0:
+        return minimi, massimi
+    #Un buco resta un buco, e il controllo di finestra non basta a
+    #fermare un NaN: ogni confronto con lui e' falso, quindi
+    #`iterazione < primo` lo lascia passare e l'indice di colonna
+    #diventa lui stesso.
+    dentro = np.isfinite(x) & (x >= primo) & (x <= ultimo)
+    if not dentro.any():
+        return minimi, massimi
+    x, y, w = x[dentro], y[dentro], w[dentro]
     # `span` e' l'ampiezza della finestra in numero di posizioni (non la
     # differenza fra estremi).
     span = max(1, ultimo - primo + 1)
     ancorato = span < larghezza
     passo = larghezza - 1 if ancorato else larghezza
     divisore = (span - 1) if ancorato else span
-    for iterazione, riga in zip(iters, serie):
-        #Un buco resta un buco, e il controllo di finestra non basta a
-        #fermare un NaN: ogni confronto con lui e' falso, quindi
-        #`iterazione < primo` lo lascia passare e l'indice di colonna
-        #diventa lui stesso.
-        if not numero_finito(iterazione):
+    offset = (x - primo).astype(np.int64)
+    colonne = (offset * passo // divisore) if divisore > 0 else np.zeros(len(x), dtype=np.int64)
+    for c in range(quante):
+        v = y[:, c] if c < y.shape[1] else np.full(len(x), np.nan)
+        validi = np.isfinite(v) & (w > c)
+        if not validi.any():
             continue
-        if iterazione < primo or iterazione > ultimo:
-            continue
-        offset = iterazione - primo
-        colonna = (offset * passo // divisore) if divisore > 0 else 0
-        for indice in range(quante):
-            valore = riga[indice]
-            if not numero_finito(valore):
-                continue
-            corrente = risultato[indice][colonna]
-            if corrente is None:
-                risultato[indice][colonna] = (valore, valore)
-            else:
-                risultato[indice][colonna] = (min(corrente[0], valore),
-                                              max(corrente[1], valore))
+        col, val = colonne[validi], v[validi]
+        #Le colonne crescono con le iterazioni, quindi `reduceat` sui
+        #tratti a colonna costante e' minimo e massimo per colonna in una
+        #passata sola.
+        inizi = np.flatnonzero(np.r_[True, col[1:] != col[:-1]])
+        minimi[c, col[inizi]] = np.minimum.reduceat(val, inizi)
+        massimi[c, col[inizi]] = np.maximum.reduceat(val, inizi)
+    return minimi, massimi
+
+
+def _a_bande(minimi, massimi):
+    """La forma di sempre: per ogni serie, per ogni colonna, (min, max) o None."""
+    risultato = []
+    for mn, mx in zip(minimi, massimi):
+        risultato.append([None if np.isnan(a) else (float(a), float(b)) for a, b in zip(mn, mx)])
     return risultato
+
+
+def bande_multi(iters, serie, quante, larghezza, primo, ultimo):
+    """Per ogni serie, per ogni colonna di pixel, (minimo, massimo) o None.
+
+    Una passata sola su tutte le serie: `bande` qui sotto e' il caso a una
+    serie, non una seconda implementazione. Le regole della ripartizione in
+    colonne sono in `_riduzione_np`.
+    """
+    if larghezza <= 0 or quante <= 0:
+        return [[] for _ in range(max(0, quante))]
+    if not len(iters):
+        return [[None] * larghezza for _ in range(quante)]
+    x, y, w = _in_array(iters, serie)
+    return _a_bande(*_riduzione_np(x, y, w, quante, larghezza, primo, ultimo))
 
 
 def bande(iters, valori, larghezza, primo, ultimo):
@@ -148,6 +214,34 @@ def _giunzione(prima, dopo):
     return None
 
 
+def _tutte_utilizzabili(iters):
+    """`iterazione_utilizzabile` su tutta la lista, senza una chiamata per
+    elemento: il tipo si guarda in Python (25 ms su mezzo milione), la
+    grandezza in numpy. Falso al primo dubbio: chi chiama ripiega sul
+    filtro elemento per elemento, che e' la regola.
+    """
+    if not iters:
+        return True
+    if not all(type(i) is int for i in iters):
+        return False
+    try:
+        x = np.fromiter(iters, dtype=np.int64, count=len(iters))
+    except OverflowError:
+        return False
+    return bool((x >= 0).all() and (x <= MASSIMA_ITERAZIONE).all())
+
+
+def _etichetta_valore(valore):
+    """Un numero della griglia, con le cifre che servono a distinguerlo."""
+    if abs(valore) >= 100:
+        return "%.0f" % valore
+    if abs(valore) >= 10:
+        return "%.1f" % valore
+    if abs(valore) >= 1:
+        return "%.2f" % valore
+    return "%.3f" % valore
+
+
 class LossPlot(QWidget):
     """Le serie della loss, una banda per colonna di pixel."""
 
@@ -160,7 +254,11 @@ class LossPlot(QWidget):
         #Cresce a ogni cambio dei dati: e' la parte della chiave della cache
         #che una sostituzione della stessa lunghezza non potrebbe dare.
         self._versione = 0
-        self._cache = None          # (chiave, quante, bande, massimo)
+        self._cache = None          # (chiave, quante, bande, minimo, massimo)
+        self._x = np.zeros(0, dtype=np.float64)
+        self._y = np.zeros((0, 0), dtype=np.float64)
+        self._w = np.zeros(0, dtype=np.int64)
+        self._n = 0                 # righe valide dentro gli array
         self.setMinimumHeight(120)
 
     def imposta_dati(self, iters, serie):
@@ -172,7 +270,7 @@ class LossPlot(QWidget):
         punti di un CSV letto all'apertura della scheda, senza che nessun
         evento sia passato di la'.
 
-        Filtrare qui, e non dentro `bande`, e' cio' che salva anche il
+        Filtrare qui, e non dentro la riduzione, e' cio' che salva anche il
         calcolo della finestra: `finestra()` prende gli estremi da questa
         lista, quindi un solo valore storto in coda rende storto lo span e
         con lui l'indice di colonna di **tutte** le iterazioni sane. Una
@@ -183,9 +281,15 @@ class LossPlot(QWidget):
         un rollback. L'evento normale passa da `aggiungi_punto`, che costa
         un punto invece di tutta la storia -- vedi il docstring del modulo.
         """
-        tenuti = [(i, r) for i, r in zip(iters, serie) if iterazione_utilizzabile(i)]
-        self._iters = [i for i, _ in tenuti]
-        self._serie = [r for _, r in tenuti]
+        iters, serie = list(iters), list(serie)
+        if _tutte_utilizzabili(iters):
+            self._iters, self._serie = iters[:len(serie)], serie[:len(iters)]
+        else:
+            tenuti = [(i, r) for i, r in zip(iters, serie) if iterazione_utilizzabile(i)]
+            self._iters = [i for i, _ in tenuti]
+            self._serie = [r for _, r in tenuti]
+        self._x, self._y, self._w = _in_array(self._iters, self._serie)
+        self._n = len(self._iters)
         self._cambiato()
 
     def aggiungi_punto(self, iterazione, valori):
@@ -201,10 +305,32 @@ class LossPlot(QWidget):
             return False
         if self._iters and iterazione <= self._iters[-1]:
             return False
+        valori = list(valori)
         self._iters.append(iterazione)
-        self._serie.append(list(valori))
+        self._serie.append(valori)
+        self._accoda(iterazione, valori)
         self._cambiato()
         return True
+
+    def _accoda(self, iterazione, valori):
+        """Il punto nuovo dentro gli array, allargando la capienza a
+        raddoppi cosi' l'operazione resta costante ammortizzata."""
+        larghezza = max(self._y.shape[1], len(valori))
+        if self._n == len(self._x) or larghezza > self._y.shape[1]:
+            capienza = max(64, 2 * max(self._n, len(self._x)))
+            x = np.zeros(capienza, dtype=np.float64)
+            y = np.full((capienza, larghezza), np.nan, dtype=np.float64)
+            w = np.zeros(capienza, dtype=np.int64)
+            x[:self._n] = self._x[:self._n]
+            y[:self._n, :self._y.shape[1]] = self._y[:self._n]
+            w[:self._n] = self._w[:self._n]
+            self._x, self._y, self._w = x, y, w
+        self._x[self._n] = iterazione
+        self._y[self._n, :] = np.nan
+        for c, v in enumerate(valori):
+            self._y[self._n, c] = np.nan if v is None or not numero_finito(v) else v
+        self._w[self._n] = len(valori)
+        self._n += 1
 
     def imposta_intervallo(self, n):
         self._intervallo = n
@@ -262,42 +388,35 @@ class LossPlot(QWidget):
                 bisect.bisect_right(self._iters, ultimo))
 
     def _riduzione(self, larghezza, altezza, primo, ultimo):
-        """(quante, bande per serie, massimo) per la finestra mostrata.
+        """(quante, bande per serie, minimo, massimo) per la finestra mostrata.
 
-        Tenuta in cache finche' non cambia niente di cio' che la determina:
-        un ridimensionamento, un cambio di intervallo o di cursore la
-        rifanno, un ridisegno qualunque (la scheda che torna in primo piano,
-        un'altra finestra che passa sopra) no.
+        Tenuta in cache finche' non cambia niente di cio' che la determina;
+        un ridisegno qualunque (la scheda che torna in primo piano,
+        un'altra finestra che passa sopra) non la rifa'. Rifarla costa
+        pochi millisecondi anche su mezzo milione di punti (vedi il
+        docstring del modulo), quindi cursore e ridimensionamento possono
+        permettersela a ogni tick.
         """
         chiave = (self._versione, larghezza, altezza, primo, ultimo)
         if self._cache is not None and self._cache[0] == chiave:
             return self._cache[1:]
         inizio, fine = self._finestra_indici(primo, ultimo)
-        righe = self._serie[inizio:fine]
-        if not righe:
-            self._cache = (chiave, 0, [], 0.0)
+        if fine <= inizio:
+            self._cache = (chiave, 0, [], 0.0, 0.0)
             return self._cache[1:]
+        w = self._w[inizio:fine]
         #Il minimo si prende sulle righe della **finestra**, non su tutte: e'
         #quello che serve perche' ogni indice qui sotto esista su ogni riga
-        #che verra' letta, e le altre non vengono lette. Prenderlo su tutte
-        #-- il CSV puo' accumulare righe con un numero di loss diverso, un
-        #cambio di modello sulla stessa cartella -- costerebbe una passata
-        #sull'intera storia a ogni ridisegno per lasciar decidere quante
-        #curve mostrare a righe che non si stanno guardando.
-        quante = min(len(r) for r in righe)
-        gruppi = bande_multi(self._iters[inizio:fine], righe, quante,
-                             larghezza, primo, ultimo)
+        #che verra' letta, e le altre non vengono lette.
+        quante = int(w.min())
+        minimi, massimi = _riduzione_np(self._x[inizio:fine], self._y[inizio:fine], w,
+                                        quante, larghezza, primo, ultimo)
+        gruppi = _a_bande(minimi, massimi)
         #La scala si prende dalle bande gia' costruite, cioe' dai soli
-        #valori disegnabili: `max` su valori grezzi non e' una difesa -- su
-        #[nan, 0.3] torna il primo elemento, perche' ogni confronto con NaN
-        #e' falso, quindi il NaN passa o non passa a seconda dell'ordine
-        #delle righe.
-        massimo = 0.0
-        for colonne in gruppi:
-            for banda in colonne:
-                if banda is not None and banda[1] > massimo:
-                    massimo = banda[1]
-        self._cache = (chiave, quante, gruppi, massimo)
+        #valori disegnabili: un NaN non entra ne' nel minimo ne' nel massimo.
+        minimo = float(np.nanmin(minimi)) if np.isfinite(minimi).any() else 0.0
+        massimo = float(np.nanmax(massimi)) if np.isfinite(massimi).any() else 0.0
+        self._cache = (chiave, quante, gruppi, minimo, massimo)
         return self._cache[1:]
 
     def paintEvent(self, _event):
@@ -307,23 +426,39 @@ class LossPlot(QWidget):
         if larghezza < 2 or altezza < 2 or not self._serie:
             return
         primo, ultimo = self.finestra()
-        quante, gruppi, massimo = self._riduzione(larghezza, altezza, primo, ultimo)
+        quante, gruppi, minimo, massimo = self._riduzione(larghezza, altezza, primo, ultimo)
         if not quante:
             return
         #Senza nessun valore finito non c'e' scala, e senza scala non si
         #disegna. Con la scala a zero (tutte le loss a zero, l'inizio di
-        #certi allenamenti) si normalizza per uno invece di dividere per
-        #zero.
-        if massimo <= 0.0:
-            massimo = 1.0
+        #certi allenamenti, o un solo valore) si normalizza per uno invece
+        #di dividere per zero.
+        ampiezza = massimo - minimo
+        if ampiezza <= 0.0:
+            ampiezza = 1.0
+        basso = minimo - ampiezza * MARGINE
+        alto = massimo + ampiezza * MARGINE
+
+        def y_di(valore):
+            return int((alto - valore) / (alto - basso) * (altezza - 1))
 
         p.setPen(QPen(QColor(GRIGLIA), 1))
         for frazione in (0.25, 0.5, 0.75):
             y = int(altezza * frazione)
             p.drawLine(0, y, larghezza, y)
 
-        def y_di(valore):
-            return altezza - int(valore / massimo * (altezza - 1))
+        #I valori delle tre linee di griglia, a destra sopra la linea: senza
+        #non si distingue una loss a 0,5 da una a 0,05. Prima delle curve,
+        #cosi' un'etichetta non copre mai un pixel della linea.
+        p.setPen(QPen(QColor(ETICHETTA), 1))
+        carattere = p.font()
+        carattere.setPointSizeF(max(6.0, carattere.pointSizeF() * 0.8))
+        p.setFont(carattere)
+        for frazione in (0.25, 0.5, 0.75):
+            y = int(altezza * frazione)
+            valore = alto - (alto - basso) * y / (altezza - 1)
+            p.drawText(0, y - 14, larghezza - 4, 14, Qt.AlignRight | Qt.AlignBottom,
+                       _etichetta_valore(valore))
 
         for indice, colonne in enumerate(gruppi):
             p.setPen(QPen(QColor(COLORI[indice % len(COLORI)]), 1))

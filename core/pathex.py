@@ -1,17 +1,44 @@
+import os
+import time
 from pathlib import Path
 from os import scandir
 
 image_extensions = [".jpg", ".jpeg", ".png", ".tif", ".tiff"]
 
+#Quante volte, e a che distanza, riprovare a mettere il file al suo posto
+#quando Windows lo tiene occupato: l'antivirus in tempo reale apre un file
+#appena scritto per esaminarlo, e finche' lo tiene `os.replace` risponde
+#PermissionError. Su Linux non succede e il primo tentativo basta.
+TENTATIVI_SOSTITUZIONE = 10
+ATTESA_SOSTITUZIONE_SEC = 0.5
+
+
 def write_bytes_safe(p, bytes_data):
     """
     writes to .tmp first and then rename to target filename
     """
+    scrivi_al_sicuro(p, lambda f: f.write(bytes_data))
+
+
+def scrivi_al_sicuro(p, scrivi):
+    """
+    `scrivi(f)` riempie `<p>.tmp`, che poi prende il posto di `p` con un
+    solo `os.replace`: atomico su Linux e su Windows, e il file precedente
+    resta intero finche' il nuovo non e' completo. Riprova la sostituzione
+    se il sistema tiene il file occupato (vedi TENTATIVI_SOSTITUZIONE).
+    """
+    p = Path(p)
     p_tmp = p.parent / (p.name + '.tmp')
-    p_tmp.write_bytes(bytes_data)
-    if p.exists():
-        p.unlink()
-    p_tmp.rename (p)
+    with open(p_tmp, 'wb') as f:
+        scrivi(f)
+    for tentativo in range(TENTATIVI_SOSTITUZIONE):
+        try:
+            os.replace(p_tmp, p)
+            return
+        except PermissionError:
+            if tentativo == TENTATIVI_SOSTITUZIONE - 1:
+                raise
+            time.sleep(ATTESA_SOSTITUZIONE_SEC)
 
 def scantree(path):
     """Recursively yield DirEntry objects for given directory."""

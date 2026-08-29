@@ -444,6 +444,12 @@ RANGE_LABEL = "Range:"
 RANGE_TIP = "This range picks how many recent iterations the chart below plots."
 RANGE_ALL_TIP = "Plot every recorded iteration, from the start of the run."
 RANGE_LAST_TIP = "Plot only the most recent iterations, dropping the rest."
+LOSS_CHART_TIP = ("Each pixel column shows the lowest and highest loss of the iterations "
+                  "that fall in it; the numbers on the right label the grid lines. "
+                  "The dashed line marks where the history slider is stopped.")
+LOSS_LEGEND_TIP = "Which colour is the source loss and which the destination loss."
+STATUS_LINE_TIP = ("Warnings about this panel: what could not be shown, read or drawn. "
+                   "It disappears when there is nothing to report.")
 
 SAMPLE_SELECTOR_TIP = ("Jump the large preview to this sample -- same as clicking "
                        "its thumbnail in the filmstrip below.")
@@ -577,6 +583,11 @@ def loss_values_dropped(count):
     if count == 1:
         return "1 loss value cannot be plotted (NaN or infinite)"
     return "%d loss values cannot be plotted (NaN or infinite)" % count
+
+
+def history_frame_unreadable(iteration):
+    return ("No readable history frame near iteration %d -- the snapshots on disk "
+            "may be truncated." % iteration)
 
 
 def preview_unreadable():

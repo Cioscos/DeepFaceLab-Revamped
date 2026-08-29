@@ -25,14 +25,33 @@ FASCIA_GRAFICO = 100
 class StoricoAnteprime(object):
     def __init__(self, model_dir, model_name):
         self.base = Path(model_dir) / ("%s_history" % model_name)
+        #Elenchi tenuti finche' la cartella non cambia: `mtime` della
+        #cartella, che sia Windows sia Linux aggiornano quando una voce
+        #entra o esce. Rileggere a ogni evento `preview` costava 46 ms a
+        #20 000 scatti (misurato 2026-08-29), sul thread dell'interfaccia.
+        self._cache = {}          # cartella -> (mtime_ns, risultato)
 
     def disponibile(self):
         return self.base.is_dir()
 
+    def _memorizzata(self, cartella, calcola):
+        try:
+            mtime = cartella.stat().st_mtime_ns
+        except OSError:
+            self._cache.pop(cartella, None)
+            return []
+        voce = self._cache.get(cartella)
+        if voce is not None and voce[0] == mtime:
+            return list(voce[1])
+        risultato = calcola()
+        self._cache[cartella] = (mtime, risultato)
+        return list(risultato)
+
     def anteprime(self):
         if not self.disponibile():
             return []
-        return sorted(p.name for p in self.base.iterdir() if p.is_dir())
+        return self._memorizzata(
+            self.base, lambda: sorted(p.name for p in self.base.iterdir() if p.is_dir()))
 
     def iterazioni(self, nome):
         """Le iterazioni disponibili per un'anteprima, in ordine crescente.
@@ -50,6 +69,9 @@ class StoricoAnteprime(object):
         cartella = self.base / nome
         if not cartella.is_dir():
             return []
+        return self._memorizzata(cartella, lambda: self._iterazioni_da_disco(cartella))
+
+    def _iterazioni_da_disco(self, cartella):
         numeri = []
         for p in cartella.iterdir():
             if p.suffix.lower() not in (".jpg", ".jpeg", ".png"):

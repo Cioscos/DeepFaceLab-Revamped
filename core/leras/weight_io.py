@@ -10,7 +10,10 @@ Keeping it unchanged means the same workspace/model directory opens with both
 the TF build and this one, and the pretrained weights shipped in the package
 need no conversion.
 """
+import contextlib
 import pickle
+import queue
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -168,4 +171,99 @@ def read_weights_file(path):
 
 
 def write_weights_file(path, d):
-    pathex.write_bytes_safe(Path(path), pickleex.dumps(d))
+    """Il dizionario dei pesi su disco, a flusso (vedi pickleex.dump)."""
+    pathex.scrivi_al_sicuro(Path(path), lambda f: pickleex.dump(d, f))
+
+
+class ScrittorePesi:
+    """
+    Un thread che scrive i file dei pesi mentre il training continua.
+
+    `save_weights` fa lo snapshot dei tensori (GPU->CPU, una copia) e lo
+    accoda qui; il thread serializza e scrive. Sul thread di training il
+    salvataggio dura quanto lo snapshot -- meno di un secondo su un H2 a
+    224 -- invece di quanto il disco: e' il disco (piu' l'antivirus, su
+    Windows) che faceva durare un salvataggio oltre il minuto, con la GPU
+    ferma per tutto il tempo (registro 3.16).
+
+    Le regole: una scrittura alla volta, nell'ordine in cui sono state
+    accodate; `attendi()` blocca finche' la coda e' vuota e **rilancia**
+    il primo errore della scrittura, cosi' un disco pieno ferma il training
+    invece di perdersi in un thread; e il thread non e' daemon, quindi
+    l'interprete aspetta l'ultima scrittura anche a chiusura brusca.
+    """
+
+    def __init__(self):
+        self._coda = queue.Queue()
+        self._errore = None
+        self._thread = None
+        self._lock = threading.Lock()
+
+    def accoda(self, path, d):
+        self._rilancia()
+        with self._lock:
+            if self._thread is None:
+                self._thread = threading.Thread(target=self._lavora, name="scrittore-pesi")
+                self._thread.start()
+        self._coda.put((Path(path), d))
+
+    def attendi(self):
+        """Finche' ogni file accodato e' sul disco. Rilancia un errore di scrittura."""
+        self._coda.join()
+        self._rilancia()
+
+    def in_corso(self):
+        return self._coda.unfinished_tasks > 0
+
+    def chiudi(self):
+        """Aspetta la coda e ferma il thread: da chiamare a fine sessione."""
+        self._coda.join()
+        with self._lock:
+            thread, self._thread = self._thread, None
+        if thread is not None:
+            self._coda.put(None)
+            thread.join()
+        self._rilancia()
+
+    def _rilancia(self):
+        if self._errore is not None:
+            errore, self._errore = self._errore, None
+            raise errore
+
+    def _lavora(self):
+        while True:
+            voce = self._coda.get()
+            if voce is None:
+                self._coda.task_done()
+                return
+            path, d = voce
+            try:
+                if self._errore is None:
+                    write_weights_file(path, d)
+            except Exception as errore:      # noqa: BLE001 -- rilanciato da attendi()
+                self._errore = errore
+            finally:
+                del d
+                self._coda.task_done()
+
+
+_scrittore_corrente = None
+
+
+@contextlib.contextmanager
+def scrittura_in_sfondo(scrittore):
+    """
+    Dentro il blocco ogni `Saveable.save_weights` accoda al posto di
+    scrivere. E' il modo in cui ModelBase.save() manda in sfondo le scritture
+    di ogni modello senza che ciascun `onSave` debba sapere dello scrittore.
+    """
+    global _scrittore_corrente
+    precedente, _scrittore_corrente = _scrittore_corrente, scrittore
+    try:
+        yield scrittore
+    finally:
+        _scrittore_corrente = precedente
+
+
+def scrittore_corrente():
+    return _scrittore_corrente

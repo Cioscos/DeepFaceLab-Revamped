@@ -4,7 +4,10 @@ import pickle
 import traceback
 from pathlib import Path
 
+import numpy as np
+
 import samplelib.PackedFaceset
+import samplelib.PosaCampioni
 from core import pathex
 from core.mplib import MPSharedList
 from core.interact import interact as io
@@ -17,6 +20,23 @@ from .Sample import Sample, SampleType
 
 class SampleLoader:
     samples_cache = dict()
+    posa_cache = dict()       # str(samples_path) -> ndarray [N, 3], stessa vita di samples_cache
+
+    @staticmethod
+    def posa(samples_path):
+        """La matrice [N, 3] delle pose dei campioni FACE gia' caricati da
+        `samples_path`, o None se quel percorso non e' mai passato da `load`."""
+        return SampleLoader.posa_cache.get(str(samples_path))
+
+    @staticmethod
+    def posa_di(samples_path, samples):
+        """Come `posa`, ma con un ripiego: se il percorso non e' passato da
+        `load` -- un test che consegna una lista sua -- la matrice si
+        costruisce dai campioni, come faceva il ciclo originale."""
+        posa = SampleLoader.posa(samples_path)
+        if posa is None or len(posa) != len(samples):
+            posa = np.array([s.get_pitch_yaw_roll() for s in samples], dtype=np.float64).reshape(len(samples), 3)
+        return posa
     @staticmethod
     def get_person_id_max_count(samples_path):
         samples = None
@@ -60,7 +80,14 @@ class SampleLoader:
 
                 if result is None:
                     result = SampleLoader.load_face_samples( pathex.get_image_paths(samples_path, subdirs=subdirs) )
+                    pak = None
+                else:
+                    pak = Path(samples_path) / samplelib.PackedFaceset.NOME_FILE
 
+                #Prima dell'impacchettamento in memoria condivisa, cosi' ogni
+                #figlio eredita la posa gia' fatta e il generatore la legge
+                #dalla matrice invece di de-picklare N campioni.
+                SampleLoader.posa_cache[str(samples_path)] = samplelib.PosaCampioni.stima_posa(result, pak=pak)
                 samples[sample_type] = MPSharedList(result)
         elif          sample_type == SampleType.FACE_TEMPORAL_SORTED:
                 result = SampleLoader.load (SampleType.FACE, samples_path)
@@ -83,7 +110,8 @@ class SampleLoader:
               seg_ie_polys,
               xseg_mask_compressed,
               eyebrows_expand_mod,
-              source_filename ) = data
+              source_filename,
+              pitch_yaw_roll ) = data
               
             sample_list.append( Sample(filename=filename,
                                         sample_type=SampleType.FACE,
@@ -94,6 +122,7 @@ class SampleLoader:
                                         xseg_mask_compressed=xseg_mask_compressed,
                                         eyebrows_expand_mod=eyebrows_expand_mod,
                                         source_filename=source_filename,
+                                        pitch_yaw_roll=pitch_yaw_roll,
                                     ))
         return sample_list
 
@@ -159,13 +188,19 @@ class FaceSamplesLoaderSubprocessor(Subprocessor):
                 self.log_err (f"FaceSamplesLoader: {filename} is not a dfl image file.")
                 data = None
             else:
+                landmarks = dflimg.get_landmarks()
+                shape = dflimg.get_shape()
+                #La posa qui, dove il lavoro e' gia' distribuito sui figli:
+                #costa quanto un solvePnP per volto e risparmia al caricatore
+                #di rifarla in serie, e a `pack` di scriverla vuota nel .pak.
                 data = (dflimg.get_face_type(),
-                        dflimg.get_shape(),
-                        dflimg.get_landmarks(),
+                        shape,
+                        landmarks,
                         dflimg.get_seg_ie_polys(),
                         dflimg.get_xseg_mask_compressed(),
                         dflimg.get_eyebrows_expand_mod(),
-                        dflimg.get_source_filename() )
+                        dflimg.get_source_filename(),
+                        samplelib.PosaCampioni._una(landmarks, shape[1]) )
 
             return idx, data
 

@@ -18,6 +18,7 @@ import numpy as np
 import torch
 
 from core import imagelib, pathex, pickleex
+from core.leras.weight_io import ScrittorePesi, scrittura_in_sfondo
 from core.cv2ex import *
 from core.interact import interact as io
 from core.leras import nn
@@ -452,10 +453,34 @@ class ModelBase(object):
             self.preview_history_writer = PreviewHistoryWriter()
         return self.preview_history_writer
 
+    @property
+    def scrittore_pesi(self):
+        """Il thread che scrive i pesi in sfondo (core/leras/weight_io.py::
+        ScrittorePesi): save() torna dopo lo snapshot, il disco lavora mentre
+        il training continua. Chi legge o copia i file -- il backup, il
+        salvataggio successivo, la chiusura -- aspetta prima. Nasce al primo
+        uso, non in __init__: i banchi di prova costruiscono ModelBase senza
+        il suo __init__ (prompt, device, generatori) e chiamano save().
+        """
+        scrittore = self.__dict__.get('_scrittore_pesi')
+        if scrittore is None:
+            scrittore = self.__dict__['_scrittore_pesi'] = ScrittorePesi()
+        return scrittore
+
+    def attendi_salvataggio(self):
+        """Finche' l'ultimo salvataggio e' tutto su disco (rilancia un suo errore)."""
+        self.scrittore_pesi.attendi()
+
     def save(self):
+        #Il salvataggio precedente deve essere finito: due scritture dello
+        #stesso file non si sovrappongono, e un suo errore esce qui, sul
+        #thread di training, invece di restare in un thread che nessuno
+        #guarda.
+        self.attendi_salvataggio()
         Path( self.get_summary_path() ).write_text( self.get_summary_text() )
 
-        self.onSave()
+        with scrittura_in_sfondo(self.scrittore_pesi):
+            self.onSave()
 
         model_data = {
             'iter': self.iter,
@@ -475,6 +500,7 @@ class ModelBase(object):
 
     def create_backup(self):
         io.log_info ("Creating backup...", end='\r')
+        self.attendi_salvataggio()      # i file da copiare devono essere completi
 
         if not self.autobackups_path.exists():
             self.autobackups_path.mkdir(exist_ok=True)
@@ -627,6 +653,7 @@ class ModelBase(object):
         self.generate_next_samples()
 
     def finalize(self):
+        self.scrittore_pesi.chiudi()
         if self.model_lock is not None:
             self.model_lock.release()
             self.model_lock = None

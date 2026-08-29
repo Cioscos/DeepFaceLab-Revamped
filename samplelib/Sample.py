@@ -123,5 +123,8 @@ class Sample(object):
                 'xseg_mask_compressed' : self.xseg_mask_compressed,
                 'eyebrows_expand_mod': self.eyebrows_expand_mod,
                 'source_filename': self.source_filename,
-                'person_name': self.person_name
+                'person_name': self.person_name,
+                #Nel .pak dal 2026-08-29: chi lo carica non rifa' solvePnP per
+                #ogni volto a ogni avvio (samplelib/PosaCampioni.py).
+                'pitch_yaw_roll': self.pitch_yaw_roll,
                }
