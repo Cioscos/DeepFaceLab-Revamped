@@ -668,7 +668,7 @@ _DINO_STRIDE_H2 = FieldDef(key="dinov2-stride", option="dino_ogni", label="DINOv
                            enabled_if=("dinov2-perceptual-power!=0.0",))
 _FFL_POWER = FieldDef(key="focal-frequency-power", option="ffl_power", label="Focal frequency power", kind=FIELD_FLOAT,
                       default=0.0, valid_range=(0.0, 10.0),
-                      help="Focal Frequency Loss on the masked reconstructions. 0 disables it. Shown only on the first run.")
+                      help="Focal Frequency Loss on the masked reconstructions. 0 disables it.")
 
 _SUPERVISORS_H1 = (_ID_POWER_H1, _IFSR_POWER_H1, _BLEED_POWER_H1, _BLEED_PER_SAMPLE, _DINO_POWER, _DINO_STRIDE_H1, _FFL_POWER)
 _SUPERVISORS_H2 = (_ID_POWER_H2, _IFSR_POWER_H2, _BLEED_POWER_H2, _BLEED_PER_SAMPLE, _DINO_POWER, _DINO_STRIDE_H2, _FFL_POWER)

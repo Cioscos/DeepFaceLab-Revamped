@@ -642,7 +642,7 @@ class SAEHDModel(ModelBase):
         default_clipgrad           = self.options['clipgrad']           = self.load_or_def_option('clipgrad', False)
         default_pretrain           = self.options['pretrain']           = self.load_or_def_option('pretrain', False)
 
-        ask_override = self.ask_override()
+        ask_override = self.override_richiesto = self.ask_override()   # H1 lo legge: super() ha gia' consumato il prompt a tempo
         if self.is_first_run() or ask_override:
             self.ask_autobackup_hour()
             self.ask_write_preview_history()

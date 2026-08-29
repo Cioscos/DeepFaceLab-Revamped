@@ -116,6 +116,10 @@ class H2Model(Supervisori, SAEHDXModel):
                 self.options['d_mask_dims'] = d_mask_dims + d_mask_dims % 2
             self.options['maschera_tronco'] = io.input_bool("Mask reads the identity-modulated trunk", default_maschera_tronco, help_message="Adds a zero-initialized 1x1 bridge from the identity-modulated trunk into the mask branch, so the mask can depend on the identity vector. Off: the mask depends on the code only, as in SAEHD. Fixed at the first start.")
             self.options['identita'] = io.input_str("Identity vectors", default_identita, ['learned', 'adaface'], help_message="learned: two free vectors trained with the model. adaface: the mean AdaFace embedding of each faceset, computed once at the first start and frozen.")
+
+        if self.is_first_run() or ask_override:
+            # Pesi della loss: si cambiano fra una sessione e l'altra (il 2026-08-29 DINO
+            # acceso al riavvio restava a zero perche' stavano nel blocco del primo avvio).
             self.options['id_power']   = np.clip(io.input_number("Identity power", default_id_power, add_info="0.0 .. 10.0", help_message="Cosine loss between the AdaFace embedding of the swapped face and the mean embedding of the src faceset. 0 disables it."), 0.0, 10.0)
             self.options['ifsr_power'] = np.clip(io.input_number("IFSR power", default_ifsr_power, add_info="0.0 .. 10.0", help_message="L1 between AdaFace intermediate features of the swapped face and of the dst face. 0 disables it."), 0.0, 10.0)
             self.options['dino_power'] = np.clip(io.input_number("DINOv2 perceptual power", default_dino_power, add_info="0.0 .. 10.0", help_message="L1 between DINOv2-S tokens of the masked reconstructions and their targets. 0 disables it."), 0.0, 10.0)
@@ -123,8 +127,6 @@ class H2Model(Supervisori, SAEHDXModel):
             self.options['ffl_power']  = np.clip(io.input_number("Focal frequency power", default_ffl_power, add_info="0.0 .. 10.0", help_message="Focal Frequency Loss on the masked reconstructions. 0 disables it."), 0.0, 10.0)
             self.options['bleed_power'] = np.clip(io.input_number("Bleed power", default_bleed_power, add_info="0.0 .. 10.0", help_message="Penalizes the swap when its AdaFace embedding drifts toward the mean embedding of the dst faceset beyond a fixed cosine margin. 0 disables it."), 0.0, 10.0)
             self.options['bleed_campione'] = io.input_bool("Bleed per sample", default_bleed_campione, help_message="Bleed repels the swap from its own sample's dst embedding instead of the dst faceset mean. Only effective when bleed power > 0.")
-
-        if self.is_first_run() or ask_override:
             if self.options['face_type'] in ('wf', 'head'):
                 self.options['masked_training'] = io.input_bool("Masked training", default_masked_training, help_message="Clips the training area to the face mask.")
             self.options['eyes_mouth_prio'] = io.input_bool("Eyes and mouth priority", default_eyes_mouth_prio)

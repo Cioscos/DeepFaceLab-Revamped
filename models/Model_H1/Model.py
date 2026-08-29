@@ -24,7 +24,7 @@ class H1Model(Supervisori, SAEHDXModel):
         default_bleed_power = self.options['bleed_power'] = self.load_or_def_option('bleed_power', 0.0)
         default_bleed_campione = self.options['bleed_campione'] = self.load_or_def_option('bleed_campione', False)
 
-        if self.is_first_run():
+        if self.is_first_run() or self.override_richiesto:     # pesi della loss: si cambiano fra una sessione e l'altra
             self.options['id_power']   = np.clip(io.input_number("Identity power", default_id_power, add_info="0.0 .. 10.0",
                 help_message="Cosine loss between the AdaFace embedding of the swapped face and the mean embedding of the src faceset. 0 disables it."), 0.0, 10.0)
             self.options['ifsr_power'] = np.clip(io.input_number("IFSR power", default_ifsr_power, add_info="0.0 .. 10.0",
