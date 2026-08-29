@@ -8,11 +8,13 @@ import cv2
 import numpy as np
 import torch
 
+from core.cv2ex import cv2_imread
 from core.interact import interact as io
 from core.leras import nn
 from DFLIMG import DFLJPG
 from facelib.supervisori import crop, pesi, termini
 from models.Model_SAEHD.Model import saehd_mask_blur
+from samplelib import VoltiAllineati
 
 
 class Supervisori:
@@ -48,6 +50,15 @@ class Supervisori:
     def _congela(rete):
         return rete.to(nn.device).eval().requires_grad_(False).to(memory_format=torch.channels_last)
 
+    @staticmethod
+    def _lettori(percorso):
+        """(percorso, loader) per ogni volto allineato, in ordine di nome: il
+        loader e' None per i .jpg sciolti e porta i byte del pacchetto se il
+        faceset e' impacchettato. Serve due volte, ai metadati e ai pixel:
+        `DFLJPG.get_img` non guarda i byte gia' letti, rilegge il file per
+        nome, e per un volto impacchettato quel file non esiste."""
+        return [(str(p), VoltiAllineati.loader(p)) for p in VoltiAllineati.percorsi(percorso)]
+
     def _volti(self, percorso, lato, con_immagini=True):
         """5 punti (in pixel a `lato`) dei volti allineati in `percorso` e,
         solo se `con_immagini`, le immagini (lato x lato, BGR [0,1]): sono gia'
@@ -57,15 +68,16 @@ class Supervisori:
         Senza AdaFace nessuno guarda i pixel -- di questi volti serve solo
         theta -- e la decodifica e' tutto il costo dell'avvio: `get_shape`
         legge l'intestazione SOF, `get_img` decodifica il JPEG intero."""
-        percorsi = sorted(pathlib.Path(percorso).glob("*.jpg"))[:self.MASSIMO_VOLTI_RIFERIMENTO]
+        lettori = self._lettori(percorso)[:self.MASSIMO_VOLTI_RIFERIMENTO]
         immagini, punti = [], []
-        for p in percorsi:
-            j = DFLJPG.load(str(p))
+        for nome, loader in lettori:
+            j = DFLJPG.load(nome, loader_func=loader)
             if j is None or j.get_landmarks() is None or j.get_shape() is None:
                 continue
             scala = lato / j.get_shape()[0]
             if con_immagini:
-                immagini.append(cv2.resize(j.get_img(), (lato, lato), interpolation=cv2.INTER_AREA).astype(np.float32) / 255.0)
+                img = cv2_imread(nome, loader_func=loader)
+                immagini.append(cv2.resize(img, (lato, lato), interpolation=cv2.INTER_AREA).astype(np.float32) / 255.0)
             punti.append(crop.cinque_punti(j.get_landmarks()) * scala)
         if not punti:
             raise Exception(f"nessun volto con landmark in {percorso}")
