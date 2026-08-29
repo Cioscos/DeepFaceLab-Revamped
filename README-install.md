@@ -12,7 +12,9 @@ and the numbered scripts for your operating system.
   installs the CPU build of torch, which is much slower to train with. See
   [If your driver is too old](#if-your-nvidia-driver-is-too-old) below.
 - **At least 15 GB free** on the target disk. This is checked before anything
-  is downloaded.
+  is downloaded. The check applies to a **fresh installation**: re-running the
+  installer over an existing one (that is what updating is) skips it, because
+  those gigabytes are already taken by the installation itself.
 - Windows: **`curl.exe` / `tar.exe`**, included since Windows 10 1803 (if they
   are missing, the bootstrap falls back to `powershell -Command
   Invoke-WebRequest`). Linux: **`curl` / `tar`**, present on every common

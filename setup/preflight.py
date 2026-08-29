@@ -44,6 +44,11 @@ MIN_DRIVER_WINDOWS = "580.88"
 MIN_DRIVER_LINUX = "580.65.06"
 
 # Spazio disco minimo: 15 GB liberi.
+# E' la cifra di una installazione da zero -- venv con torch dentro, asset,
+# codice -- e vale percio' solo alla prima installazione: su un rilancio
+# (che e' l'aggiornamento) quei gigabyte sono gia' occupati, e chiederli
+# di nuovo liberi fermerebbe l'aggiornamento per un motivo inesistente.
+# Chi decide se il controllo si applica e' `installazione_esistente`.
 NEEDED_BYTES = 15 * 1024 ** 3
 
 # "OS e architettura" e' il primo dei tre controlli del passo preflight.
@@ -147,23 +152,89 @@ def choose_wheel_set(gpu: GpuInfo, force_cpu: bool) -> str:
     return "cpu"
 
 
-def check_disk_space(paths: InstallPaths, needed_bytes: int) -> None:
-    """Solleva RuntimeError se lo spazio libero e' insufficiente.
+def installazione_esistente(paths: InstallPaths) -> bool:
+    """True se in ``paths.root`` c'e' gia' un'installazione da aggiornare.
+
+    Il marcatore e' l'eseguibile del venv, non la cartella di destinazione
+    ne' il file di stato del codice: e' lo stesso criterio con cui
+    ``setup/runtime.py::create_venv`` decide che "un rilancio e'
+    un aggiornamento", ed e' l'unico che nomina cio' che occupa davvero i
+    gigabyte gia' sul disco (il venv con torch dentro). Un'estrazione del
+    codice senza venv -- una prima installazione interrotta a meta' -- resta
+    percio' una prima installazione, e il controllo dello spazio le gira
+    sopra come deve.
+    """
+    return paths.python.exists()
+
+
+def _radice_misurabile(root: Path) -> Path:
+    """Il primo antenato di ``root`` che esiste gia'.
 
     ``paths.root`` puo' non esistere ancora (e' la cartella di destinazione
     dell'installazione, che i passi successivi creeranno): si risale ai
     genitori fino al primo che esiste gia', che sta comunque sullo stesso
     filesystem su cui l'installazione finira'."""
-    target = Path(paths.root)
+    target = Path(root)
     while not target.exists():
         parent = target.parent
         if parent == target:
             break
         target = parent
+    return target
 
-    free = shutil.disk_usage(target).free
-    if free < needed_bytes:
+
+@dataclass(frozen=True)
+class SpazioDisco:
+    """La misura fatta, non solo il suo esito.
+
+    ``check_disk_space`` la restituisce perche' il numero interessa anche
+    quando il controllo passa: e' ``setup/__main__.py`` (che ha il logger) a
+    stamparlo, come per la GPU. Senza, l'unico caso in cui l'utente vede una
+    cifra e' quello in cui l'installazione si ferma.
+    """
+    percorso:   Path
+    libero:     int
+    necessario: int
+
+    @property
+    def sufficiente(self) -> bool:
+        return self.libero >= self.necessario
+
+
+def check_disk_space(paths: InstallPaths, needed_bytes: int) -> SpazioDisco:
+    """Solleva RuntimeError se lo spazio libero e' insufficiente.
+
+    Va chiamato solo su una prima installazione (vedi
+    ``installazione_esistente``): su un aggiornamento i gigabyte richiesti
+    sono in massima parte gia' occupati dall'installazione stessa, quindi
+    misurare il libero contro il totale di una installazione nuova rifiuta
+    per un motivo falso proprio la macchina piena a meta' che l'aggiornamento
+    non fa crescere.
+
+    ``shutil.disk_usage`` puo' fallire di suo (una unita' di rete non piu'
+    raggiungibile, un permesso negato sul percorso): l'OSError nudo non
+    nomina ne' il percorso misurato ne' il passo dell'installer in cui
+    succede, e si riavvolge in un RuntimeError che li dice entrambi.
+    """
+    target = _radice_misurabile(paths.root)
+
+    try:
+        free = shutil.disk_usage(target).free
+    except OSError as errore:
+        raise RuntimeError(
+            f"impossibile misurare lo spazio libero in {target}: {errore}. "
+            "Controlla che la cartella di destinazione sia raggiungibile e "
+            "scrivibile, poi rilancia l'installer."
+        ) from errore
+
+    misura = SpazioDisco(percorso=target, libero=free, necessario=needed_bytes)
+    if not misura.sufficiente:
+        mancanti = needed_bytes - free
         raise RuntimeError(
             f"spazio insufficiente in {target}: {free / 1024 ** 3:.1f} GB liberi, "
-            f"ne servono almeno {needed_bytes / 1024 ** 3:.1f} GB"
+            f"ne servono almeno {needed_bytes / 1024 ** 3:.1f} GB "
+            f"({mancanti / 1024 ** 3:.1f} GB mancanti). Libera spazio su quel "
+            "disco, oppure rilancia l'installer con --dest su un disco che ne "
+            "abbia abbastanza."
         )
+    return misura

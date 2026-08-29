@@ -53,6 +53,7 @@ from setup.preflight import (  # noqa: E402
     check_platform,
     choose_wheel_set,
     detect_gpu,
+    installazione_esistente,
 )
 from setup.prerequisiti_linux import (  # noqa: E402
     comando_installazione,
@@ -75,7 +76,26 @@ def step_preflight(paths: InstallPaths, args: argparse.Namespace, log) -> None:
     da `main()`.
     """
     check_platform()  # il piu' economico dei tre controlli: va per primo
-    check_disk_space(paths, NEEDED_BYTES)
+
+    # Lo spazio si controlla solo alla prima installazione, perche' un
+    # rilancio dell'installer E' l'aggiornamento: il venv con torch, gli
+    # asset e il codice sono gia' sul disco e l'aggiornamento non li fa crescere di quindici
+    # gigabyte, quindi pretenderli liberi rifiuterebbe di aggiornare proprio
+    # la macchina piena -- che e' il caso in cui aggiornare serve di piu'.
+    if installazione_esistente(paths):
+        log.info(
+            "installazione gia' presente in %s (venv in %s): e' un "
+            "aggiornamento, salto il controllo dello spazio libero.",
+            paths.root, paths.venv,
+        )
+    else:
+        spazio = check_disk_space(paths, NEEDED_BYTES)
+        log.info(
+            "spazio libero in %s: %.1f GB (ne servono almeno %.1f GB).",
+            spazio.percorso,
+            spazio.libero / 1024 ** 3,
+            spazio.necessario / 1024 ** 3,
+        )
 
     gpu = detect_gpu()
     wheel = choose_wheel_set(gpu, args.cpu)
