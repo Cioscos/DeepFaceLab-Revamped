@@ -1,20 +1,13 @@
-﻿import math
-import multiprocessing
+﻿import multiprocessing
 import traceback
 from pathlib import Path
 
-import numpy as np
-import numpy.linalg as npla
-
-import samplelib
-from core import pathex
 from core.cv2ex import *
 from core.interact import interact as io
 from core.joblib import MPClassFuncOnDemand, MPFunc
 from core.leras import nn
-from DFLIMG import DFLIMG
-from facelib import FaceEnhancer, FaceType, LandmarksProcessor, XSegNet
-from merger import FrameInfo, InteractiveMergerSubprocessor, MergerConfig
+from facelib import FaceEnhancer, XSegNet
+from merger import InteractiveMergerSubprocessor, MergerConfig
 
 
 def main (model_class_name=None,
@@ -77,114 +70,14 @@ def main (model_class_name=None,
         subprocess_count = io.input_int("Number of workers?", max(8, multiprocessing.cpu_count()), 
                                         valid_range=[1, multiprocessing.cpu_count()], help_message="Specify the number of threads to process. A low value may affect performance. A high value may result in memory error. The value may not be greater than CPU cores." )
 
-        input_path_image_paths = pathex.get_image_paths(input_path)
-
         if cfg.type == MergerConfig.TYPE_MASKED:
             if not aligned_path.exists():
                 io.log_err('Aligned directory not found. Please ensure it exists.')
                 return
 
-            packed_samples = None
-            try:
-                packed_samples = samplelib.PackedFaceset.load(aligned_path)
-            except:
-                io.log_err(f"Error occured while loading samplelib.PackedFaceset.load {str(aligned_path)}, {traceback.format_exc()}")
-
-
-            if packed_samples is not None:
-                io.log_info ("Using packed faceset.")
-                def generator():
-                    for sample in io.progress_bar_generator( packed_samples, "Collecting alignments"):
-                        filepath = Path(sample.filename)
-                        yield filepath, DFLIMG.load(filepath, loader_func=lambda x: sample.read_raw_file()  )
-            else:
-                def generator():
-                    for filepath in io.progress_bar_generator( pathex.get_image_paths(aligned_path), "Collecting alignments"):
-                        filepath = Path(filepath)
-                        yield filepath, DFLIMG.load(filepath)
-
-            alignments = {}
-            multiple_faces_detected = False
-
-            for filepath, dflimg in generator():
-                if dflimg is None or not dflimg.has_data():
-                    io.log_err (f"{filepath.name} is not a dfl image file")
-                    continue
-
-                source_filename = dflimg.get_source_filename()
-                if source_filename is None:
-                    continue
-
-                source_filepath = Path(source_filename)
-                source_filename_stem = source_filepath.stem
-
-                if source_filename_stem not in alignments.keys():
-                    alignments[ source_filename_stem ] = []
-
-                alignments_ar = alignments[ source_filename_stem ]
-                alignments_ar.append ( (dflimg.get_source_landmarks(), filepath, source_filepath ) )
-
-                if len(alignments_ar) > 1:
-                    multiple_faces_detected = True
-
-            if multiple_faces_detected:
-                io.log_info ("")
-                io.log_info ("Warning: multiple faces detected. Only one alignment file should refer one source file.")
-                io.log_info ("")
-
-            for a_key in list(alignments.keys()):
-                a_ar = alignments[a_key]
-                if len(a_ar) > 1:
-                    for _, filepath, source_filepath in a_ar:
-                        io.log_info (f"alignment {filepath.name} refers to {source_filepath.name} ")
-                    io.log_info ("")
-
-                alignments[a_key] = [ a[0] for a in a_ar]
-
-            if multiple_faces_detected:
-                io.log_info ("It is strongly recommended to process the faces separatelly.")
-                io.log_info ("Use 'recover original filename' to determine the exact duplicates.")
-                io.log_info ("")
-
-            frames = [ InteractiveMergerSubprocessor.Frame( frame_info=FrameInfo(filepath=Path(p),
-                                                                     landmarks_list=alignments.get(Path(p).stem, None)
-                                                                    )
-                                              )
-                       for p in input_path_image_paths ]
-
-            if multiple_faces_detected:
-                io.log_info ("Warning: multiple faces detected. Motion blur will not be used.")
-                io.log_info ("")
-            else:
-                s = 256
-                local_pts = [ (s//2-1, s//2-1), (s//2-1,0) ] #center+up
-                frames_len = len(frames)
-                for i in io.progress_bar_generator( range(len(frames)) , "Computing motion vectors"):
-                    fi_prev = frames[max(0, i-1)].frame_info
-                    fi      = frames[i].frame_info
-                    fi_next = frames[min(i+1, frames_len-1)].frame_info
-                    if len(fi_prev.landmarks_list) == 0 or \
-                       len(fi.landmarks_list) == 0 or \
-                       len(fi_next.landmarks_list) == 0:
-                            continue
-
-                    mat_prev = LandmarksProcessor.get_transform_mat ( fi_prev.landmarks_list[0], s, face_type=FaceType.FULL)
-                    mat      = LandmarksProcessor.get_transform_mat ( fi.landmarks_list[0]     , s, face_type=FaceType.FULL)
-                    mat_next = LandmarksProcessor.get_transform_mat ( fi_next.landmarks_list[0], s, face_type=FaceType.FULL)
-
-                    pts_prev = LandmarksProcessor.transform_points (local_pts, mat_prev, True)
-                    pts      = LandmarksProcessor.transform_points (local_pts, mat, True)
-                    pts_next = LandmarksProcessor.transform_points (local_pts, mat_next, True)
-
-                    prev_vector = pts[0]-pts_prev[0]
-                    next_vector = pts_next[0]-pts[0]
-
-                    motion_vector = pts_next[0] - pts_prev[0]
-                    fi.motion_power = npla.norm(motion_vector)
-
-                    motion_vector = motion_vector / fi.motion_power if fi.motion_power != 0 else np.array([0,0],dtype=np.float32)
-
-                    fi.motion_deg = -math.atan2(motion_vector[1],motion_vector[0])*180 / math.pi
+            from merger import preparazione
+            frames, avvisi = preparazione.raccogli_frames(input_path, aligned_path)
+            preparazione.stampa_avvisi(avvisi)
 
 
         if len(frames) == 0:

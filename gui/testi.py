@@ -14,6 +14,8 @@ puo' sbagliare il numero di argomenti senza accorgersene.
 # stessa eccezione gia' fatta per MotoriCatalog, per la stessa ragione --
 # l'elenco ha una sorgente sola, e leggerlo non costa torch.
 from mainscripts import DettaglioGuasti
+# Stessa deroga per il catalogo dei guasti della fusione.
+from mainscripts import FusioneGuasti
 
 from gui.catalog.model import KIND_CLEAR, KIND_EBSYNTH, KIND_VIEWER
 from gui.faceset.indice import STATO_ASSENTE, STATO_PARZIALE
@@ -683,7 +685,8 @@ def heatmap_filter_pill(mostrati, totali, quanti_bin):
 
 
 def heatmap_filter_pill_html(mostrati, totali, quanti_bin):
-    """La stessa pastiglia col comando che la spegne DENTRO
+    """La stessa pastiglia col comando che la spegne DENTRO, come nel
+    documento di progettazione della pagina di cura del faceset
     («Showing 412 of 1 619 · 2 pose bins · [Clear]»).
 
     Una funzione sola sopra l'altra e non due testi paralleli: con dei bin
@@ -978,6 +981,11 @@ def estrazione_frame_scelto(nome, n_volti):
 ESTRAZIONE_NESSUN_VOLTO = "No face detected on this frame."
 ESTRAZIONE_VOLTO_TROVATO = "Face detected."
 
+# Il guasto sintetico del trasporto (canale morto): trasporto.py e'
+# condiviso con la fusione e non nomina nessun servizio nel suo motivo
+# grezzo, quindi chi lo mostra ci mette il nome che conosce.
+ESTRAZIONE_SERVIZIO_INTERROTTO = "The extraction service stopped unexpectedly."
+
 
 def estrazione_servizio_guasto(motivo):
     """Distingue un guasto vero (pesi mancanti, memoria esaurita) da
@@ -1222,3 +1230,146 @@ def dettaglio_guasto(codice, motivo):
     if not motivo:
         return DETTAGLIO_GUASTO_SENZA_MOTIVO
     return "The face service reported: %s" % motivo
+
+
+TAB_FUSIONE = "Merge"
+
+# Il codice del guasto della fusione -> la frase che si legge. Solo i
+# cinque codici che il servizio emette davvero piu' quello del client
+# (SERVIZIO_INTERROTTO): il codice viaggia, il testo del motivo no.
+FUSIONE_GUASTI = {
+    FusioneGuasti.MODELLO_ASSENTE: "No trained model with that name in the project's model folder.",
+    FusioneGuasti.ALLINEATI_ASSENTI: "data_dst/aligned is missing: extract the destination faces first.",
+    FusioneGuasti.NESSUN_FRAME: "data_dst has no frames to merge: extract the destination video first.",
+    FusioneGuasti.COMANDO_SCONOSCIUTO: "The merge service refused a command it does not know.",
+    FusioneGuasti.CLIENT_CADUTO: "One compositing process died on a frame: that frame is back to do, the others keep going.",
+    FusioneGuasti.SERVIZIO_INTERROTTO: "The merge service stopped unexpectedly.",
+}
+FUSIONE_GUASTO_SENZA_CODICE = "Merge failed: %s"
+
+# Il figlio si e' chiuso da solo (l'ultimo processo di compositing e'
+# morto): la sessione e' salvata, ma non c'e' piu' nessuno che fonde.
+FUSIONE_SERVIZIO_TERMINATO = ("The merge service closed on its own: the session was saved. "
+                              "Start it again to keep merging.")
+
+
+def fusione_guasto(codice, motivo):
+    """Il guasto della fusione, scelto dal codice quando c'e' n'e' uno.
+
+    Un `codice` assente o sconosciuto -- il caso del client caduto senza
+    che l'host sappia il perche' -- ricade sul motivo grezzo, come fa
+    `dettaglio_guasto` per il servizio gemello."""
+    frase = FUSIONE_GUASTI.get(codice)
+    if frase is not None:
+        return frase
+    motivo = "" if motivo is None else str(motivo).strip()
+    return FUSIONE_GUASTO_SENZA_CODICE % (motivo or "no detail")
+
+
+FUSIONE_START = "Start session"
+FUSIONE_STOP_SESSION = "End session"
+FUSIONE_MODEL = "Model"
+FUSIONE_GPU_PLACEHOLDER = "GPU indexes (empty = best)"
+FUSIONE_RESUME_FOUND = "A saved session for this model exists: it will be resumed."
+FUSIONE_RESUME_STALE = "A saved session exists, but the model has trained since: every frame will be recomputed."
+# La sessione salvata parla di ALTRI frame: non e' un guasto con un
+# codice -- viaggia nel campo `ripresa` dell'evento `pronto` -- ma va
+# detto lo stesso, o l'utente crederebbe di aver ripreso.
+FUSIONE_SESSIONE_SCARTATA = "The saved session belongs to different frames and was discarded."
+# La pagina e il figlio hanno enumerato i frame in modo diverso: gli
+# indici del protocollo punterebbero ad altri fotogrammi, e non c'e'
+# niente di salvabile in una sessione cosi'.
+FUSIONE_FRAME_DISALLINEATI = "The merge service found a different number of frames: reload the page and try again."
+FUSIONE_PREV = "Prev"
+FUSIONE_NEXT = "Next"
+FUSIONE_PROPAGATE_NEXT = "Propagate →"
+FUSIONE_PROPAGATE_ALL = "Propagate to end"
+FUSIONE_PROCESS_ALL = "Process all"
+FUSIONE_STOP = "Stop"
+FUSIONE_SAVE_SESSION = "Save session"
+FUSIONE_EXPORT = "Export video"
+FUSIONE_VIEW_ORIGINAL = "Original"
+FUSIONE_VIEW_MERGED = "Merged"
+FUSIONE_VIEW_MASK = "Mask"
+FUSIONE_COPY_PREV = "Copy from previous"
+FUSIONE_LOADING = "Loading the model and the alignments…"
+FUSIONE_REPORT = "Report"
+FUSIONE_REPORT_NO_FACE = "Frames copied without a face"
+FUSIONE_REPORT_MULTI = "Frames with several aligned faces (motion blur disabled for the whole video)"
+FUSIONE_KEYFRAME = "Set keyframe"
+FUSIONE_KEYFRAME_CLEAR = "Clear keyframe"
+FUSIONE_APPLY_PLAN = "Apply plan"
+FUSIONE_INTERPOLATE = "Interpolate"
+FUSIONE_HELP_PLAN = ("A keyframe pins this frame's settings. Apply plan recomputes every frame "
+                     "from the keyframes: values interpolated between two keyframes when "
+                     "Interpolate is on, copied from the previous keyframe otherwise. Nothing "
+                     "is recomputed until you press it.")
+FUSIONE_SAMPLE = "Sample"
+FUSIONE_SAMPLE_N = "Sample N"
+FUSIONE_HELP_SAMPLE = ("Merges N evenly spaced frames with the current settings, before anything "
+                       "else in the queue, so you can judge them across the whole video. Sampled "
+                       "frames are real output: Process all will not redo them.")
+FUSIONE_PRESET = "Preset"
+FUSIONE_PRESET_SAVE = "Save preset…"
+FUSIONE_PRESET_DELETE = "Delete"
+FUSIONE_PRESET_NAME = "Preset name"
+FUSIONE_PRESET_NONE = "(none)"
+FUSIONE_PRESET_OVERWRITE = "A preset named %s exists: overwrite it?"
+FUSIONE_HELP_PRESET = ("A preset is the current merge settings saved under a name in this "
+                       "project. Choosing one applies it to the current frame only; use "
+                       "keyframes and Apply plan to spread it. Unknown or out-of-range values "
+                       "in a hand-edited preset are ignored or clipped.")
+FUSIONE_EXPORT_TITLE = "Export video"
+FUSIONE_EXPORT_CONTAINER = "Container"
+FUSIONE_EXPORT_LOSSLESS = "Lossless"
+FUSIONE_EXPORT_BITRATE = "Bitrate (MB/s)"
+FUSIONE_EXPORT_REFERENCE = "Audio from"
+FUSIONE_EXPORT_OPEN = "Open"
+FUSIONE_EXPORT_FAILED = "Export failed (exit code %d): see the job panel."
+FUSIONE_EXPORT_NO_FRAMES = "Nothing to export: merged/ has no frames yet."
+FUSIONE_EXPORT_NO_FFPROBE = "(ffprobe not found: duration and fps unknown)"
+FUSIONE_EXPORT_RUNNING = "Exporting… the job panel shows the progress."
+FUSIONE_HELP_EXPORT = ("Encodes data_dst/merged into result.<container> (and the mask into "
+                       "result_mask) with the audio of the reference file, through the same "
+                       "step as the Steps list. mov is lossless only, avi is never lossless: "
+                       "that is what the encoder offers.")
+
+
+def fusione_anteprima_piano(n):
+    """Quanti frame il piano rifarebbe; vuoto senza keyframe (None)."""
+    if n is None:
+        return ""
+    return ("1 frame will be redone" if n == 1 else "%d frames will be redone" % n)
+
+
+def fusione_stato(cursore, totali, fatti):
+    return "Frame %d of %d — %d merged" % (cursore, totali, fatti)
+
+
+def fusione_avanzamento(fatti, totali, eta_s):
+    if eta_s is None:
+        return "Merging %d/%d" % (fatti, totali)
+    return "Merging %d/%d, about %s left" % (fatti, totali, eta_s)
+
+
+def fusione_ms_per_frame(ms):
+    return "%.0f ms per frame" % ms
+
+
+def fusione_voce_multipli(nome, quanti):
+    """Una riga dell'elenco dei frame con piu' allineati: il nome del frame
+    e quanti volti allineati ha."""
+    return "%s — %d aligned faces" % (nome, quanti)
+
+
+def fusione_esito_export(dimensione_mb, durata_s, fps):
+    """Cosa dice l'esito dell'export: solo i dati che si conoscono davvero
+    (ffprobe puo' mancare, o non trovare durata e fps)."""
+    parti = []
+    if dimensione_mb is not None:
+        parti.append("%.1f MB" % dimensione_mb)
+    if durata_s is not None:
+        parti.append("%.2f s" % durata_s)
+    if fps is not None:
+        parti.append("%.2f fps" % fps)
+    return "Exported: " + (", ".join(parti) if parti else "file written")

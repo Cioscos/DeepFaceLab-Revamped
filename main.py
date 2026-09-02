@@ -371,6 +371,28 @@ if __name__ == "__main__":
         ExtractManual.main ( Path(arguments.workdir) )
     p.set_defaults(func=process_extract_manual)
 
+    # ========== Merge tools
+    mergetool_parser = subparsers.add_parser( "mergetool", help="Merge tools.").add_subparsers()
+
+    p = mergetool_parser.add_parser ("session", help="Serve an interactive merge session to the graphical interface.")
+    p.add_argument('--input-dir', required=True, action=fixPathAction, dest="input_dir", help="Input directory of frames.")
+    p.add_argument('--output-dir', required=True, action=fixPathAction, dest="output_dir", help="Where the merged frames are written.")
+    p.add_argument('--output-mask-dir', required=True, action=fixPathAction, dest="output_mask_dir", help="Where the mask frames are written.")
+    p.add_argument('--aligned-dir', required=True, action=fixPathAction, dest="aligned_dir", help="Aligned directory of the destination faces.")
+    p.add_argument('--model-dir', required=True, action=fixPathAction, dest="model_dir", help="Model dir.")
+    p.add_argument('--model', required=True, dest="model_name", choices=pathex.get_all_dir_names_startswith ( Path(__file__).parent / 'models' , 'Model_'), help="Model class name.")
+    p.add_argument('--force-model-name', dest="force_model_name", default=None, help="Forcing to choose model name from model/ folder.")
+    p.add_argument('--force-gpu-idxs', dest="force_gpu_idxs", default=None, help="Force to choose GPU indexes separated by comma.")
+    p.add_argument('--workers', type=int, default=4, dest="workers", help="Compositing processes.")
+    p.add_argument('--workdir', required=True, action=fixPathAction, dest="workdir", help="Scratch directory of the session.")
+
+    def process_merge_session(arguments):
+        osex.set_process_lowest_prio()
+        from mainscripts import MergeSession
+        MergeSession.main ( arguments,
+                            force_gpu_idxs = [ int(x) for x in arguments.force_gpu_idxs.split(',') ] if arguments.force_gpu_idxs is not None else None )
+    p.set_defaults(func=process_merge_session)
+
     def process_dev_test(arguments):
         osex.set_process_lowest_prio()
         from mainscripts import dev_misc

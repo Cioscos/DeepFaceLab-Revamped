@@ -7,9 +7,22 @@ Ogni numero che entra da qui passa da gui/numeri.py con ENTRAMBI i
 predicati: la finitezza non basta, 1e300 e' finito e uccide comunque
 l'int() di un paintEvent.
 """
-from gui import numeri
+from gui import numeri, testi
 
 TIMEOUT_MS = 10000
+
+# Il motivo grezzo del guasto sintetico del trasporto (canale morto):
+# trasporto.py e' condiviso con la fusione e non nomina nessun servizio, e
+# senza traduzione l'utente leggerebbe una frase in italiano dentro una GUI
+# in inglese. Import qui (non in testa) per non chiudere un ciclo con
+# trasporto.py, che importa questo modulo per TIMEOUT_MS.
+
+
+def _motivo_utente(motivo):
+    from gui.estrazione import trasporto as trasporto_mod
+    if motivo == trasporto_mod._RISPOSTA_GUASTO["motivo"]:
+        return testi.ESTRAZIONE_SERVIZIO_INTERROTTO
+    return motivo
 
 
 def _punti_utilizzabili(punti):
@@ -104,7 +117,7 @@ class Servizio(object):
             self.ultimo_stderr = self._stderr_del_trasporto()
             return None
         if risposta.get("op") == "error":
-            self.ultimo_errore = risposta.get("motivo")
+            self.ultimo_errore = _motivo_utente(risposta.get("motivo"))
             self.ultimo_stderr = self._stderr_del_trasporto()
             return None
         self.ultimo_errore = None
@@ -175,7 +188,7 @@ class Servizio(object):
 
         def _su_risposta(risposta):
             if not isinstance(risposta, dict) or risposta.get("op") == "error":
-                self.ultimo_errore = (risposta.get("motivo")
+                self.ultimo_errore = (_motivo_utente(risposta.get("motivo"))
                                       if isinstance(risposta, dict)
                                       else "risposta non valida dal servizio")
                 self.ultimo_stderr = self._stderr_del_trasporto()

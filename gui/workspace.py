@@ -234,6 +234,34 @@ def saved_model_names(model_dir):
     return sorted(names)
 
 
+def saved_model_class(model_dir, model_name):
+    """The model class saved beside `model_name`, or None.
+
+    A saved model's data file is '<model_name>_<ModelClass>_data.dat', so the
+    class is what sits between the name and the suffix. It is the other half
+    of what `saved_model_names` reads and throws away, and picking it up is
+    what lets a caller offer the pair the user actually trained instead of
+    making them guess it: merging an H2 model as AMP only fails minutes
+    later, inside the child.
+
+    A remainder containing another underscore is refused: it belongs to a
+    longer model name that merely starts with this one ('a' must not match
+    'a_b_SAEHD_data.dat').
+    """
+    model_dir = Path(model_dir)
+    if not model_name or not model_dir.is_dir():
+        return None
+    prefix = "%s_" % model_name
+    suffix = "_data.dat"
+    for f in sorted(model_dir.iterdir()):
+        if not f.is_file() or not f.name.startswith(prefix) or not f.name.endswith(suffix):
+            continue
+        cls = f.name[len(prefix):-len(suffix)]
+        if cls and "_" not in cls:
+            return cls
+    return None
+
+
 class RecentWorkspaces:
     """The recently-opened workspace paths, most recent first, deduplicated.
 

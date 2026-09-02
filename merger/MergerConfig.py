@@ -5,6 +5,23 @@ from facelib import FaceType
 from core.interact import interact as io
 
 
+# limiti (minimo, massimo) dei campi interpolabili: la stessa tabella la usano
+# sia i metodi add_* qui sotto sia SessioneMerge.imposta_cfg, cosi' i due non
+# possono divergere.
+LIMITI_INTERPOLATI = {
+    'blursharpen_amount': (-100, 100),
+    'hist_match_threshold': (0, 255),
+    'erode_mask_modifier': (-400, 400),
+    'blur_mask_modifier': (0, 400),
+    'motion_blur_power': (0, 100),
+    'output_face_scale': (-50, 50),
+    'super_resolution_power': (0, 100),
+    'image_denoise_power': (0, 500),
+    'bicubic_degrade_power': (0, 100),
+    'color_degrade_power': (0, 100),
+}
+
+
 class MergerConfig(object):
     TYPE_NONE = 0
     TYPE_MASKED = 1
@@ -46,7 +63,8 @@ class MergerConfig(object):
         self.sharpen_mode = a[ (a.index(self.sharpen_mode)+1) % len(a) ]
 
     def add_blursharpen_amount(self, diff):
-        self.blursharpen_amount = np.clip ( self.blursharpen_amount+diff, -100, 100)
+        lo, hi = LIMITI_INTERPOLATI['blursharpen_amount']
+        self.blursharpen_amount = np.clip ( self.blursharpen_amount+diff, lo, hi)
 
     #overridable
     def get_config(self):
@@ -155,38 +173,47 @@ class MergerConfigMasked(MergerConfig):
 
     def add_hist_match_threshold(self, diff):
         if self.mode == 'hist-match' or self.mode == 'seamless-hist-match':
-            self.hist_match_threshold = np.clip ( self.hist_match_threshold+diff , 0, 255)
+            lo, hi = LIMITI_INTERPOLATI['hist_match_threshold']
+            self.hist_match_threshold = np.clip ( self.hist_match_threshold+diff , lo, hi)
 
     def toggle_mask_mode(self):
         a = list( mask_mode_dict.keys() )
         self.mask_mode = a[ (a.index(self.mask_mode)+1) % len(a) ]
 
     def add_erode_mask_modifier(self, diff):
-        self.erode_mask_modifier = np.clip ( self.erode_mask_modifier+diff , -400, 400)
+        lo, hi = LIMITI_INTERPOLATI['erode_mask_modifier']
+        self.erode_mask_modifier = np.clip ( self.erode_mask_modifier+diff , lo, hi)
 
     def add_blur_mask_modifier(self, diff):
-        self.blur_mask_modifier = np.clip ( self.blur_mask_modifier+diff , 0, 400)
+        lo, hi = LIMITI_INTERPOLATI['blur_mask_modifier']
+        self.blur_mask_modifier = np.clip ( self.blur_mask_modifier+diff , lo, hi)
 
     def add_motion_blur_power(self, diff):
-        self.motion_blur_power = np.clip ( self.motion_blur_power+diff, 0, 100)
+        lo, hi = LIMITI_INTERPOLATI['motion_blur_power']
+        self.motion_blur_power = np.clip ( self.motion_blur_power+diff, lo, hi)
 
     def add_output_face_scale(self, diff):
-        self.output_face_scale = np.clip ( self.output_face_scale+diff , -50, 50)
+        lo, hi = LIMITI_INTERPOLATI['output_face_scale']
+        self.output_face_scale = np.clip ( self.output_face_scale+diff , lo, hi)
 
     def toggle_color_transfer_mode(self):
         self.color_transfer_mode = (self.color_transfer_mode+1) % ( max(ctm_dict.keys())+1 )
 
     def add_super_resolution_power(self, diff):
-        self.super_resolution_power = np.clip ( self.super_resolution_power+diff , 0, 100)
+        lo, hi = LIMITI_INTERPOLATI['super_resolution_power']
+        self.super_resolution_power = np.clip ( self.super_resolution_power+diff , lo, hi)
 
     def add_color_degrade_power(self, diff):
-        self.color_degrade_power = np.clip ( self.color_degrade_power+diff , 0, 100)
+        lo, hi = LIMITI_INTERPOLATI['color_degrade_power']
+        self.color_degrade_power = np.clip ( self.color_degrade_power+diff , lo, hi)
 
     def add_image_denoise_power(self, diff):
-        self.image_denoise_power = np.clip ( self.image_denoise_power+diff, 0, 500)
+        lo, hi = LIMITI_INTERPOLATI['image_denoise_power']
+        self.image_denoise_power = np.clip ( self.image_denoise_power+diff, lo, hi)
 
     def add_bicubic_degrade_power(self, diff):
-        self.bicubic_degrade_power = np.clip ( self.bicubic_degrade_power+diff, 0, 100)
+        lo, hi = LIMITI_INTERPOLATI['bicubic_degrade_power']
+        self.bicubic_degrade_power = np.clip ( self.bicubic_degrade_power+diff, lo, hi)
 
     def ask_settings(self):
         s = """Choose mode: \n"""

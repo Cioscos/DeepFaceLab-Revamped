@@ -62,6 +62,10 @@ STAGE_CURA_FACESET = FAMILY_STAGE["cura-faceset"]
 # della pagina.
 STAGE_ESTRAZIONE = FAMILY_STAGE["estrazione"]
 
+# Stessa cautela delle due sopra: un refuso qui rimetterebbe in silenzio
+# l'elenco dei cinque passi "7) merge *" al posto della pagina di fusione.
+STAGE_FUSIONE = FAMILY_STAGE["fusione"]
+
 # Kept as an alias: gui.theme.STATO_COLORE is the single source now that the
 # color itself lives in the style sheet as a QPushButton[stato=...] rule
 # (see PipelineBar.refresh()), but this name is still what
@@ -426,8 +430,10 @@ class MainWindow(QMainWindow):
         # finestra moriva.
         from gui.faceset import avvio as avvio_faceset
         from gui.estrazione import avvio as avvio_estrazione
+        from gui.fusione import avvio as avvio_fusione
         avvio_faceset.configura(self._python_exe, self._dfl_root)
         avvio_estrazione.configura(self._python_exe, self._dfl_root)
+        avvio_fusione.configura(self._python_exe, self._dfl_root)
         self.archivio = ArchivioProgetti(radice_progetti(self._dfl_root))
         self.workspace = Path(workspace) if workspace is not None else self._workspace_iniziale()
         if settings is None:
@@ -475,6 +481,7 @@ class MainWindow(QMainWindow):
 
         self._pagina_faceset = None  # PaginaCuraFaceset, costruita al primo apri_pagina_faceset
         self._pagina_estrazione = None  # PaginaEstrazione, costruita al primo apri_pagina_estrazione
+        self._pagina_fusione = None    # PaginaFusione, costruita al primo apri_pagina_fusione
         self._panels = {}          # Job -> TrainingPanel, alive with its tab closed
         self._consoles = {}        # Job -> QTextEdit, or None when the view is closed
         self._jobs_in_order = []   # jobs in the order they were started
@@ -625,6 +632,13 @@ class MainWindow(QMainWindow):
             # sei voci del catalogo non compaiono piu' come lista.
             self.step_list.clear()
             self.apri_pagina_estrazione()
+            return
+        if stage_name == STAGE_FUSIONE:
+            # Stessa scelta delle due sopra: la fase E' la pagina, i cinque
+            # passi "7) merge *" non compaiono piu' come lista -- la classe
+            # del modello si sceglie dentro la pagina.
+            self.step_list.clear()
+            self.apri_pagina_fusione()
             return
         self.step_list.clear()
         for step in all_steps():
@@ -1189,6 +1203,10 @@ class MainWindow(QMainWindow):
             # segue (progetto, lato), non solo il progetto -- si riapre sul
             # lato che stava gia' mostrando.
             self._pagina_estrazione.apri(path, self._pagina_estrazione.lato())
+        if self._pagina_fusione is not None:
+            # La sessione di fusione segue il progetto mostrato: `apri`
+            # ferma quella che stesse girando sui frame del progetto vecchio.
+            self._pagina_fusione.apri(path)
         RecentWorkspaces().add(path)
         progetto = leggi_progetto(path)
         if progetto is not None:
@@ -1261,6 +1279,11 @@ class MainWindow(QMainWindow):
         self._refresh_step_badges()
         if self._pagina_estrazione is not None:
             self._pagina_estrazione.apri(self.workspace, self._pagina_estrazione.lato())
+        if self._pagina_fusione is not None and self._pagina_fusione.stato_pagina() == "idle":
+            # Solo a sessione ferma: `apri` la fermerebbe, e una rilettura
+            # dello stato del disco non e' una ragione per buttare via una
+            # sessione aperta (il pool costa minuti di caricamento).
+            self._pagina_fusione.apri(self.workspace)
         if self._pagina_faceset is not None:
             self._pagina_faceset.ricarica()
 
@@ -1473,6 +1496,31 @@ class MainWindow(QMainWindow):
         pagina.setFocus()
         return pagina
 
+    # -- la pagina di fusione -------------------------------------------
+
+    def _costruisci_pagina_fusione(self):
+        """La pagina, senza portarla in primo piano. Stessa ragione di
+        `_costruisci_pagina_estrazione`."""
+        if self._pagina_fusione is None:
+            from gui.fusione.pagina import PaginaFusione
+            self._pagina_fusione = PaginaFusione(self._dfl_root.parent / "_e")
+            self._pagina_fusione.imposta_job_manager(self.job_manager)
+            self._pagina_fusione.apri(self.workspace)
+        return self._pagina_fusione
+
+    def apri_pagina_fusione(self):
+        """Mostra la scheda della pagina di fusione, costruendola la prima
+        volta. Stessa cautela di apri_pagina_estrazione: `indexOf` prima di
+        `addTab`, e il focus alla pagina o le sue scorciatoie restano mute."""
+        pagina = self._costruisci_pagina_fusione()
+        indice = self.central_tabs.indexOf(pagina)
+        if indice < 0:
+            indice = self.central_tabs.addTab(pagina, testi.TAB_FUSIONE)
+            pagina.su_apertura_scheda()
+        self.central_tabs.setCurrentIndex(indice)
+        pagina.setFocus()
+        return pagina
+
     # -- il ponte fra le due pagine ------------------------------------------
 
     def _vai_al_frame(self, lato, nome_frame):
@@ -1586,7 +1634,8 @@ class MainWindow(QMainWindow):
         # gia' letto sopravvivono. removeTab restituisce la proprieta' senza
         # genitore, quindi si riparenta come fa close_panel -- setParent
         # da solo la tiene viva e nascosta finche' non viene riaggiunta.
-        if widget is not None and widget in (self._pagina_faceset, self._pagina_estrazione):
+        if widget is not None and widget in (self._pagina_faceset, self._pagina_estrazione,
+                                             self._pagina_fusione):
             # I1/I2 della revisione finale: removeTab()+setParent() qui
             # sotto NON consegnano mai un closeEvent -- senza questa
             # chiamata esplicita, PRIMA di toglierla dal QTabWidget, la
@@ -1602,7 +1651,11 @@ class MainWindow(QMainWindow):
             # vede da li', non da un occupante che questa pagina deve
             # registrare/liberare da sola -- e il suo `_su_job_finito` non
             # entra mai da solo in nessuna modalita' nascosta.
-            if widget is self._pagina_estrazione:
+            if widget in (self._pagina_estrazione, self._pagina_fusione):
+                # Stessa ragione per entrambe: removeTab()+setParent() non
+                # consegnano nessun closeEvent, e il servizio in sottoprocesso
+                # (con il suo occupante) resterebbe vivo dietro una scheda
+                # chiusa.
                 widget.su_chiusura_scheda()
             self.central_tabs.removeTab(index)
             widget.setParent(self)
@@ -1851,6 +1904,11 @@ class MainWindow(QMainWindow):
             # mentre closeEvent aspetta la fine dei job (event.ignore()
             # sotto).
             self._pagina_estrazione.su_chiusura_scheda()
+        # Il servizio di fusione non e' un Job nemmeno lui: tiene il modello
+        # in VRAM e un pool di processi di compositing, e nessuno lo
+        # fermerebbe al posto suo.
+        if self._pagina_fusione is not None:
+            self._pagina_fusione.su_chiusura_scheda()
         if not self.job_manager.active_jobs():
             for tail in list(self._tails):
                 tail.stop()

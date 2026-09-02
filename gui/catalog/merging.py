@@ -69,7 +69,7 @@ modeled, same reasoning as the Colab branch of "Write preview history" in
 **"Use saved session?" depends on this form's own "Use interactive merger?"
 field (`=y`) *and* on filesystem state** (a `<ModelName>_merger_session.dat`
 left by a previous interactive session that exited with Esc,
-`InteractiveMergerSubprocessor.py:167`) -- the field part is encoded, the
+`InteractiveMergerSubprocessor.__init__`) -- the field part is encoded, the
 filesystem part is not, the same split already used for "Choose image for
 the preview history" in `training.py`.
 
