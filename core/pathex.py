@@ -26,19 +26,28 @@ def scrivi_al_sicuro(p, scrivi):
     solo `os.replace`: atomico su Linux e su Windows, e il file precedente
     resta intero finche' il nuovo non e' completo. Riprova la sostituzione
     se il sistema tiene il file occupato (vedi TENTATIVI_SOSTITUZIONE).
+    Se non ce la fa -- il disco pieno e' il caso vero -- il `.tmp` non
+    resta in giro: e' proprio il mezzo file che si voleva evitare.
     """
     p = Path(p)
     p_tmp = p.parent / (p.name + '.tmp')
-    with open(p_tmp, 'wb') as f:
-        scrivi(f)
-    for tentativo in range(TENTATIVI_SOSTITUZIONE):
+    try:
+        with open(p_tmp, 'wb') as f:
+            scrivi(f)
+        for tentativo in range(TENTATIVI_SOSTITUZIONE):
+            try:
+                os.replace(p_tmp, p)
+                return
+            except PermissionError:
+                if tentativo == TENTATIVI_SOSTITUZIONE - 1:
+                    raise
+                time.sleep(ATTESA_SOSTITUZIONE_SEC)
+    except BaseException:
         try:
-            os.replace(p_tmp, p)
-            return
-        except PermissionError:
-            if tentativo == TENTATIVI_SOSTITUZIONE - 1:
-                raise
-            time.sleep(ATTESA_SOSTITUZIONE_SEC)
+            p_tmp.unlink()
+        except OSError:
+            pass    # il guasto da riferire e' l'altro
+        raise
 
 def scantree(path):
     """Recursively yield DirEntry objects for given directory."""

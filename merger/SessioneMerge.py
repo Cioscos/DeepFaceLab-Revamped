@@ -26,7 +26,7 @@ from pathlib import Path
 
 import numpy as np
 
-from core import pickleex
+from core import pathex, pickleex
 from .MergerConfig import mode_str_dict, mask_mode_dict, ctm_dict, LIMITI_INTERPOLATI
 
 RIPRESA_NESSUNA = "none"
@@ -421,7 +421,10 @@ class SessioneMerge(object):
                 'frames_done_idxs': list(range(self.cursore)),
                 'model_iter': model_iter,
                 'keyframes': [[i, self.keyframes[i].get_config()] for i in sorted(self.keyframes)]}
-        Path(path).write_bytes(pickleex.dumps(dati))
+        # `Path.write_bytes` tronca prima di scrivere: un errore a meta'
+        # -- il disco pieno e' quello vero -- lasciava un .dat da 0 byte,
+        # e con lui keyframe, cfg per frame e cursore della sessione.
+        pathex.write_bytes_safe(path, pickleex.dumps(dati))
 
     def carica_sessione(self, path, model_iter):
         try:

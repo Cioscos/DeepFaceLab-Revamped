@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 from pathlib import Path
 from core.interact import interact as io
-from core import imagelib 
+from core import imagelib, pathex
 import traceback
 
 def cv2_imread(filename, flags=cv2.IMREAD_UNCHANGED, loader_func=None, verbose=True):
@@ -23,13 +23,23 @@ def cv2_imread(filename, flags=cv2.IMREAD_UNCHANGED, loader_func=None, verbose=T
         return None
 
 def cv2_imwrite(filename, img, *args):
+    """Torna True se il file e' sul disco per intero.
+
+    Il `.tmp` di mezzo non e' prudenza astratta: su un disco pieno la
+    `open` riesce e la `write` no, quindi scrivere sul posto sostituisce
+    il file che c'era con un troncone da 0 byte -- che chi legge dopo non
+    distingue da un lavoro fatto, e che `cv2.imdecode` rifiuta con
+    `!buf.empty()`. Gli errori restano ingoiati come sempre, ma ora il
+    chiamante puo' accorgersene dal valore di ritorno.
+    """
     ret, buf = cv2.imencode( Path(filename).suffix, img, *args)
-    if ret == True:
-        try:
-            with open(filename, "wb") as stream:
-                stream.write( buf )
-        except:
-            pass
+    if ret != True:
+        return False
+    try:
+        pathex.scrivi_al_sicuro(filename, lambda stream: stream.write(buf))
+        return True
+    except:
+        return False
 
 def cv2_resize(x, *args, **kwargs):
     h,w,c = x.shape

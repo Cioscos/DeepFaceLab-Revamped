@@ -156,8 +156,7 @@ class InteractiveMergerSubprocessor(Subprocessor):
                     h,w,c = img_bgr.shape
                     img_mask = np.zeros( (h,w,1), dtype=img_bgr.dtype)
                     
-                cv2_imwrite (pf.output_filepath, img_bgr)
-                cv2_imwrite (pf.output_mask_filepath, img_mask)
+                self._scrivi (pf, img_bgr, img_mask)
 
                 if pf.need_return_image:
                     pf.image = np.concatenate ([img_bgr, img_mask], axis=-1)
@@ -183,13 +182,24 @@ class InteractiveMergerSubprocessor(Subprocessor):
                                                         pf.frame_info,
                                                         pf.next_temporal_frame_infos )
 
-                cv2_imwrite (pf.output_filepath,      final_img[...,0:3] )
-                cv2_imwrite (pf.output_mask_filepath, final_img[...,3:4] )
+                self._scrivi (pf, final_img[...,0:3], final_img[...,3:4] )
 
                 if pf.need_return_image:
                     pf.image = final_img
 
             return pf
+
+        def _scrivi (self, pf, img_bgr, img_mask):
+            """Un fotogramma che non arriva sul disco non e' fatto.
+
+            Sollevare fa uccidere questo client e passare il pf a
+            `on_data_return` -> `su_ritorno`, che lo rimette «da fare»:
+            e' la stessa strada di un errore di compositing. Prima
+            l'errore di `cv2_imwrite` era ingoiato, il frame tornava
+            «fatto» e sul disco restava un PNG da 0 byte."""
+            if not cv2_imwrite (pf.output_filepath, img_bgr) or \
+               not cv2_imwrite (pf.output_mask_filepath, img_mask):
+                raise Exception( f'Error while writing file [{pf.output_filepath}]: the disk refused the write (is it full?)' )
 
         #overridable
         def get_data_name (self, pf):
