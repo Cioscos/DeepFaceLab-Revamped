@@ -39,6 +39,8 @@ from pathlib import Path
 
 import numpy as np
 
+from mainscripts import CanaleComandi
+
 
 def _scrivi_e_annuncia(byte_grezzi, nome, workdir):
     """Scrive su un file temporaneo, rinomina in modo atomico e torna il
@@ -551,4 +553,4 @@ def main(workdir):
     stato = Attivita()
     stato.tocca(time.time())
     _avvia_sorvegliante(stato)
-    servi(sys.stdin, sys.stdout, Path(workdir), stato)
+    servi(CanaleComandi.apri(), sys.stdout, Path(workdir), stato)

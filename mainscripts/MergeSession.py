@@ -31,7 +31,7 @@ from pathlib import Path
 import numpy as np
 
 from core.interact import interact as io
-from mainscripts import FusioneGuasti
+from mainscripts import CanaleComandi, FusioneGuasti
 from merger import SessioneMerge
 from merger.InteractiveMergerSubprocessor import InteractiveMergerSubprocessor
 
@@ -127,6 +127,7 @@ class ServizioMerge(InteractiveMergerSubprocessor):
         self._t_batch = None
         self._frames_batch = 0
         self._ultimo_avanzamento = 0.0
+        self._barra_aperta = False
         self._ripresa = SessioneMerge.RIPRESA_NESSUNA
         self._id_chiusura = None
         # la pulizia di `merged` la fa `servi` dopo aver caricato il .dat:
@@ -154,7 +155,6 @@ class ServizioMerge(InteractiveMergerSubprocessor):
     #override
     def on_clients_initialized(self):
         s = self.sessione
-        io.progress_bar("Merging", len(s.frames), initial=self._avanzamento())
         s.elabora_restanti = False
         s.in_chiusura = False
         self.manda({"op": "pronto", "frame_totali": len(s.frames), "cursore": s.corrente(),
@@ -165,7 +165,7 @@ class ServizioMerge(InteractiveMergerSubprocessor):
 
     #override
     def on_clients_finalized(self):
-        io.progress_bar_close()
+        self._chiudi_barra()
         self.sessione.salva_sessione(self.merger_session_filepath, self.model_iter)
         self.manda({"op": "chiudi", "id": self._id_chiusura, "esito": "ok"})
 
@@ -180,6 +180,17 @@ class ServizioMerge(InteractiveMergerSubprocessor):
                 self._servi(comando)
         except queue.Empty:
             pass
+
+        # La barra `Merging` esiste solo mentre il batch gira. Nella
+        # finestra `cv2` era aperta per tutta la sessione -- un consuntivo
+        # in console -- ma qui lo stesso canale finisce nella pila della
+        # GUI, dove una barra aperta appena la sessione e' pronta dice
+        # all'utente che la fusione e' partita da sola. Il ciclo dei
+        # comandi non e' il posto giusto per aprirla e chiuderla: oltre a
+        # `batch`, spengono `elabora_restanti` anche `vai`, `propaga`,
+        # `cfg` e `chiudi`, e la barra resterebbe aperta dietro a uno di
+        # loro. Qui la bandiera del nucleo e' una sola.
+        self._sincronizza_barra(s.elabora_restanti)
 
         if s.elabora_restanti:
             if self._t_batch is None:
@@ -197,15 +208,40 @@ class ServizioMerge(InteractiveMergerSubprocessor):
         avanzamento = self._avanzamento()
         delta = avanzamento - self._avanzamento_visto
         if delta:
-            io.progress_bar_inc(delta)
+            if self._barra_aperta:
+                io.progress_bar_inc(delta)
             self._avanzamento_visto = avanzamento
 
         if not self.clis:
             # nessun processo di compositing e' sopravvissuto: restare nel
-            # ciclo vorrebbe dire girare a vuoto per sempre
+            # ciclo vorrebbe dire girare a vuoto per sempre.
+            # Lo si DICE: da fuori questa chiusura e' identica a quella per
+            # stdin chiuso -- stesso `chiudi` senza id, stessa frase sulla
+            # pagina -- e senza questa riga sullo stderr non c'e' modo di
+            # sapere quale delle due e' stata.
+            if not s.in_chiusura:
+                io.log_err("chiusura: nessun processo di compositing e' sopravvissuto")
             s.in_chiusura = True
             s.elabora_restanti = False
         return s.in_chiusura and not s.elabora_restanti
+
+    def _sincronizza_barra(self, acceso):
+        if acceso:
+            if not self._barra_aperta:
+                # `initial` col progresso di adesso: il batch di una
+                # sessione ripresa non riparte da zero
+                io.progress_bar("Merging", len(self.sessione.frames),
+                                initial=self._avanzamento())
+                self._avanzamento_visto = self._avanzamento()
+                self._barra_aperta = True
+        else:
+            self._chiudi_barra()
+
+    def _chiudi_barra(self):
+        if not self._barra_aperta:
+            return
+        io.progress_bar_close()
+        self._barra_aperta = False
 
     def _evento_avanzamento(self):
         st = self.sessione.stato()
@@ -233,6 +269,7 @@ class ServizioMerge(InteractiveMergerSubprocessor):
             # nell'evento, e la pagina lo mostra senza leggere il file
             io.log_err("rapporto non scritto: %s" % e)
         self.manda({"op": "rapporto", **rapporto})
+        self._chiudi_barra()
         self._t_batch = None
 
     #override
@@ -352,20 +389,43 @@ class ServizioMerge(InteractiveMergerSubprocessor):
             self._errore(ident, None, e)
 
 
-def _leggi_comandi(entrata, coda):
+def _leggi_comandi(entrata, coda, avvio=None):
+    """Legge le righe di comando fino a EOF, poi accoda la chiusura.
+
+    `avvio` e' l'istante da cui contare nei messaggi: senza un tempo,
+    «stdin chiuso» non dice se il tubo e' nato morto o si e' chiuso a
+    meta' caricamento -- due guasti diversi con lo stesso sintomo."""
+    quando = (lambda: "") if avvio is None else \
+             (lambda: " (a %.1f s dall'avvio)" % (time.monotonic() - avvio))
+    prima = True
     for riga in entrata:
         riga = riga.strip()
         if not riga:
             continue
+        if prima:
+            # Che il PRIMO comando sia arrivato distingue «il tubo non ha
+            # mai funzionato» da «si e' chiuso dopo»: senza questa riga i
+            # due casi hanno lo stesso log.
+            io.log_info("primo comando ricevuto%s" % quando())
+            prima = False
         try:
             coda.put(json.loads(riga))
         except ValueError:
             coda.put({"op": None, "id": None})
-    coda.put({"op": "chiudi", "id": None})     # stdin chiuso: la GUI e' morta
+    # Il gemello della riga in on_tick: le due chiusure spontanee si
+    # distinguono solo qui.
+    io.log_err("chiusura: stdin chiuso, la GUI non parla piu'%s%s"
+               % (quando(), "" if not prima else " -- e non era mai arrivato un comando"))
+    coda.put({"op": "chiudi", "id": None})
 
 
-def servi(entrata, uscita, costruisci, argomenti, stato=None):
-    """Tutto il servizio, con il costruttore del modello iniettato."""
+def servi(entrata, uscita, costruisci, argomenti, stato=None, coda=None):
+    """Tutto il servizio, con il costruttore del modello iniettato.
+
+    `coda` gia' piena di comandi (e con il suo lettore gia' vivo) e' come
+    lavora `main`: il lettore nasce PRIMA del caricamento del modello,
+    perche' e' li' dentro che il tubo si e' visto morire. Senza, se la
+    apre lui -- e' cosi' che lavorano i test."""
     stato = stato or Attivita()
 
     def _manda(evento):
@@ -405,8 +465,9 @@ def servi(entrata, uscita, costruisci, argomenti, stato=None):
                     "motivo": "nessuna immagine in %s" % input_path})
             return
 
-        coda = queue.Queue()
-        threading.Thread(target=_leggi_comandi, args=(entrata, coda), daemon=True).start()
+        if coda is None:
+            coda = queue.Queue()
+            threading.Thread(target=_leggi_comandi, args=(entrata, coda), daemon=True).start()
 
         servizio = ServizioMerge(uscita, coda, stato, avvisi,
                                  is_interactive=False,
@@ -482,8 +543,17 @@ def _canale_del_protocollo():
 
 
 def main(argomenti, force_gpu_idxs=None):
+    # I due canali PRIMA di ogni altra cosa: dopo, il caricamento del
+    # modello passa da codice che ri-avvolge sia sys.stdout sia sys.stdin.
+    avvio = time.monotonic()
+    entrata = CanaleComandi.apri()
     canale = _canale_del_protocollo()
     stato = Attivita()
     threading.Thread(target=sorveglia, args=(stato,), daemon=True).start()
-    servi(sys.stdin, canale,
-          lambda a: _costruisci_modello(a, force_gpu_idxs), argomenti, stato)
+    # Il lettore PRIMA del modello: cosi' nessun comando mandato durante il
+    # caricamento va perso, e il momento in cui il tubo muore si legge dal
+    # log invece di dedurlo.
+    coda = queue.Queue()
+    threading.Thread(target=_leggi_comandi, args=(entrata, coda, avvio), daemon=True).start()
+    servi(entrata, canale,
+          lambda a: _costruisci_modello(a, force_gpu_idxs), argomenti, stato, coda=coda)

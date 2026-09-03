@@ -590,6 +590,18 @@ class InteractBase(object):
         if is_colab:
             # currently it does not work on Colab
             return
+        if self._preset_answers() is not None:
+            # Answers mode: nobody is typing, so there is nothing pending to
+            # skip -- and the stdin surgery below is pure damage. It spawns a
+            # process holding fd 0, kills it half a second later, and rebinds
+            # sys.stdin with os.fdopen(fd) (no dup, so a second owner of the
+            # same descriptor). On Windows that leaves the GUI's command pipe
+            # at EOF: measured on the merge service, which read its first
+            # command at 0.0 s and saw the pipe close at 0.5 s -- exactly this
+            # sleep -- between the GPU prompt and "Initializing models", then
+            # shut itself down as if the GUI had died. `input_in_time` above
+            # already carries the same guard.
+            return
         """
         skips unnecessary inputs between the dialogs
         """

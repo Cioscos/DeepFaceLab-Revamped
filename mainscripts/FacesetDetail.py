@@ -50,7 +50,7 @@ from pathlib import Path
 import numpy as np
 
 from DFLIMG import DFLJPG
-from mainscripts import DettaglioGuasti
+from mainscripts import CanaleComandi, DettaglioGuasti
 
 FIRMA_PNG = b"\x89PNG\r\n\x1a\n"
 
@@ -634,4 +634,4 @@ def main(workdir):
     stato = Attivita()
     stato.tocca(time.time())
     _avvia_sorvegliante(stato)
-    servi(sys.stdin, sys.stdout, Path(workdir), stato)
+    servi(CanaleComandi.apri(), sys.stdout, Path(workdir), stato)

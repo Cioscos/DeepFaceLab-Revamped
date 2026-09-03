@@ -90,6 +90,9 @@ _RISPOSTA_GUASTO = {"op": "error", "motivo": "il servizio si e' interrotto"}
 # lascia margine senza far crescere la memoria di un servizio che gira
 # per ore -- un anello, non una lista che si accumula.
 _MAX_RIGHE_STDERR = 200
+# Lo stderr del figlio su disco, accanto al workdir della sessione: l'anello
+# in memoria muore con la pagina, questo no.
+NOME_LOG = "servizio.log"
 
 # Quanto si aspetta un processo appena ucciso, per non lasciare al
 # distruttore di QProcess un processo vivo da reclamare (millisecondi in
@@ -160,6 +163,7 @@ class _CanaleProcesso:
         if self._processo is None or self._processo.state() == QProcess.NotRunning:
             self._avvia()
         self._mai_avviato = False
+        self._scrivi_log("[gui] scrivo %s" % comando.get("op"))
         self._processo.write((json.dumps(comando) + "\n").encode("utf-8"))
 
     def aspetta(self, timeout_ms):
@@ -197,6 +201,10 @@ class _CanaleProcesso:
         # insieme all'anello dello stderr, non introdotto qui).
         self._buffer = b""
         self._buffer_stderr = b""
+        try:
+            (Path(self.workdir) / NOME_LOG).write_text("", encoding="utf-8")
+        except OSError:
+            pass
         self._processo = QProcess()
         self._processo.setProcessChannelMode(QProcess.SeparateChannels)
         if self._ambiente:
@@ -210,6 +218,10 @@ class _CanaleProcesso:
         self._processo.errorOccurred.connect(self._su_errore)
         self._processo.start(programma, argomenti)
         self._processo.waitForStarted(servizio_mod.TIMEOUT_MS)
+        # il pid solo se il canale e' un QProcess vero: i test ne iniettano
+        # di finti, e una riga di diagnosi non deve poterli rompere
+        pid = getattr(self._processo, "processId", lambda: None)()
+        self._scrivi_log("[gui] figlio avviato: pid %s" % pid)
 
     def _su_dati_pronti(self):
         # La guardia non e' difensiva: un segnale emesso poco prima del
@@ -230,14 +242,33 @@ class _CanaleProcesso:
         self._buffer_stderr += bytes(self._processo.readAllStandardError())
         while b"\n" in self._buffer_stderr:
             grezza, self._buffer_stderr = self._buffer_stderr.split(b"\n", 1)
-            self._stderr.append(grezza.decode("utf-8", "replace"))
+            riga = grezza.decode("utf-8", "replace")
+            self._stderr.append(riga)
+            self._scrivi_log(riga)
 
-    def _su_morte(self, _codice, _stato):
+    def _scrivi_log(self, riga):
+        """Lo stesso stderr dell'anello, ma su disco.
+
+        L'anello vive in memoria e muore con la pagina: quando il figlio si
+        chiude da solo -- e la pagina lo dice in una frase sola -- non
+        resta niente da leggere il giorno dopo. Il file e' per sessione (lo
+        azzera `_avvia`) e non e' mai un guasto: un errore di scrittura non
+        deve poter fermare una sessione che sta lavorando, e siamo dentro
+        uno slot Qt, dove un'eccezione aborta la finestra."""
+        try:
+            with open(Path(self.workdir) / NOME_LOG, "a", encoding="utf-8") as f:
+                f.write(riga + "\n")
+        except OSError:
+            pass
+
+    def _su_morte(self, codice, stato):
+        self._scrivi_log("[gui] il figlio e' finito: codice %s, stato %s" % (codice, stato))
         self._processo = None
         if self._gestore_guasto is not None:
             self._gestore_guasto()
 
-    def _su_errore(self, _errore):
+    def _su_errore(self, errore):
+        self._scrivi_log("[gui] errorOccurred: %s" % errore)
         # Un processo che non parte mai (eseguibile assente) puo' non
         # emettere mai `finished` -- vedi il commento gemello in
         # gui/execution/jobs.py::_on_error_occurred. Idempotente verso
@@ -259,6 +290,7 @@ class _CanaleProcesso:
         processo, self._processo = self._processo, None
         if processo is None:
             return
+        self._scrivi_log("[gui] chiudi(): uccido il figlio")
         for segnale, slot in ((processo.readyReadStandardOutput, self._su_dati_pronti),
                               (processo.readyReadStandardError, self._su_stderr_pronto),
                               (processo.finished, self._su_morte),
